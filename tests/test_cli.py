@@ -5,14 +5,113 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+import numpy as np
 from pyproj import CRS
+import rasterio
+from rasterio.transform import from_origin
 import shapefile
 
 from hydro_map.cli import main
 
 
 class CliTests(unittest.TestCase):
+    def cell_config(self, root):
+        config = root / "cell.yaml"
+        config.write_text("""
+dataset: {region: na, delineation: outlet_cell}
+projects:
+  - id: DAM
+    name: Dam
+    outlet: {hybas_id: 1, lon: 0.5, lat: 0.5, grid_lon: 0.5, grid_lat: 0.5, grid_reference: 'checked channel cell'}
+""")
+        return config
+
+    def test_download_cell_mode_includes_both_flow_rasters(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.cell_config(root)
+            source, direction, accumulation = [root / name for name in ("units.shp", "dir.tif", "aca.tif")]
+            output = io.StringIO()
+            with patch("hydro_map.data.download_dataset", return_value=source), \
+                    patch("hydro_map.data.download_flow_dataset", return_value=(direction, accumulation)), \
+                    contextlib.redirect_stdout(output):
+                status = main(["download", "--config", str(config), "--cache-dir", str(root)])
+            self.assertEqual(status, 0)
+            self.assertEqual(output.getvalue().splitlines(), list(map(str, (source, direction, accumulation))))
+
+    def test_cell_options_and_virtual_connections_are_rejected_before_download(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.cell_config(root)
+            output = root / "result.geojson"
+            for options in (["--flow-direction", str(root / "dir.tif")],
+                            ["--flow-accumulation", str(root / "aca.tif")],
+                            ["--include-virtual"]):
+                with self.subTest(options=options), \
+                        patch("hydro_map.data.download_dataset", side_effect=AssertionError("invalid options must not download")), \
+                        contextlib.redirect_stderr(io.StringIO()):
+                    status = main(["build", str(config), "--output", str(output), *options])
+                self.assertEqual(status, 2)
+                self.assertFalse(output.exists())
+
+    def test_cell_output_cannot_overwrite_either_raster_input(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.cell_config(root)
+            direction, accumulation = root / "dir.tif", root / "aca.tif"
+            direction.write_bytes(b"direction input")
+            accumulation.write_bytes(b"accumulation input")
+            base = ["build", str(config), "--source", str(root / "units.shp"),
+                    "--flow-direction", str(direction), "--flow-accumulation", str(accumulation)]
+            for raster in (direction, accumulation):
+                original = raster.read_bytes()
+                for options in (["--output", str(raster)],
+                                ["--output", str(root / "out.geojson"), "--csv-output", str(raster)],
+                                ["--output", str(root / "out.geojson"), "--table-output", str(raster)]):
+                    with self.subTest(raster=raster, options=options), \
+                            contextlib.redirect_stderr(io.StringIO()):
+                        status = main([*base, *options])
+                    self.assertEqual(status, 2)
+                    self.assertEqual(raster.read_bytes(), original)
+                    self.assertFalse((root / "out.geojson").exists())
+
+    def test_cell_build_uses_explicit_or_automatically_fetched_rasters(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = self.cell_config(root)
+            source = root / "units.shp"
+            with shapefile.Writer(str(source)) as writer:
+                for field in ("HYBAS_ID", "NEXT_DOWN", "ENDO"):
+                    writer.field(field, "N", 12)
+                writer.poly([[(0.48, 0.48), (0.48, 0.52), (0.52, 0.52), (0.52, 0.48), (0.48, 0.48)]])
+                writer.record(1, 0, 0)
+            source.with_suffix(".prj").write_text(CRS.from_epsg(4326).to_wkt())
+            direction, accumulation = root / "dir.tif", root / "aca.tif"
+            flow = np.full((7, 7), 255, dtype=np.uint8)
+            flow[1:4, 2], flow[4, 2] = 4, 0
+            transform = from_origin(0.5 - 2.5 / 240, 0.5 + 3.5 / 240, 1 / 240, 1 / 240)
+            for path, array, nodata in ((direction, flow, 255),
+                    (accumulation, np.ones((7, 7), dtype=np.uint32), 4294967295)):
+                with rasterio.open(path, "w", driver="GTiff", width=7, height=7,
+                                   count=1, dtype=array.dtype, crs="EPSG:4326",
+                                   transform=transform, nodata=nodata) as raster:
+                    raster.write(array, 1)
+            for explicit in (True, False):
+                output = root / f"cell_{explicit}.geojson"
+                options = (["--flow-direction", str(direction), "--flow-accumulation", str(accumulation)]
+                           if explicit else [])
+                with self.subTest(explicit=explicit), \
+                        patch("hydro_map.data.download_flow_dataset", return_value=(direction, accumulation),
+                              side_effect=AssertionError("explicit rasters must work offline") if explicit else None), \
+                        contextlib.redirect_stdout(io.StringIO()):
+                    status = main(["build", str(config), "--source", str(source),
+                                   "--output", str(output), *options])
+                self.assertEqual(status, 0)
+                feature = json.loads(output.read_text())["features"][0]
+                self.assertEqual(feature["properties"]["cell_count_total"], 3)
+
     def test_offline_build_writes_selected_geojson_with_recorded_settings(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

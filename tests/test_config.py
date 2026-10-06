@@ -12,6 +12,26 @@ class ConfigTests(unittest.TestCase):
             path.write_text(body)
             return load_config(path)
 
+    def test_cell_delineation_requires_explicit_grid_points_and_allows_same_unit(self):
+        body = """
+dataset: {region: na, delineation: outlet_cell}
+projects:
+  - {id: A, name: A, outlet: {hybas_id: 101, lon: -118, lat: 52, grid_lon: -118.001, grid_lat: 52.001, grid_reference: Reviewed river cell}}
+  - {id: B, name: B, outlet: {hybas_id: 101, lon: -118, lat: 51, grid_lon: -118.001, grid_lat: 51.001, grid_reference: Reviewed river cell}}
+"""
+        with self.assertRaisesRegex(ValueError, 'consistent spelling'):
+            self.load(body.replace('name: A,', 'name: A, outlet_group: PAIR,').replace(
+                'name: B,', 'name: B, outlet_group: pair,'))
+        result = self.load(body)
+        self.assertEqual(result.dataset.delineation, 'outlet_cell')
+        self.assertEqual(result.projects[0].grid_lon, -118.001)
+        with self.assertRaisesRegex(ValueError, 'grid'):
+            self.load(body.replace(', grid_lat: 52.001', ''))
+        with self.assertRaisesRegex(ValueError, 'virtual'):
+            self.load(body.replace('delineation: outlet_cell', 'delineation: outlet_cell, include_virtual_connections: true'))
+        with self.assertRaisesRegex(ValueError, 'delineation'):
+            self.load(body.replace('outlet_cell', 'unknown_method'))
+
     def test_duplicate_outlet_units_are_rejected(self):
         with self.assertRaisesRegex(ValueError, "same.*unit"):
             self.load("""

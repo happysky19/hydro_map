@@ -54,7 +54,8 @@ def _sha256(path):
     return digest.hexdigest()
 
 
-def build_catchments(config: Config, source: Path, part="local", project_ids=None) -> dict:
+def build_catchments(config: Config, source: Path, part="local", project_ids=None,
+                     *, flow_direction=None, flow_accumulation=None) -> dict:
     """Build local or total catchments; output filtering never changes cutoffs."""
     source = Path(source)
     if part not in {"local", "total"}:
@@ -68,6 +69,12 @@ def build_catchments(config: Config, source: Path, part="local", project_ids=Non
         if not requested:
             raise ValueError("Select at least one project")
         selected = requested
+    if config.dataset.delineation == 'outlet_cell':
+        from .delineation import build_cell_catchments
+        return build_cell_catchments(config, source, part, selected,
+                                     flow_direction, flow_accumulation)
+    if flow_direction is not None or flow_accumulation is not None:
+        raise ValueError('Flow rasters require outlet_cell delineation')
     prj = source.with_suffix(".prj")
     if not prj.exists() or not CRS.from_wkt(prj.read_text()).equals(CRS.from_epsg(4326), ignore_axis_order=True):
         raise ValueError("HydroBASINS input must include a WGS84 .prj file")
@@ -152,7 +159,7 @@ def build_catchments(config: Config, source: Path, part="local", project_ids=Non
                 "down": downstream_projects[0] if len(downstream_projects) == 1 else None,
                 "down_candidates": downstream_projects, "part": part,
                 "forcing_group": project.metadata.get("outlet_group", project.id),
-                "geometry_status": "shared_unit_approximation" if len(shared) > 1 else "hydrobasins_delineation",
+                "geometry_status": "shared_unit_approximation" if len(shared) > 1 else "whole_unit_approximation",
                 "shared_outlet_projects": shared if len(shared) > 1 else [],
                 "hybas_id": project.hybas_id, "hybas_ids": sorted(chosen_ids),
                 "unit_count": len(chosen_ids),

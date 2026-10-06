@@ -5,6 +5,7 @@ dataset:
   level: 12
   version: "1c"
   include_virtual_connections: false
+  delineation: outlet_cell
 
 projects:
   - id: MICA
@@ -20,6 +21,9 @@ projects:
       lat: 52.077993
       source: "https://doi.org/10.6084/m9.figshare.25988293"
       reference: "river-aligned dam reference point"
+      grid_lon: -118.5687500000
+      grid_lat: 52.0770833333
+      grid_reference: "HydroSHEDS v1.1 15s cell containing the published river-aligned reference; consistent with GDW 77 and verified D8 river continuity."
   - id: REVELSTOKE
     project_code: REVB
     name: "Revelstoke"
@@ -33,6 +37,9 @@ projects:
       lat: 51.052067
       source: "https://doi.org/10.6084/m9.figshare.25988293"
       reference: "river-aligned dam reference point"
+      grid_lon: -118.1937500000
+      grid_lat: 51.0520833333
+      grid_reference: "HydroSHEDS v1.1 15s cell containing the published river-aligned reference; consistent with GDW 80 and verified D8 river continuity."
   - id: HUGH_KEENLEYSIDE
     project_code: ARDB
     name: "Hugh Keenleyside"
@@ -47,6 +54,9 @@ projects:
       lat: 49.342295
       source: "https://doi.org/10.6084/m9.figshare.25988293"
       reference: "river-aligned dam reference point"
+      grid_lon: -117.7729166667
+      grid_lat: 49.3437500000
+      grid_reference: "HydroSHEDS v1.1 15s cell containing the published river-aligned reference; consistent with GDW 94 and verified D8 river continuity."
   - id: DUNCAN
     project_code: DCDB
     name: "Duncan"
@@ -60,21 +70,27 @@ projects:
       lat: 50.252176
       source: "https://doi.org/10.6084/m9.figshare.25988293"
       reference: "river-aligned dam reference point"
+      grid_lon: -116.9437500000
+      grid_lat: 50.2520833333
+      grid_reference: "HydroSHEDS v1.1 15s cell containing the published river-aligned reference; consistent with GDW 447 and verified D8 river continuity."
   - id: KOOTENAY_CANAL
     project_code: KOOTENAY_CANAL
     name: "Kootenay Canal"
     kind: "run-of-river"
     mw: 583
-    note: "Uses the Corra Linn headpond intake basin, not the canal powerhouse location."
+    note: "Uses the Corra Linn dam catchment as a shared headpond intake proxy; diversion-reach runoff is not allocated."
     river: "Kootenay"
     country: CA
     outlet_group: KOOTENAY_CANAL_CORRA_LINN
     outlet:
       hybas_id: 7120295800
-      lon: -117.465095
-      lat: 49.46878
-      source: "https://www.bchydro.com/community/recreation_areas/kootenay_canal.html"
-      reference: "Shared Corra Linn headpond intake basin; point uses GDW Corra-Linn reference, not canal powerhouse; point source: https://doi.org/10.6084/m9.figshare.25988293"
+      lon: -117.4666666667
+      lat: 49.4663888889
+      source: "https://apps.gov.bc.ca/pub/bcgnws/names/51921.html"
+      reference: "BC Geographical Names official Corra Linn Dam approximate centre, WGS84; shared dam-catchment proxy for the canal headpond intake, not a separate diversion-reach delineation."
+      grid_lon: -117.4687500000
+      grid_lat: 49.4645833333
+      grid_reference: "HydroSHEDS v1.1 15s river cell containing the BC official dam centre; D8 river continuity verified; shared group cutoff."
   - id: CORRA_LINN
     project_code: CORRA_LINN
     name: "Corra Linn"
@@ -85,10 +101,13 @@ projects:
     outlet_group: KOOTENAY_CANAL_CORRA_LINN
     outlet:
       hybas_id: 7120295800
-      lon: -117.465095
-      lat: 49.46878
-      source: "https://doi.org/10.6084/m9.figshare.25988293"
-      reference: "river-aligned dam reference point"
+      lon: -117.4666666667
+      lat: 49.4663888889
+      source: "https://apps.gov.bc.ca/pub/bcgnws/names/51921.html"
+      reference: "BC Geographical Names official Corra Linn Dam approximate centre, WGS84; not a surveyed dam-wall point."
+      grid_lon: -117.4687500000
+      grid_lat: 49.4645833333
+      grid_reference: "HydroSHEDS v1.1 15s river cell containing the BC official dam centre; D8 river continuity verified; no area fitting."
   - id: BRILLIANT
     project_code: BRILLIANT
     name: "Brilliant"
@@ -102,6 +121,9 @@ projects:
       lat: 49.326103
       source: "https://doi.org/10.6084/m9.figshare.25988293"
       reference: "river-aligned dam reference point"
+      grid_lon: -117.6187500000
+      grid_lat: 49.3270833333
+      grid_reference: "HydroSHEDS v1.1 15s cell containing the published river-aligned reference; consistent with GDW 2163 and verified D8 river continuity."
   - id: SEVEN_MILE
     project_code: SEVEN_MILE
     name: "Seven Mile"
@@ -116,6 +138,9 @@ projects:
       lat: 49.02972222222222
       source: "https://www.nwrfc.noaa.gov/river/station/flowplot/flowplot.cgi?SEVQ2="
       reference: "NWRFC named dam station; not a surveyed dam-wall center"
+      grid_lon: -117.5020833333
+      grid_lat: 49.0312500000
+      grid_reference: "HydroSHEDS v1.1 15s cell containing the published river-aligned reference; consistent with GDW 2169 and verified D8 river continuity."
   - id: WANETA
     project_code: WANETA
     name: "Waneta"
@@ -130,6 +155,9 @@ projects:
       lat: 49.004763
       source: "https://doi.org/10.6084/m9.figshare.25988293"
       reference: "river-aligned dam reference point"
+      grid_lon: -117.6104166667
+      grid_lat: 49.0062500000
+      grid_reference: "HydroSHEDS v1.1 15s cell containing the published river-aligned reference; consistent with GDW 2171 and verified D8 river continuity."
   - id: LIBBY
     project_code: LIB
     name: "Libby"
@@ -143,6 +171,9 @@ projects:
       lat: 48.411432
       source: "https://doi.org/10.6084/m9.figshare.25988293"
       reference: "river-aligned dam reference point"
+      grid_lon: -115.3145833333
+      grid_lat: 48.4104166667
+      grid_reference: "HydroSHEDS v1.1 15s cell containing the published river-aligned reference; consistent with GDW 100 and verified D8 river continuity."
   - id: HUNGRY_HORSE
     project_code: HGH
     name: "Hungry Horse"
@@ -156,6 +187,9 @@ projects:
       lat: 48.339662
       source: "https://doi.org/10.6084/m9.figshare.25988293"
       reference: "river-aligned dam reference point"
+      grid_lon: -114.0104166667
+      grid_lat: 48.3395833333
+      grid_reference: "HydroSHEDS v1.1 15s cell containing the published river-aligned reference; consistent with GDW 491 and verified D8 river continuity."
   - id: KERR
     project_code: KERR
     name: "Seli's Ksanka Qlispe (Kerr)"
@@ -169,6 +203,9 @@ projects:
       lat: 47.676175
       source: "https://doi.org/10.6084/m9.figshare.25988293"
       reference: "river-aligned dam reference point"
+      grid_lon: -114.2312500000
+      grid_lat: 47.6770833333
+      grid_reference: "HydroSHEDS v1.1 15s cell containing the published river-aligned reference; consistent with GDW 111 and verified D8 river continuity."
   - id: NOXON_RAPIDS
     project_code: NOXON_RAPIDS
     name: "Noxon Rapids"
@@ -182,6 +219,9 @@ projects:
       lat: 47.958644
       source: "https://doi.org/10.6084/m9.figshare.25988293"
       reference: "river-aligned dam reference point"
+      grid_lon: -115.7354166667
+      grid_lat: 47.9604166667
+      grid_reference: "HydroSHEDS v1.1 15s cell containing the published river-aligned reference; consistent with GDW 507 and verified D8 river continuity."
   - id: CABINET_GORGE
     project_code: CABINET_GORGE
     name: "Cabinet Gorge"
@@ -191,10 +231,13 @@ projects:
     country: US
     outlet:
       hybas_id: 7120328470
-      lon: -116.072777777778
-      lat: 48.0880555555556
-      source: "https://waterdata.usgs.gov/monitoring-location/USGS-12391950/"
-      reference: "USGS 12391950 monitoring point 0.7 miles below dam; not a surveyed dam wall"
+      lon: -116.0572528918
+      lat: 48.0856843234
+      source: "https://geospatial.sec.usace.army.mil/dls/rest/services/NID/National_Inventory_of_Dams_Public_Service/FeatureServer/0"
+      reference: "USACE NID ID00222 Cabinet Gorge; WGS84 dam inventory point (outSR=4326)."
+      grid_lon: -116.0562500000
+      grid_lat: 48.0854166667
+      grid_reference: "HydroSHEDS v1.1 15s main-channel cell nearest NID ID00222 dam point within this HydroBASINS unit; D8 river continuity verified; no area fitting."
   - id: ALBENI_FALLS
     project_code: ALF
     name: "Albeni Falls"
@@ -208,6 +251,9 @@ projects:
       lat: 48.178294
       source: "https://doi.org/10.6084/m9.figshare.25988293"
       reference: "river-aligned dam reference point"
+      grid_lon: -116.9979166667
+      grid_lat: 48.1770833333
+      grid_reference: "HydroSHEDS v1.1 15s cell containing the published river-aligned reference; consistent with GDW 102 and verified D8 river continuity."
   - id: BOUNDARY
     project_code: BOUNDARY
     name: "Boundary"
@@ -221,6 +267,9 @@ projects:
       lat: 48.985004
       source: "https://doi.org/10.6084/m9.figshare.25988293"
       reference: "river-aligned dam reference point"
+      grid_lon: -117.3479166667
+      grid_lat: 48.9854166667
+      grid_reference: "HydroSHEDS v1.1 15s cell containing the published river-aligned reference; consistent with GDW 5557 and verified D8 river continuity."
   - id: GRAND_COULEE
     project_code: GCL
     name: "Grand Coulee"
@@ -234,6 +283,9 @@ projects:
       lat: 47.954652
       source: "https://doi.org/10.6084/m9.figshare.25988293"
       reference: "river-aligned dam reference point"
+      grid_lon: -118.9812500000
+      grid_lat: 47.9562500000
+      grid_reference: "HydroSHEDS v1.1 15s cell containing the published river-aligned reference; consistent with GDW 105 and verified D8 river continuity."
   - id: CHIEF_JOSEPH
     project_code: CHJ
     name: "Chief Joseph"
@@ -243,10 +295,13 @@ projects:
     country: US
     outlet:
       hybas_id: 7120331940
-      lon: -119.633
-      lat: 47.99528
-      source: "https://www.nws.usace.army.mil/Portals/27/docs/regulatory2/Mon_Reports/2024/MonRptOCT2024.pdf"
-      reference: "government project location at dam; not a surveyed dam wall"
+      lon: -119.6374416783
+      lat: 47.9953649940
+      source: "https://geospatial.sec.usace.army.mil/dls/rest/services/NID/National_Inventory_of_Dams_Public_Service/FeatureServer/0"
+      reference: "USACE NID WA00299 Chief Joseph Dam; WGS84 dam inventory point (outSR=4326)."
+      grid_lon: -119.6354166667
+      grid_lat: 47.9979166667
+      grid_reference: "HydroSHEDS v1.1 15s main-channel cell nearest NID WA00299 dam point within this HydroBASINS unit; D8 river continuity verified; no area fitting."
   - id: WELLS
     project_code: WEL
     name: "Wells"
@@ -256,10 +311,13 @@ projects:
     country: US
     outlet:
       hybas_id: 7120983500
-      lon: -119.86667
-      lat: 47.95
-      source: "https://www.nwrfc.noaa.gov/river/site_meta_csv.cgi"
-      reference: "forecast or monitoring reference point; not a surveyed dam wall"
+      lon: -119.8783145651
+      lat: 47.9483059040
+      source: "https://geospatial.sec.usace.army.mil/dls/rest/services/NID/National_Inventory_of_Dams_Public_Service/FeatureServer/0"
+      reference: "USACE NID WA00098 Wells; WGS84 dam inventory point (outSR=4326)."
+      grid_lon: -119.8687500000
+      grid_lat: 47.9520833333
+      grid_reference: "HydroSHEDS v1.1 15s main-channel cell nearest NID WA00098 dam point within this HydroBASINS unit; D8 river continuity verified; no area fitting."
   - id: ROCKY_REACH
     project_code: RRH
     name: "Rocky Reach"
@@ -269,10 +327,13 @@ projects:
     country: US
     outlet:
       hybas_id: 7120345900
-      lon: -120.30111
-      lat: 47.52444
-      source: "https://www.nwrfc.noaa.gov/river/site_meta_csv.cgi"
-      reference: "forecast or monitoring reference point; not a surveyed dam wall"
+      lon: -120.2955045384
+      lat: 47.5334488340
+      source: "https://geospatial.sec.usace.army.mil/dls/rest/services/NID/National_Inventory_of_Dams_Public_Service/FeatureServer/0"
+      reference: "USACE NID WA00086 Rocky Reach; WGS84 dam inventory point (outSR=4326)."
+      grid_lon: -120.2937500000
+      grid_lat: 47.5354166667
+      grid_reference: "HydroSHEDS v1.1 15s main-channel cell nearest NID WA00086 dam point within this HydroBASINS unit; D8 river continuity verified; no area fitting."
   - id: ROCK_ISLAND
     project_code: RIS
     name: "Rock Island"
@@ -286,6 +347,9 @@ projects:
       lat: 47.344467
       source: "https://doi.org/10.6084/m9.figshare.25988293"
       reference: "river-aligned dam reference point"
+      grid_lon: -120.0937500000
+      grid_lat: 47.3437500000
+      grid_reference: "HydroSHEDS v1.1 15s cell containing the published river-aligned reference; consistent with GDW 28135 and verified D8 river continuity."
   - id: WANAPUM
     project_code: WAN
     name: "Wanapum"
@@ -299,6 +363,9 @@ projects:
       lat: 46.873802
       source: "https://doi.org/10.6084/m9.figshare.25988293"
       reference: "river-aligned dam reference point"
+      grid_lon: -119.9687500000
+      grid_lat: 46.8729166667
+      grid_reference: "HydroSHEDS v1.1 15s cell containing the published river-aligned reference; consistent with GDW 28125 and verified D8 river continuity."
   - id: PRIEST_RAPIDS
     project_code: PRD
     name: "Priest Rapids"
@@ -312,6 +379,9 @@ projects:
       lat: 46.645091
       source: "https://doi.org/10.6084/m9.figshare.25988293"
       reference: "river-aligned dam reference point"
+      grid_lon: -119.9104166667
+      grid_lat: 46.6437500000
+      grid_reference: "HydroSHEDS v1.1 15s cell containing the published river-aligned reference; consistent with GDW 28119 and verified D8 river continuity."
   - id: MCNARY
     project_code: MCN
     name: "McNary"
@@ -325,6 +395,9 @@ projects:
       lat: 45.935595
       source: "https://doi.org/10.6084/m9.figshare.25988293"
       reference: "river-aligned dam reference point"
+      grid_lon: -119.2979166667
+      grid_lat: 45.9354166667
+      grid_reference: "HydroSHEDS v1.1 15s cell containing the published river-aligned reference; consistent with GDW 28090 and verified D8 river continuity."
   - id: JOHN_DAY
     project_code: JDA
     name: "John Day"
@@ -338,6 +411,9 @@ projects:
       lat: 45.716081
       source: "https://doi.org/10.6084/m9.figshare.25988293"
       reference: "river-aligned dam reference point"
+      grid_lon: -120.6937500000
+      grid_lat: 45.7145833333
+      grid_reference: "HydroSHEDS v1.1 15s cell containing the published river-aligned reference; consistent with GDW 28079 and verified D8 river continuity."
   - id: THE_DALLES
     project_code: TDA
     name: "The Dalles"
@@ -351,6 +427,9 @@ projects:
       lat: 45.61163
       source: "https://doi.org/10.6084/m9.figshare.25988293"
       reference: "river-aligned dam reference point"
+      grid_lon: -121.1354166667
+      grid_lat: 45.6104166667
+      grid_reference: "HydroSHEDS v1.1 15s cell containing the published river-aligned reference; consistent with GDW 28074 and verified D8 river continuity."
   - id: BONNEVILLE
     project_code: BON
     name: "Bonneville"
@@ -364,6 +443,9 @@ projects:
       lat: 45.646042
       source: "https://doi.org/10.6084/m9.figshare.25988293"
       reference: "river-aligned dam reference point"
+      grid_lon: -121.9395833333
+      grid_lat: 45.6479166667
+      grid_reference: "HydroSHEDS v1.1 15s cell containing the published river-aligned reference; consistent with GDW 28076 and verified D8 river continuity."
   - id: BROWNLEE
     project_code: BRN
     name: "Brownlee"
@@ -377,6 +459,9 @@ projects:
       lat: 44.835014
       source: "https://doi.org/10.6084/m9.figshare.25988293"
       reference: "river-aligned dam reference point"
+      grid_lon: -116.9020833333
+      grid_lat: 44.8354166667
+      grid_reference: "HydroSHEDS v1.1 15s cell containing the published river-aligned reference; consistent with GDW 636 and verified D8 river continuity."
   - id: OXBOW
     project_code: OXB
     name: "Oxbow"
@@ -390,6 +475,9 @@ projects:
       lat: 44.970949
       source: "https://doi.org/10.6084/m9.figshare.25988293"
       reference: "river-aligned dam reference point"
+      grid_lon: -116.8354166667
+      grid_lat: 44.9729166667
+      grid_reference: "HydroSHEDS v1.1 15s cell containing the published river-aligned reference; consistent with GDW 2363 and verified D8 river continuity."
   - id: HELLS_CANYON
     project_code: HEL
     name: "Hells Canyon"
@@ -403,6 +491,9 @@ projects:
       lat: 45.242261
       source: "https://doi.org/10.6084/m9.figshare.25988293"
       reference: "river-aligned dam reference point"
+      grid_lon: -116.7020833333
+      grid_lat: 45.2437500000
+      grid_reference: "HydroSHEDS v1.1 15s cell containing the published river-aligned reference; consistent with GDW 28065 and verified D8 river continuity."
   - id: DWORSHAK
     project_code: DWR
     name: "Dworshak"
@@ -416,6 +507,9 @@ projects:
       lat: 46.516351
       source: "https://doi.org/10.6084/m9.figshare.25988293"
       reference: "river-aligned dam reference point"
+      grid_lon: -116.2979166667
+      grid_lat: 46.5145833333
+      grid_reference: "HydroSHEDS v1.1 15s cell containing the published river-aligned reference; consistent with GDW 549 and verified D8 river continuity."
   - id: LOWER_GRANITE
     project_code: LWG
     name: "Lower Granite"
@@ -429,6 +523,9 @@ projects:
       lat: 46.658839
       source: "https://doi.org/10.6084/m9.figshare.25988293"
       reference: "river-aligned dam reference point"
+      grid_lon: -117.4312500000
+      grid_lat: 46.6604166667
+      grid_reference: "HydroSHEDS v1.1 15s cell containing the published river-aligned reference; consistent with GDW 28120 and verified D8 river continuity."
   - id: LITTLE_GOOSE
     project_code: LGS
     name: "Little Goose"
@@ -438,10 +535,13 @@ projects:
     country: US
     outlet:
       hybas_id: 7120368580
-      lon: -117.96667
-      lat: 46.6
-      source: "https://www.nwrfc.noaa.gov/river/site_meta_csv.cgi"
-      reference: "forecast or monitoring reference point; not a surveyed dam wall"
+      lon: -118.0269139236
+      lat: 46.5842460112
+      source: "https://geospatial.sec.usace.army.mil/dls/rest/services/NID/National_Inventory_of_Dams_Public_Service/FeatureServer/0"
+      reference: "USACE NID WA00331 Little Goose Lock and Dam; WGS84 dam inventory point (outSR=4326)."
+      grid_lon: -118.0270833333
+      grid_lat: 46.5854166667
+      grid_reference: "HydroSHEDS v1.1 15s main-channel cell nearest NID WA00331 dam point within this HydroBASINS unit; D8 river continuity verified; no area fitting."
   - id: LOWER_MONUMENTAL
     project_code: LMN
     name: "Lower Monumental"
@@ -451,10 +551,13 @@ projects:
     country: US
     outlet:
       hybas_id: 7120371850
-      lon: -118.54
-      lat: 46.58333
-      source: "https://www.nwrfc.noaa.gov/river/site_meta_csv.cgi"
-      reference: "forecast or monitoring reference point; not a surveyed dam wall"
+      lon: -118.5377043260
+      lat: 46.5621950661
+      source: "https://geospatial.sec.usace.army.mil/dls/rest/services/NID/National_Inventory_of_Dams_Public_Service/FeatureServer/0"
+      reference: "USACE NID WA00270 Lower Monumental Lock and Dam; WGS84 dam inventory point (outSR=4326)."
+      grid_lon: -118.5395833333
+      grid_lat: 46.5604166667
+      grid_reference: "HydroSHEDS v1.1 15s main-channel cell nearest NID WA00270 dam point within this HydroBASINS unit; D8 river continuity verified; no area fitting."
   - id: ICE_HARBOR
     project_code: IHR
     name: "Ice Harbor"
@@ -468,6 +571,9 @@ projects:
       lat: 46.248993
       source: "https://doi.org/10.6084/m9.figshare.25988293"
       reference: "river-aligned dam reference point"
+      grid_lon: -118.8812500000
+      grid_lat: 46.2479166667
+      grid_reference: "HydroSHEDS v1.1 15s cell containing the published river-aligned reference; consistent with GDW 7282 and verified D8 river continuity."
   - id: AMERICAN_FALLS
     project_code: AMERICAN_FALLS
     name: "American Falls"
@@ -481,6 +587,9 @@ projects:
       lat: 42.779062
       source: "https://doi.org/10.6084/m9.figshare.25988293"
       reference: "river-aligned dam reference point"
+      grid_lon: -112.8729166667
+      grid_lat: 42.7770833333
+      grid_reference: "HydroSHEDS v1.1 15s cell containing the published river-aligned reference; consistent with GDW 134 and verified D8 river continuity."
   - id: PALISADES
     project_code: PALISADES
     name: "Palisades"
@@ -494,6 +603,9 @@ projects:
       lat: 43.330514
       source: "https://doi.org/10.6084/m9.figshare.25988293"
       reference: "river-aligned dam reference point"
+      grid_lon: -111.2020833333
+      grid_lat: 43.3312500000
+      grid_reference: "HydroSHEDS v1.1 15s cell containing the published river-aligned reference; consistent with GDW 699 and verified D8 river continuity."
   - id: DETROIT
     project_code: DETROIT
     name: "Detroit"
@@ -507,6 +619,9 @@ projects:
       lat: 44.719354
       source: "https://doi.org/10.6084/m9.figshare.25988293"
       reference: "river-aligned dam reference point"
+      grid_lon: -122.2479166667
+      grid_lat: 44.7187500000
+      grid_reference: "HydroSHEDS v1.1 15s cell containing the published river-aligned reference; consistent with GDW 2377 and verified D8 river continuity."
   - id: LOOKOUT_POINT
     project_code: LOOKOUT_POINT
     name: "Lookout Point"
@@ -520,6 +635,9 @@ projects:
       lat: 43.913909
       source: "https://doi.org/10.6084/m9.figshare.25988293"
       reference: "river-aligned dam reference point"
+      grid_lon: -122.7520833333
+      grid_lat: 43.9145833333
+      grid_reference: "HydroSHEDS v1.1 15s cell containing the published river-aligned reference; consistent with GDW 672 and verified D8 river continuity."
   - id: ROUND_BUTTE
     project_code: ROUND_BUTTE
     name: "Round Butte"
@@ -533,6 +651,9 @@ projects:
       lat: 44.601372
       source: "https://doi.org/10.6084/m9.figshare.25988293"
       reference: "river-aligned dam reference point"
+      grid_lon: -121.2812500000
+      grid_lat: 44.6020833333
+      grid_reference: "HydroSHEDS v1.1 15s cell containing the published river-aligned reference; consistent with GDW 645 and verified D8 river continuity."
   - id: ROSS
     project_code: ROSS
     name: "Ross"
@@ -546,6 +667,9 @@ projects:
       lat: 48.732466
       source: "https://doi.org/10.6084/m9.figshare.25988293"
       reference: "river-aligned dam reference point"
+      grid_lon: -121.0687500000
+      grid_lat: 48.7312500000
+      grid_reference: "HydroSHEDS v1.1 15s cell containing the published river-aligned reference; consistent with GDW 480 and verified D8 river continuity."
   - id: MOSSYROCK
     project_code: MOSSYROCK
     name: "Mossyrock"
@@ -559,6 +683,9 @@ projects:
       lat: 46.53478
       source: "https://doi.org/10.6084/m9.figshare.25988293"
       reference: "river-aligned dam reference point"
+      grid_lon: -122.4229166667
+      grid_lat: 46.5354166667
+      grid_reference: "HydroSHEDS v1.1 15s cell containing the published river-aligned reference; consistent with GDW 548 and verified D8 river continuity."
   - id: SWIFT
     project_code: SWIFT
     name: "Swift"
@@ -572,3 +699,6 @@ projects:
       lat: 46.061944
       source: "https://doi.org/10.6084/m9.figshare.25988293"
       reference: "river-aligned dam reference point"
+      grid_lon: -122.1979166667
+      grid_lat: 46.0604166667
+      grid_reference: "HydroSHEDS v1.1 15s cell containing the published river-aligned reference; consistent with GDW 571 and verified D8 river continuity."
