@@ -50,6 +50,16 @@ class PlanTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'absent'):
             self.plan([self.feature])
 
+    def test_boundary_hour_and_daymet_calendar_gaps(self):
+        self.config['period'].update(start='1995-01-01', end='2024-12-31')
+        result = self.plan([self.feature])
+        self.assertEqual(result['hour_ending_precipitation_window_utc'],
+                         ['1995-01-01T01:00:00Z', '2025-01-01T00:00:00Z'])
+        self.assertEqual(len(result['daymet_calendar_gaps']), 8)
+        self.assertEqual(result['daymet_calendar_gaps'][0], '1996-12-31')
+        self.assertEqual(result['daymet_calendar_gaps'][-1], '2024-12-31')
+        self.assertEqual(result['expected_daymet_records_per_project'], 10950)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -1,9 +1,10 @@
 # Candidate settings; source approval and full-period coverage are pending.
 period:
-  start: '1996-01-01'
-  end: '2025-12-31'
+  start: '1995-01-01'
+  end: '2024-12-31'
   daily_time_zone: UTC
-  alternative_complete_year_window: ['1995-01-01', '2024-12-31']
+  reason: Complete 30-year candidate window with the final AORC precipitation boundary hour available.
+  latest_30_years_pending_boundary: ['1996-01-01', '2025-12-31']
 pilot_projects:
   - MICA
   - ARROW
@@ -17,17 +18,19 @@ sources:
     version: '1.1'
     url: https://noaa-nws-aorc-v1-1-1km.s3.amazonaws.com/
     variables: [APCP_surface, TMP_2maboveground, SPFH_2maboveground, PRES_surface, DSWRF_surface, DLWRF_surface, UGRD_10maboveground, VGRD_10maboveground]
-    status: sample_values_verified_full_coverage_pending
+    status: full_time_axis_verified_all_project_samples_verified_full_data_scan_pending
   daymet:
     role: independent_method_comparison
     version: V4R1
     collection_concept_id: C2532426483-ORNL_CLOUD
     variables: [prcp, tmin, tmax, vp, srad, dayl, swe]
-    status: authenticated_precipitation_samples_verified_polygon_coverage_pending
+    status: authenticated_polygon_pilots_verified_full_period_coverage_pending
   era5_land:
     role: optional_land_state_and_forcing_comparison
     dataset: reanalysis-era5-land
-    status: documentation_verified_authenticated_access_pending
+    status: ncar_three_field_polygon_sample_verified_complete_cds_archive_access_pending
+    tested_mirror: https://gdex.ucar.edu/datasets/d633008/
+    tested_mirror_start: '2001-11-01T01:00:00Z'
   era5:
     role: optional_atmospheric_fields
     datasets: [reanalysis-era5-single-levels, reanalysis-era5-pressure-levels]
