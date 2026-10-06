@@ -1,6 +1,8 @@
 # Historical meteorological forcing in hydrological practice
 
-Primary-source review, checked 2026-10-06. Scope: daily forcing for 43 selected Pacific Northwest projects spanning the United States and Canada, with 41 distinct forcing groups. The examples below document particular implementations. A hydrological algorithm does not prescribe a unique meteorological dataset, and use in a published study does not establish that a product is best for these catchments.
+Primary-source review, checked 2026-10-06. Scope: daily forcing for 43 selected Pacific Northwest projects spanning the United States and Canada, with 43 independent local drainage domains. The examples below document particular implementations. A hydrological algorithm does not prescribe a unique meteorological dataset, and use in a published study does not establish that a product is best for these catchments.
+
+Kootenay Canal's domain represents natural drainage at the tailrace, including lateral runoff to the bypassed river. Its diversion intake at Corra Linn is recorded separately. Turbine-flow prediction requires operational allocation and storage/routing terms; the local weather domain alone does not supply turbine inflow.
 
 ## Seven documented modeling examples
 

@@ -20,7 +20,8 @@ def write_geometry_csv(collection: dict, output: Path) -> int:
     """Keep project attributes and WGS84 geometry in one CSV; geometry uses WKT."""
     columns = ['id', 'name', 'kind', 'mw', 'lat', 'lon', 'area', 'area_local', 'part',
                'geometry', 'area_total', 'area_geometry', 'forcing_group',
-               'geometry_status', 'shared_outlet_projects']
+               'geometry_status', 'shared_outlet_projects', 'catchment_role',
+               'diversion_intake_project', 'routing_requires_operations']
     rows = []
     for feature in collection['features']:
         geometry = shape(feature['geometry'])
@@ -30,6 +31,8 @@ def write_geometry_csv(collection: dict, output: Path) -> int:
         row = {key: props.get(key) for key in columns if key != 'geometry'}
         row['geometry'] = geometry.wkt
         row['shared_outlet_projects'] = json.dumps(props.get('shared_outlet_projects', []))
+        if 'routing_requires_operations' in props:
+            row['routing_requires_operations'] = json.dumps(props['routing_requires_operations'])
         rows.append(row)
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -61,6 +64,8 @@ def write_bbox_csv(collection: dict, output: Path, buffer_degrees: float = 0.3) 
         suffix = "local incremental catchment" if part == "local" else "total upstream catchment"
         if props.get('geometry_status') == 'shared_unit_approximation':
             suffix = f"shared {part} catchment [{props['forcing_group']}]"
+        if props.get('catchment_role') == 'natural_reach_at_tailrace':
+            suffix = f'{part} natural reach catchment at tailrace'
         centroid = geometry.centroid
         # Round limits outward so displayed precision never reduces the padded extent.
         bounds = [(max(Decimal(-90), south - pad), ROUND_FLOOR),

@@ -23,6 +23,7 @@ from shapely.geometry import shape
 
 from aggregate_daily import HOURLY_FIELDS, aggregate_daily
 from audit_aorc_cache import BASE, VARIABLES, axis, check, decode, metadata, weights
+from routing_metadata import routing_metadata, routing_warning
 
 FIELDS = {
     'APCP_surface': ('precipitation_mm', 'mm', 'hour_ending_amount'),
@@ -172,7 +173,7 @@ def load_polygons(path, selected, include_metadata=False):
             check(part == other_part and geometry.equals(other_geometry),
                   f'Forcing group {group} must have the same geometry and part')
         references[group] = (geometry, part)
-        record = {'forcing_group': group, **{key: props[key] for key in
+        record = {'forcing_group': group, **routing_metadata(identifier, props), **{key: props[key] for key in
                   ('geometry_status', 'shared_outlet_projects') if key in props}}
         members = record.get('shared_outlet_projects', [identifier])
         check(isinstance(members, list) and (not members or identifier in members) and
@@ -189,6 +190,8 @@ def load_polygons(path, selected, include_metadata=False):
     groups, warnings = {}, []
     for identifier, record in project_forcing.items():
         groups.setdefault(record['forcing_group'], []).append(identifier)
+        if record.get('catchment_role') == 'natural_reach_at_tailrace':
+            warnings.append(routing_warning(identifier, record))
     for group, identifiers in sorted(groups.items()):
         shared = len(identifiers) > 1 or any(
             project_forcing[identifier].get('geometry_status') == 'shared_unit_approximation'
@@ -274,7 +277,7 @@ def run(args):
                   start=str(args.start), end=str(args.end), variables=sorted(args.variables),
                   source=BASE, area_crs='EPSG:6933', day='UTC',
                   code_sha256={name: digest(Path(__file__).with_name(name)) for name in
-                               ('download_aorc.py', 'aggregate_daily.py', 'audit_aorc_cache.py')})
+                           ('download_aorc.py', 'aggregate_daily.py', 'audit_aorc_cache.py', 'routing_metadata.py')})
     config_hash = hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()
     config_path = args.output_dir / 'run.json'
     if config_path.exists():

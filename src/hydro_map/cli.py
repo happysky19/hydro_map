@@ -104,6 +104,13 @@ def main(argv=None):
             if shared:
                 count = sum(len(members) for members in shared.values())
                 print(f"Shared-unit approximations: {count} projects in {len(shared)} groups; count each forcing_group once for area or volume.")
+            for feature in result['features']:
+                props = feature['properties']
+                if props.get('catchment_role') == 'natural_reach_at_tailrace':
+                    print(f"{props['id']}: natural drainage at the tailrace includes lateral runoff "
+                          f"along the bypassed river. Turbine inflow also depends on diversion from "
+                          f"{props['diversion_intake_project']} and operating decisions; "
+                          "local meteorology alone does not represent turbine inflow.")
             if args.csv_output:
                 from .csv_export import write_bbox_csv
                 count = write_bbox_csv(result, args.csv_output, args.bbox_buffer)

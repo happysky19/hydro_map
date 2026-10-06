@@ -1,6 +1,6 @@
-# Project outlets and shared catchments
+# Project outlets and drainage domains
 
-The example configuration contains 43 project IDs and 41 distinct outlet groups.
+The example configuration contains 43 project IDs and 43 distinct local drainage domains.
 It includes Columbia basin projects and Ross on the Skagit River. It is an
 editable modeling selection, not a complete dam inventory.
 
@@ -65,9 +65,8 @@ Corra Linn uses the [BC Geographical Names official approximate dam centre](http
 49°27′59″ N, 117°28′00″ W, explicitly recorded as WGS84. Its containing
 HydroSHEDS river cell is centered at 49.4645833333° N, 117.4687500000° W,
 approximately 251 m away. The published dam location selects this cell;
-no drainage-area target is used. Kootenay Canal retains the same dam-catchment
-proxy for its headpond intake. This does not delineate or allocate runoff
-along the separate diversion reach.
+no drainage-area target is used. Kootenay Canal has its own downstream
+river-return control point, documented below.
 
 For the six NID locations, the chosen raster cell is the nearest reviewed main-river
 cell within the configured HydroBASINS unit. The remaining GDW and NOAA references retain their
@@ -86,37 +85,67 @@ not certified them as dam-specific boundaries. A finer grid can improve outlet
 placement but does not by itself resolve diversions, reservoir operations, or
 incorrect reference locations.
 
-## Shared outlet groups
+## Independent outlets and canal routing
 
-| Projects | HYBAS_ID | Common cutoff |
-| --- | --- | --- |
-| Corra Linn and Kootenay Canal | `7120295800` | Corra Linn dam cell, used as the headpond intake proxy |
-| Seven Mile and Waneta | `7120305410` | Waneta, downstream of Seven Mile |
+The example has 43 independent local drainage domains and no shared groups.
+Distinct outlets within one HydroBASINS unit are separated by their native
+flow cells; a common unit ID does not require a common project polygon.
 
-The configuration retains these two shared groups as explicit spatial proxies.
-Without a declared group, the raster method can keep distinct cells in the
-same HydroBASINS unit as independent outlets.
-Within a group, all member cells must lie on one downstream path; the
-most-downstream cell defines the common catchment. Both records receive the
-same polygon and `geometry_status: shared_unit_approximation`. Independent
-projects use `outlet_cell_delineation`.
+Seven Mile and Waneta each use a documented dam outlet. The natural drainage
+order is Boundary → Seven Mile → Waneta → Grand Coulee. Their selected cells
+are connected along the Pend d'Oreille River. Waneta's cell is upstream of its
+junction with the Columbia River, so the Columbia branch is excluded from
+Waneta's total catchment. The [USGS river schematic](https://wa.water.usgs.gov/data/realtime/adr/interactive/schematics/PendOreille.pdf)
+independently documents the sequence.
 
-The projects remain separate records, but their shared geometries and weather
-averages must not be counted twice in a water balance. Deduplicate by
-`forcing_group`. Sharing is a modeling choice: Seven Mile and Waneta have
-distinct configured raster cells and a resolved downstream order, but still
-receive the agreed group polygon. Separate local inflows require a revised
-group definition and routing model.
+The [NOAA Seven Mile reference](https://www.nwrfc.noaa.gov/river/station/flowplot/flowplot.cgi?SEVQ2=)
+at 49.0297222222°N, 117.5030555556°W and the independent GDW river-aligned
+point both select cell (3352, 4919). A more distant coordinate elsewhere on
+the reservoir or downstream river is a different cutoff, even if its
+reported upstream area is similar. Source-area agreement is a diagnostic,
+not a reason to move a documented dam outlet.
 
-Kootenay Canal diverts water from the Corra Linn headpond and returns it to the
-river at South Slocan. The configuration therefore uses the Corra Linn dam catchment as a shared
-headpond intake proxy, rather than the canal powerhouse location. The topographic catchment does not determine
-how water is allocated between facilities.
-[BC Hydro describes the diversion](https://www.bchydro.com/community/recreation_areas/kootenay_canal.html).
+Corra Linn and Kootenay Canal require separate land-runoff accounting and
+hydraulic interpretation:
 
-Seven Mile retains the [NOAA SEVQ2 reference](https://www.nwrfc.noaa.gov/river/station/flowplot/flowplot.cgi?SEVQ2=)
-and its own documented outlet cell. Waneta supplies the group's downstream
-cutoff; the two individual cell coordinates remain available for audit.
+- Corra Linn uses the river cell containing the BC official approximate dam
+  centre. Its local domain excludes selected upstream Duncan and Libby totals.
+- Kootenay Canal uses the natural river control cell at its downstream return.
+  Its local domain is the total at that return minus Corra Linn's total.
+- Brilliant subtracts the Canal return-point total. Runoff in the intervening
+  river reach is therefore counted once, with no duplicate Corra polygon.
+
+[BC Hydro](https://www.bchydro.com/community/recreation_areas/kootenay_canal.html)
+links the powerhouse location at 49.4532149°N, 117.5180483°W and describes water
+entering the canal from Corra Linn headpond and returning at South Slocan.
+The [BC permit site plan, Site Plan A](https://j200.gov.bc.ca/pub/ams/download.aspx?PosseObjectId=57506212)
+shows the powerhouse tailrace joining the river. The 15-second cell containing
+the linked powerhouse point drains one cell west to the selected mainstem
+control cell at 49.4520833333°N, 117.5229166667°W, about 375 m from the reference.
+The mainstem cell is also downstream of Corra Linn. It was selected from the
+location and connectivity, without matching a target drainage area.
+
+This return-reach polygon includes natural lateral runoff to the bypass river.
+It is **not an exclusive turbine-inflow catchment**. The configuration records:
+
+```yaml
+catchment_role: natural_reach_at_tailrace
+diversion_intake_project: CORRA_LINN
+routing_requires_operations: true
+```
+
+`up`, `above` and `down` describe natural drainage. The diversion-intake field
+records a separate engineered connection from the headpond; it does not mean
+all Corra Linn discharge passes through the Canal powerhouse. Diversion and
+bypass flows can change with operating decisions, as illustrated by
+[BC Hydro's canal maintenance operation](https://www.bchydro.com/news/press_centre/news_releases/2026/kootenay-canal-maintenance-closures.html).
+Turbine-flow prediction needs those allocations and reservoir/storage terms.
+Topography and local weather alone cannot supply them. These distinctions
+remain in the geometry CSV, download plan and meteorological run metadata.
+
+Explicit shared groups remain available for other configurations, but are not
+used by this example. A declared group still produces duplicate project rows
+for one forcing area, which must be counted once in a water balance.
 
 ## Area and topology
 

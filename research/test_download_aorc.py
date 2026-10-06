@@ -15,6 +15,33 @@ from download_aorc import BASE, Store, accumulate, extract_series, load_polygons
 
 
 class AorcDownloadTests(unittest.TestCase):
+    def test_tailrace_metadata_is_retained_and_validated_in_raw_geojson(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'catchments.geojson'
+            feature = dict(type='Feature', properties=dict(id='A', part='local',
+                catchment_role='natural_reach_at_tailrace', diversion_intake_project='UPSTREAM',
+                routing_requires_operations=True), geometry=dict(type='Polygon',
+                coordinates=[[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]]))
+            path.write_text(json.dumps(dict(type='FeatureCollection', features=[feature])))
+            _, metadata = load_polygons(path, None, include_metadata=True)
+            record = metadata['project_forcing']['A']
+            self.assertEqual(record['catchment_role'], 'natural_reach_at_tailrace')
+            self.assertEqual(record['diversion_intake_project'], 'UPSTREAM')
+            self.assertIs(record['routing_requires_operations'], True)
+            self.assertIn('bypassed river', metadata['warnings'][0])
+            self.assertIn('turbine inflow', metadata['warnings'][0])
+            for key, value in [('routing_requires_operations', 'true'),
+                               ('routing_requires_operations', 1),
+                               ('routing_requires_operations', False),
+                               ('diversion_intake_project', 'A'),
+                               ('catchment_role', 'dam_outlet')]:
+                original = feature['properties'][key]
+                feature['properties'][key] = value
+                path.write_text(json.dumps(dict(type='FeatureCollection', features=[feature])))
+                with self.subTest(key=key, value=value), self.assertRaises(ValueError):
+                    load_polygons(path, None)
+                feature['properties'][key] = original
+
     def test_declared_forcing_groups_preserve_metadata_and_validate_geometry(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)/'catchments.geojson'
@@ -127,7 +154,9 @@ class AorcDownloadTests(unittest.TestCase):
             folder = Path(directory)
             geojson = folder / 'catchment.geojson'
             geojson.write_text(json.dumps(dict(type='FeatureCollection', features=[dict(
-                type='Feature', properties=dict(id='A', part='local'), geometry=dict(type='Polygon',
+                type='Feature', properties=dict(id='A', part='local',
+                    catchment_role='natural_reach_at_tailrace', diversion_intake_project='UPSTREAM',
+                    routing_requires_operations=True), geometry=dict(type='Polygon',
                     coordinates=[[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]]))])))
             args = SimpleNamespace(geojson=geojson, projects=None, start=dt.date(2025, 1, 1),
                 end=dt.date(2025, 1, 1), output_dir=folder / 'output', cache_dir=folder / 'cache',
@@ -156,6 +185,9 @@ class AorcDownloadTests(unittest.TestCase):
                 metadata = json.loads((args.output_dir / 'run.json').read_text())
                 self.assertEqual(metadata['forcing_groups'], {'A': ['A']})
                 self.assertEqual(metadata['project_forcing']['A']['forcing_group'], 'A')
+                self.assertEqual(metadata['project_forcing']['A']['diversion_intake_project'], 'UPSTREAM')
+                self.assertIs(metadata['project_forcing']['A']['routing_requires_operations'], True)
+                self.assertIn('turbine inflow', metadata['warnings'][0])
                 manifest = args.output_dir / 'year_2025.json'
                 self.assertEqual(json.loads(manifest.read_text())['status'], 'computed_with_gaps')
                 run(args)

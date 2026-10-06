@@ -81,6 +81,51 @@ class PlanTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'mix local and total'):
             self.plan([self.feature, second])
 
+    def test_tailrace_metadata_retains_intake_outside_filtered_file(self):
+        self.feature['properties'].update(catchment_role='natural_reach_at_tailrace',
+            diversion_intake_project='UPSTREAM', routing_requires_operations=True)
+        result = self.plan([self.feature])
+        record = result['project_forcing']['A']
+        self.assertEqual(record['catchment_role'], 'natural_reach_at_tailrace')
+        self.assertEqual(record['diversion_intake_project'], 'UPSTREAM')
+        self.assertIs(record['routing_requires_operations'], True)
+        self.assertEqual(result['projects'][0]['diversion_intake_project'], 'UPSTREAM')
+        self.assertEqual(result['forcing_groups'], {'A': ['A']})
+        self.assertIn('bypassed river', result['warnings'][0])
+        self.assertIn('turbine inflow', result['warnings'][0])
+        self.assertIn('UPSTREAM', result['warnings'][0])
+
+    def test_invalid_routing_metadata_is_not_silently_dropped(self):
+        cases = [
+            {'routing_requires_operations': 'true'},
+            {'routing_requires_operations': 1},
+            {'catchment_role': []},
+            {'catchment_role': 'unknown'},
+            {'diversion_intake_project': 'UPSTREAM'},
+            {'catchment_role': 'natural_reach_at_tailrace'},
+            {'catchment_role': 'natural_reach_at_tailrace',
+             'diversion_intake_project': 'UPSTREAM', 'routing_requires_operations': False},
+            {'catchment_role': 'natural_reach_at_tailrace',
+             'diversion_intake_project': None, 'routing_requires_operations': True},
+            {'catchment_role': 'natural_reach_at_tailrace',
+             'diversion_intake_project': ' UPSTREAM', 'routing_requires_operations': True},
+            {'catchment_role': 'natural_reach_at_tailrace',
+             'diversion_intake_project': 'A', 'routing_requires_operations': True},
+        ]
+        for metadata in cases:
+            feature = copy.deepcopy(self.feature)
+            feature['properties'].update(metadata)
+            with self.subTest(metadata=metadata), self.assertRaises(ValueError):
+                self.plan([feature])
+
+    def test_explicit_ordinary_role_and_boolean_are_preserved(self):
+        self.feature['properties'].update(catchment_role='dam_outlet',
+                                          routing_requires_operations=False)
+        result = self.plan([self.feature])
+        self.assertEqual(result['project_forcing']['A']['catchment_role'], 'dam_outlet')
+        self.assertIs(result['project_forcing']['A']['routing_requires_operations'], False)
+        self.assertFalse(result['warnings'])
+
     def test_missing_pilot(self):
         self.config['pilot_projects'] = ['B']
         with self.assertRaisesRegex(ValueError, 'absent'):

@@ -78,19 +78,21 @@ projects:
     name: "Kootenay Canal"
     kind: "run-of-river"
     mw: 583
-    note: "Uses the Corra Linn dam catchment as a shared headpond intake proxy; diversion-reach runoff is not allocated."
+    note: "Natural river reach to the powerhouse tailrace return, including lateral runoff along the bypassed river; turbine inflow requires the separate diversion from Corra Linn headpond and operating data."
+    catchment_role: natural_reach_at_tailrace
+    diversion_intake_project: CORRA_LINN
+    routing_requires_operations: true
     river: "Kootenay"
     country: CA
-    outlet_group: KOOTENAY_CANAL_CORRA_LINN
     outlet:
       hybas_id: 7120295800
-      lon: -117.4666666667
-      lat: 49.4663888889
-      source: "https://apps.gov.bc.ca/pub/bcgnws/names/51921.html"
-      reference: "BC Geographical Names official Corra Linn Dam approximate centre, WGS84; shared dam-catchment proxy for the canal headpond intake, not a separate diversion-reach delineation."
-      grid_lon: -117.4687500000
-      grid_lat: 49.4645833333
-      grid_reference: "HydroSHEDS v1.1 15s river cell containing the BC official dam centre; D8 river continuity verified; shared group cutoff."
+      lon: -117.5180483
+      lat: 49.4532149
+      source: "https://www.bchydro.com/community/recreation_areas/kootenay_canal.html"
+      reference: "Generating-station feature marker in BC Hydro's linked directions (!3d49.4532149!4d-117.5180483), not the map viewport or a surveyed tailrace gauge."
+      grid_lon: -117.5229166667
+      grid_lat: 49.4520833333
+      grid_reference: "HydroSHEDS v1.1 15s first mainstem cell reached one D8 step west from the powerhouse reference cell, consistent with the west-facing tailrace in BC permit PE-04459 Site Plan A, page 4: https://j200.gov.bc.ca/pub/ams/download.aspx?PosseObjectId=57506212"
   - id: CORRA_LINN
     project_code: CORRA_LINN
     name: "Corra Linn"
@@ -98,7 +100,6 @@ projects:
     mw: 49
     river: "Kootenay"
     country: CA
-    outlet_group: KOOTENAY_CANAL_CORRA_LINN
     outlet:
       hybas_id: 7120295800
       lon: -117.4666666667
@@ -131,7 +132,6 @@ projects:
     mw: 805
     river: "Pend d'Oreille"
     country: CA
-    outlet_group: SEVEN_MILE_WANETA
     outlet:
       hybas_id: 7120305410
       lon: -117.50305555555556
@@ -148,7 +148,6 @@ projects:
     mw: 490
     river: "Pend d'Oreille"
     country: CA
-    outlet_group: SEVEN_MILE_WANETA
     outlet:
       hybas_id: 7120305410
       lon: -117.611292

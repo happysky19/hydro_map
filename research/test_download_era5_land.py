@@ -1,6 +1,8 @@
 """Check forecast resets, missing predecessors and catalog boundary handling."""
 
 from datetime import datetime, timedelta, timezone
+import contextlib
+import io
 import json
 from pathlib import Path
 import tempfile
@@ -115,6 +117,24 @@ class HourlyEra5LandTests(unittest.TestCase):
                 network.assert_not_called()
             self.assertEqual(json.loads((root/'summary.json').read_text())['status'],'running')
             self.assertFalse((root/'hourly.csv').exists())
+
+    def test_tailrace_warning_is_printed_before_fetching_weather(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            geo = root / 'catchments.geojson'
+            geo.write_text(json.dumps({'type': 'FeatureCollection', 'features': [{'type': 'Feature',
+                'properties': {'id': 'A', 'part': 'local', 'catchment_role': 'natural_reach_at_tailrace',
+                               'diversion_intake_project': 'UPSTREAM', 'routing_requires_operations': True},
+                'geometry': {'type': 'Polygon', 'coordinates': [
+                    [[-120,45],[-119,45],[-119,46],[-120,46],[-120,45]]]}}]}))
+            messages = io.StringIO()
+            with patch('sys.argv', ['download', '--geojson', str(geo), '--output', str(root), '--cache-only']), \
+                    contextlib.redirect_stdout(messages), \
+                    self.assertRaisesRegex(ValueError, 'Missing or invalid cached'):
+                main()
+            self.assertIn('bypassed river', messages.getvalue())
+            self.assertIn('UPSTREAM', messages.getvalue())
+            self.assertIn('turbine inflow', messages.getvalue())
 
 
 if __name__ == '__main__':
