@@ -1,0 +1,295 @@
+# Selected Columbia River basin projects; coordinates are geographic references.
+dataset:
+  region: na
+  level: 12
+  version: "1c"
+  include_virtual_connections: false
+
+projects:
+  - id: ALBENI_FALLS
+    project_code: ALF
+    name: "Albeni Falls"
+    river: "Pend Oreille River"
+    country: US
+    outlet:
+      hybas_id: 7120980200
+      lon: -116.997745
+      lat: 48.178294
+      source: "https://doi.org/10.6084/m9.figshare.25988293"
+      reference: "river-aligned dam reference point"
+  - id: ARROW
+    project_code: ARDB
+    name: "Arrow"
+    note: "Hugh Keenleyside Dam"
+    river: "Columbia"
+    country: CA
+    outlet:
+      hybas_id: 7120298030
+      lon: -117.774543
+      lat: 49.342295
+      source: "https://doi.org/10.6084/m9.figshare.25988293"
+      reference: "river-aligned dam reference point"
+  - id: BONNEVILLE
+    project_code: BON
+    name: "Bonneville"
+    river: "Columbia"
+    country: US
+    outlet:
+      hybas_id: 7121008980
+      lon: -121.938146
+      lat: 45.646042
+      source: "https://doi.org/10.6084/m9.figshare.25988293"
+      reference: "river-aligned dam reference point"
+  - id: BROWNLEE
+    project_code: BRN
+    name: "Brownlee"
+    river: "Snake River"
+    country: US
+    outlet:
+      hybas_id: 7120416940
+      lon: -116.902154
+      lat: 44.835014
+      source: "https://doi.org/10.6084/m9.figshare.25988293"
+      reference: "river-aligned dam reference point"
+  - id: CHIEF_JOSEPH
+    project_code: CHJ
+    name: "Chief Joseph"
+    river: "Columbia"
+    country: US
+    outlet:
+      hybas_id: 7120331940
+      lon: -119.633
+      lat: 47.99528
+      source: "https://www.nws.usace.army.mil/Portals/27/docs/regulatory2/Mon_Reports/2024/MonRptOCT2024.pdf"
+      reference: "government project location at dam; not a surveyed dam wall"
+  - id: DUNCAN
+    project_code: DCDB
+    name: "Duncan"
+    river: "Duncan"
+    country: CA
+    outlet:
+      hybas_id: 7120274600
+      lon: -116.94366
+      lat: 50.252176
+      source: "https://doi.org/10.6084/m9.figshare.25988293"
+      reference: "river-aligned dam reference point"
+  - id: DWORSHAK
+    project_code: DWR
+    name: "Dworshak"
+    river: "North Fork of Clearwater River"
+    country: US
+    outlet:
+      hybas_id: 7120370490
+      lon: -116.297014
+      lat: 46.516351
+      source: "https://doi.org/10.6084/m9.figshare.25988293"
+      reference: "river-aligned dam reference point"
+  - id: GRAND_COULEE
+    project_code: GCL
+    name: "Grand Coulee"
+    river: "Columbia River"
+    country: US
+    outlet:
+      hybas_id: 7120982340
+      lon: -118.98095
+      lat: 47.954652
+      source: "https://doi.org/10.6084/m9.figshare.25988293"
+      reference: "river-aligned dam reference point"
+  - id: HELLS_CANYON
+    project_code: HEL
+    name: "Hells Canyon"
+    river: "Snake River"
+    country: US
+    outlet:
+      hybas_id: 7121013420
+      lon: -116.702018
+      lat: 45.242261
+      source: "https://doi.org/10.6084/m9.figshare.25988293"
+      reference: "river-aligned dam reference point"
+  - id: HUNGRY_HORSE
+    project_code: HGH
+    name: "Hungry Horse"
+    river: "South Fork of Flathead River"
+    country: US
+    outlet:
+      hybas_id: 7120322140
+      lon: -114.010417
+      lat: 48.339662
+      source: "https://doi.org/10.6084/m9.figshare.25988293"
+      reference: "river-aligned dam reference point"
+  - id: ICE_HARBOR
+    project_code: IHR
+    name: "Ice Harbor"
+    river: "Snake"
+    country: US
+    outlet:
+      hybas_id: 7120378440
+      lon: -118.879465
+      lat: 46.248993
+      source: "https://doi.org/10.6084/m9.figshare.25988293"
+      reference: "river-aligned dam reference point"
+  - id: JOHN_DAY
+    project_code: JDA
+    name: "John Day"
+    river: "Columbia"
+    country: US
+    outlet:
+      hybas_id: 7120394150
+      lon: -120.69211
+      lat: 45.716081
+      source: "https://doi.org/10.6084/m9.figshare.25988293"
+      reference: "river-aligned dam reference point"
+  - id: LITTLE_GOOSE
+    project_code: LGS
+    name: "Little Goose"
+    river: "Snake"
+    country: US
+    outlet:
+      hybas_id: 7120368580
+      lon: -117.96667
+      lat: 46.6
+      source: "https://www.nwrfc.noaa.gov/river/site_meta_csv.cgi"
+      reference: "forecast or monitoring reference point; not a surveyed dam wall"
+  - id: LIBBY
+    project_code: LIB
+    name: "Libby"
+    river: "Kootenai River"
+    country: US
+    outlet:
+      hybas_id: 7120978010
+      lon: -115.313542
+      lat: 48.411432
+      source: "https://doi.org/10.6084/m9.figshare.25988293"
+      reference: "river-aligned dam reference point"
+  - id: LOWER_MONUMENTAL
+    project_code: LMN
+    name: "Lower Monumental"
+    river: "Snake"
+    country: US
+    outlet:
+      hybas_id: 7120371850
+      lon: -118.54
+      lat: 46.58333
+      source: "https://www.nwrfc.noaa.gov/river/site_meta_csv.cgi"
+      reference: "forecast or monitoring reference point; not a surveyed dam wall"
+  - id: LOWER_GRANITE
+    project_code: LWG
+    name: "Lower Granite"
+    river: "Snake River"
+    country: US
+    outlet:
+      hybas_id: 7120997170
+      lon: -117.429738
+      lat: 46.658839
+      source: "https://doi.org/10.6084/m9.figshare.25988293"
+      reference: "river-aligned dam reference point"
+  - id: MICA
+    project_code: MCDB
+    name: "Mica"
+    river: "Columbia"
+    country: CA
+    outlet:
+      hybas_id: 7120225080
+      lon: -118.569792
+      lat: 52.077993
+      source: "https://doi.org/10.6084/m9.figshare.25988293"
+      reference: "river-aligned dam reference point"
+  - id: MCNARY
+    project_code: MCN
+    name: "McNary"
+    river: "Columbia"
+    country: US
+    outlet:
+      hybas_id: 7120386330
+      lon: -119.296777
+      lat: 45.935595
+      source: "https://doi.org/10.6084/m9.figshare.25988293"
+      reference: "river-aligned dam reference point"
+  - id: OXBOW
+    project_code: OXB
+    name: "Oxbow"
+    river: "Snake River"
+    country: US
+    outlet:
+      hybas_id: 7120413380
+      lon: -116.837102
+      lat: 44.970949
+      source: "https://doi.org/10.6084/m9.figshare.25988293"
+      reference: "river-aligned dam reference point"
+  - id: PRIEST_RAPIDS
+    project_code: PRD
+    name: "Priest Rapids"
+    river: "Columbia River"
+    country: US
+    outlet:
+      hybas_id: 7120998100
+      lon: -119.911482
+      lat: 46.645091
+      source: "https://doi.org/10.6084/m9.figshare.25988293"
+      reference: "river-aligned dam reference point"
+  - id: REVELSTOKE
+    project_code: REVB
+    name: "Revelstoke"
+    river: "Columbia"
+    country: CA
+    outlet:
+      hybas_id: 7120254000
+      lon: -118.193246
+      lat: 51.052067
+      source: "https://doi.org/10.6084/m9.figshare.25988293"
+      reference: "river-aligned dam reference point"
+  - id: ROCK_ISLAND
+    project_code: RIS
+    name: "Rock Island"
+    river: "Columbia River"
+    country: US
+    outlet:
+      hybas_id: 7120349440
+      lon: -120.093349
+      lat: 47.344467
+      source: "https://doi.org/10.6084/m9.figshare.25988293"
+      reference: "river-aligned dam reference point"
+  - id: ROCKY_REACH
+    project_code: RRH
+    name: "Rocky Reach"
+    river: "Columbia"
+    country: US
+    outlet:
+      hybas_id: 7120345900
+      lon: -120.30111
+      lat: 47.52444
+      source: "https://www.nwrfc.noaa.gov/river/site_meta_csv.cgi"
+      reference: "forecast or monitoring reference point; not a surveyed dam wall"
+  - id: THE_DALLES
+    project_code: TDA
+    name: "The Dalles"
+    river: "Columbia"
+    country: US
+    outlet:
+      hybas_id: 7120396340
+      lon: -121.134089
+      lat: 45.61163
+      source: "https://doi.org/10.6084/m9.figshare.25988293"
+      reference: "river-aligned dam reference point"
+  - id: WANAPUM
+    project_code: WAN
+    name: "Wanapum"
+    river: "Columbia River"
+    country: US
+    outlet:
+      hybas_id: 7120362510
+      lon: -119.970479
+      lat: 46.873802
+      source: "https://doi.org/10.6084/m9.figshare.25988293"
+      reference: "river-aligned dam reference point"
+  - id: WELLS
+    project_code: WEL
+    name: "Wells"
+    river: "Columbia"
+    country: US
+    outlet:
+      hybas_id: 7120983500
+      lon: -119.86667
+      lat: 47.95
+      source: "https://www.nwrfc.noaa.gov/river/site_meta_csv.cgi"
+      reference: "forecast or monitoring reference point; not a surveyed dam wall"

@@ -1,0 +1,53 @@
+"""Export catchment summaries and buffered geographic download extents."""
+
+import csv
+from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
+import math
+from pathlib import Path
+
+from shapely.geometry import shape
+
+from .basins import area_km2
+
+
+COLUMNS = ["ProjectCode", "PolygonName", "MinLatitude", "MaxLatitude",
+           "MinLongitude", "MaxLongitude", "CentroidLatitude", "CentroidLongitude",
+           "AreaKm2", "BufferDegreesApplied"]
+
+
+def write_bbox_csv(collection: dict, output: Path, buffer_degrees: float = 0.3) -> int:
+    """Calculate rows from unbuffered WGS84 geometry; pad only the bounding box."""
+    if not math.isfinite(buffer_degrees) or buffer_degrees < 0:
+        raise ValueError("Bounding-box buffer must be finite and nonnegative")
+    pad = Decimal(str(buffer_degrees))
+    precision = Decimal("0.0001")
+    rows = []
+    for feature in collection["features"]:
+        props = feature["properties"]
+        geometry = shape(feature["geometry"])
+        if geometry.is_empty or not geometry.is_valid or geometry.geom_type not in {"Polygon", "MultiPolygon"}:
+            raise ValueError(f"Invalid polygon for {props['id']}")
+        west, south, east, north = [Decimal(str(value)) for value in geometry.bounds]
+        if not (-180 <= west <= east <= 180 and -90 <= south <= north <= 90):
+            raise ValueError(f"Coordinates outside WGS84 bounds for {props['id']}")
+        part = props["part"]
+        if part not in {"local", "total"}:
+            raise ValueError(f"Unknown catchment part: {part}")
+        suffix = "local incremental catchment" if part == "local" else "total upstream catchment"
+        centroid = geometry.centroid
+        # Round limits outward so displayed precision never reduces the padded extent.
+        bounds = [(max(Decimal(-90), south - pad), ROUND_FLOOR),
+                  (min(Decimal(90), north + pad), ROUND_CEILING),
+                  (max(Decimal(-180), west - pad), ROUND_FLOOR),
+                  (min(Decimal(180), east + pad), ROUND_CEILING)]
+        rows.append([props.get("project_code", props["id"]), f"{props['name']} {suffix}",
+                     *[format(value.quantize(precision, rounding=mode), ".4f") for value, mode in bounds],
+                     f"{centroid.y:.4f}", f"{centroid.x:.4f}", f"{area_km2(geometry):.1f}",
+                     str(buffer_degrees)])
+    output = Path(output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with output.open("w", newline="", encoding="utf-8") as stream:
+        writer = csv.writer(stream)
+        writer.writerow(COLUMNS)
+        writer.writerows(rows)
+    return len(rows)
