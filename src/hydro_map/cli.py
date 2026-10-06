@@ -30,7 +30,7 @@ def _parser():
     virtual.add_argument("--include-virtual", dest="virtual", action="store_true")
     virtual.add_argument("--exclude-virtual", dest="virtual", action="store_false")
     build.set_defaults(virtual=None)
-    plot = commands.add_parser("plot", help="Compare GeoJSON or shapefile boundaries")
+    plot = commands.add_parser("plot", help="Compare GeoJSON, WKT CSV or shapefile boundaries")
     plot.add_argument("inputs", type=Path, nargs="+")
     selection = plot.add_mutually_exclusive_group()
     selection.add_argument("--project", help="Match a project ID or name")

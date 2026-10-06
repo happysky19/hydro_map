@@ -113,7 +113,7 @@ print(gdf.iloc[0]["geometry"])
 
 The final line displays WKT such as `POLYGON ((...))`; GeoJSON itself stores coordinate arrays, not a WKT string. Coordinates are always longitude first. For an external file, verify the meaning of `area` and its CRS; map comparisons calculate areas directly from the polygons.
 
-`--table-output outputs/projects43/dam_catchments.csv` additionally writes the common attributes and WKT `geometry` in each row of a single CSV. It also includes `area_total`, `area_geometry` and shared-group fields. This is different from the bounding-box CSV below: the geometry table contains the full boundary. Read that CSV with `pandas.read_csv`, then `geopandas.GeoSeries.from_wkt(df.pop("geometry"), crs="EPSG:4326")` to construct its spatial column. Use the GeoJSON for the plotting and forcing commands.
+`--table-output outputs/projects43/dam_catchments.csv` additionally writes the common attributes and WKT `geometry` in each row of a single CSV. It also includes `area_total`, `area_geometry` and shared-group fields. This is different from the bounding-box CSV below: the geometry table contains the full boundary. Plotting reads this CSV directly. For GeoPandas use `pandas.read_csv`, then `geopandas.GeoSeries.from_wkt(df.pop("geometry"), crs="EPSG:4326")` to construct its spatial column. Continue using the GeoJSON for forcing downloads.
 
 ## Bounding-box CSV
 
@@ -138,12 +138,16 @@ Only the bounding box is expanded by `--bbox-buffer` degrees on each side (defau
 ```bash
 hydro-map plot one.geojson two.geojson --project MICA --labels A B --output figures/mica.png
 hydro-map plot one.geojson two.geojson --project MICA --labels A B --basemap light --output figures/mica_map.png
+hydro-map plot outputs/projects43/dam_catchments.geojson data/reference/catchments.csv --project MICA --labels HydroBASINS Reference --basemap terrain --output figures/mica_comparison.png
+hydro-map plot outputs/projects43/dam_catchments.geojson data/reference/catchments.csv --by-project --labels HydroBASINS Reference --output-dir figures/comparison
 hydro-map plot outputs/catchments.geojson --project MICA --basemap terrain --coordinates lonlat --output figures/mica_terrain.png
 hydro-map plot outputs/catchments.geojson --project MICA --coordinates projected --output figures/mica_projected.pdf
 hydro-map plot outputs/catchments.geojson --by-project --output-dir figures
 ```
 
-Plotting also accepts shapefiles with their accompanying `.prj` and component files. Use matching project identifiers to compare the same project across layers.
+Plotting accepts GeoJSON, CSV with WKT geometry, and shapefiles with their accompanying `.prj` and component files. Formats can be mixed in one command. Use matching project identifiers to compare the same project across layers.
+
+A CSV must have a `geometry` column containing complete WGS84 `POLYGON (...)` or `MULTIPOLYGON (...)` text, with longitude before latitude. Use `id` and `name` columns, or choose alternatives with `--id-field` and `--name-field`. Geometry cells containing commas must be quoted according to CSV rules; standard Pandas/GeoPandas CSV export does this automatically. UTF-8 files with or without a BOM and large geometry cells are supported. Other CSV attributes remain strings. A bounding-box-only CSV cannot reproduce the catchment outline and is rejected. Compare the same `part` and upstream cutoff selection; the plotter does not infer or reconcile their meanings.
 
 Each title shows the project name and each layer's area recalculated on the WGS84 ellipsoid. Layers use distinct outlines and light translucent fills, with a local geodesic scale bar, north arrow, and dam-reference markers. Stored `area` properties do not affect the calculation. `--title` changes the heading; `--id-field` and `--name-field` select alternative attribute names. Save as PNG, SVG, or PDF by choosing the output extension.
 
@@ -153,7 +157,7 @@ Each title shows the project name and each layer's area recalculated on the WGS8
 
 The default `--basemap none` needs no tile service or mapping extra. Use `pip install -e .` for this offline plotting setup. A failed basemap request reports an error; retry it or choose `--basemap none` explicitly. Details of tile reprojection are in the [contextily documentation](https://contextily.readthedocs.io/en/latest/warping_guide.html).
 
-Plot inputs must contain valid Polygon or MultiPolygon geometries. GeoJSON coordinates must be WGS84; shapefiles are reprojected from their `.prj`. Batch mode requires the same project IDs across all inputs and writes one PNG per project plus an overview. It refuses to overwrite existing project figures; use a new output directory for another comparison.
+Plot inputs must contain valid Polygon or MultiPolygon geometries. GeoJSON and WKT CSV coordinates must be WGS84; shapefiles are reprojected from their `.prj`. Batch mode requires the same project IDs across all inputs and writes one PNG per project plus an overview. It refuses to overwrite existing project figures; use a new output directory for another comparison.
 
 ## Tests
 

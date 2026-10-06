@@ -1,3 +1,4 @@
+import csv
 import importlib
 import json
 import tempfile
@@ -6,7 +7,7 @@ from pathlib import Path
 
 import shapefile
 from pyproj import CRS, Geod, Transformer
-from shapely.geometry import Polygon, mapping
+from shapely.geometry import MultiPolygon, Polygon, mapping
 from shapely.ops import transform
 
 
@@ -26,6 +27,59 @@ class PlottingTests(unittest.TestCase):
         path = self.root / filename
         path.write_text(json.dumps({'type': 'FeatureCollection', 'features': features}))
         return path
+
+    def csv_source(self, geometry, filename='reference.csv'):
+        path = self.root / filename
+        with path.open('w', encoding='utf-8-sig', newline='') as stream:
+            writer = csv.writer(stream)
+            writer.writerow(['id', 'name', 'area', 'part', 'geometry'])
+            writer.writerow(['MICA', 'Mica', -1, 'local', geometry])
+        return path
+
+    def test_csv_wkt_preserves_holes_and_multipolygons_in_overlay(self):
+        for geometry in (self.poly, MultiPolygon([self.poly, Polygon([(3,0),(4,0),(4,1),(3,1)])])):
+            with self.subTest(kind=geometry.geom_type):
+                reference = self.csv_source(geometry.wkt)
+                original = reference.read_bytes()
+                loaded = self.api.load_features(reference)[0]
+                self.assertEqual(loaded['id'], 'MICA')
+                self.assertEqual(loaded['properties']['part'], 'local')
+                self.assertTrue(loaded['geometry'].equals(geometry))
+                source = self.source(features=[{'type':'Feature', 'properties':{'id':'MICA'},
+                                                'geometry':mapping(geometry)}])
+                output = self.root / 'comparison.svg'
+                report = self.api.plot_comparison([source, reference], output, project='MICA',
+                                                  labels=['GeoJSON', 'CSV'])
+                self.assertAlmostEqual(report['areas_km2']['GeoJSON'], report['areas_km2']['CSV'])
+                self.assertGreater(report['areas_km2']['CSV'], 0)
+                self.assertTrue(output.exists())
+                self.assertEqual(reference.read_bytes(), original)
+
+    def test_csv_accepts_large_wkt_without_changing_global_parser_limit(self):
+        wkt = 'POLYGON ((0 0, ' + ', '.join(f'{i/20000:.8f} 0' for i in range(1, 20001)) + ', 1 1, 0 1, 0 0))'
+        path = self.csv_source(wkt)
+        previous = csv.field_size_limit()
+        loaded = self.api.load_features(path)[0]
+        self.assertAlmostEqual(loaded['geometry'].area, 1)
+        self.assertEqual(csv.field_size_limit(), previous)
+
+    def test_csv_rejects_missing_or_malformed_geometry(self):
+        path = self.root / 'bad.csv'
+        cases = [
+            ('id,MinLatitude,MaxLatitude\nMICA,0,1\n', 'geometry'),
+            ('id,geometry\nMICA,\n', 'WKT'),
+            ('id,geometry\nMICA,not-a-polygon\n', 'WKT'),
+            ('id,geometry\nMICA,"POLYGON ((0 0,1 0,1 1,0 0))",extra\n', 'row'),
+            ('id,geometry\nMICA,"POINT (0 0)"\n', 'Polygon'),
+            ('id,geometry\nMICA,"POLYGON EMPTY"\n', 'invalid polygon'),
+        ]
+        previous = csv.field_size_limit()
+        for content, message in cases:
+            with self.subTest(content=content):
+                path.write_text(content)
+                with self.assertRaisesRegex(ValueError, message):
+                    self.api.load_features(path)
+                self.assertEqual(csv.field_size_limit(), previous)
 
     def test_holes_and_metadata_are_preserved(self):
         feature = self.api.load_features(self.source())[0]
