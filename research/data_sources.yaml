@@ -1,10 +1,10 @@
-# Candidate settings; source approval and full-period coverage are pending.
+# Extraction settings; full-period meteorological quality remains under review.
 period:
-  start: '1995-01-01'
-  end: '2024-12-31'
+  start: '1996-01-01'
+  end: '2025-12-31'
   daily_time_zone: UTC
-  reason: Complete 30-year candidate window with the final AORC precipitation boundary hour available.
-  latest_30_years_pending_boundary: ['1996-01-01', '2025-12-31']
+  reason: Requested 30-year window; retain the final AORC precipitation day with a missing-boundary flag.
+  aorc_missing_boundary_hour: '2026-01-01T00:00:00Z'
 pilot_projects:
   - MICA
   - ARROW
