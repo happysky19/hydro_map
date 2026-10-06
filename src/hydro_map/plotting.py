@@ -1,5 +1,6 @@
 """Load polygon datasets and render comparisons with freshly computed areas."""
 
+import csv
 import json
 import math
 import re
@@ -8,7 +9,9 @@ from pathlib import Path
 
 import shapefile
 from pyproj import CRS, Geod, Transformer
-from shapely.geometry import shape
+from shapely import from_wkt
+from shapely.errors import GEOSException
+from shapely.geometry import mapping, shape
 from shapely.geometry.polygon import orient
 from shapely.ops import transform, unary_union
 
@@ -16,7 +19,7 @@ _GEOD = Geod(ellps='WGS84')
 
 
 def load_features(path: Path, id_field='id', name_field='name') -> list[dict]:
-    """Read polygon features in WGS84; shapefiles require a CRS in .prj."""
+    """Read WGS84 GeoJSON/WKT CSV; shapefiles require a CRS in .prj."""
     path = Path(path)
     if path.suffix.lower() == '.shp':
         prj = path.with_suffix('.prj')
@@ -28,6 +31,34 @@ def load_features(path: Path, id_field='id', name_field='name') -> list[dict]:
             raw = [{'type': 'Feature', 'properties': row.record.as_dict(),
                     'geometry': row.shape.__geo_interface__}
                    for row in reader.iterShapeRecords()]
+    elif path.suffix.lower() == '.csv':
+        raw, convert = [], None
+        previous_limit = csv.field_size_limit()
+        # Detailed basin boundaries can exceed the default 128 KiB field limit.
+        csv.field_size_limit(max(previous_limit, 64 * 1024 * 1024))
+        try:
+            with path.open(encoding='utf-8-sig', newline='') as stream:
+                reader = csv.DictReader(stream, strict=True)
+                fields = reader.fieldnames or []
+                if 'geometry' not in fields:
+                    raise ValueError(f'CSV requires a WKT geometry column; bounding boxes are insufficient: {path}')
+                if len(fields) != len(set(fields)):
+                    raise ValueError(f'Duplicate CSV column names: {path}')
+                for number, row in enumerate(reader, start=2):
+                    if None in row or any(value is None for value in row.values()):
+                        raise ValueError(f'Malformed CSV row {number}; quote geometry containing commas: {path}')
+                    text = row.pop('geometry').strip()
+                    if not text:
+                        raise ValueError(f'Missing WKT geometry at CSV row {number}: {path}')
+                    try:
+                        geometry = from_wkt(text)
+                    except GEOSException as error:
+                        raise ValueError(f'Invalid WKT geometry at CSV row {number}: {path}') from error
+                    raw.append({'type': 'Feature', 'properties': row, 'geometry': mapping(geometry)})
+        except csv.Error as error:
+            raise ValueError(f'Malformed CSV {path}: {error}') from error
+        finally:
+            csv.field_size_limit(previous_limit)
     elif path.suffix.lower() in {'.json', '.geojson'}:
         doc = json.loads(path.read_text())
         if doc.get('crs'):
