@@ -29,6 +29,8 @@ from probe_daymet_polygons import fractional_weights, strict_area_mean
 
 DAILY_FIELDS = ['date', 'source', 'project_id', 'variable', 'value', 'units',
                 'expected_hours', 'valid_hours', 'min_valid_area_fraction', 'qc']
+# Covers float32 coordinate rounding up to 360 degrees; never use relative tolerance.
+GRID_ATOL = 2e-5
 
 
 def sha256(path):
@@ -127,6 +129,31 @@ def _units_match(actual, expected):
     return canonical(actual) in accepted
 
 
+def _regular_axis(values, name):
+    if (values.ndim != 1 or len(values) < 2 or not np.all(np.isfinite(values))
+            or np.any(np.diff(values) == 0)):
+        raise ValueError(f'Expected a unique regular {name} grid')
+    regular = np.linspace(values[0], values[-1], len(values))
+    if not np.allclose(values, regular, rtol=0, atol=GRID_ATOL):
+        raise ValueError(f'Expected a unique regular {name} grid')
+    # Uniform cell edges avoid gaps caused by coordinate-encoding jitter.
+    return regular
+
+
+def _same_grid(reference, current):
+    return all(a.shape == b.shape and np.allclose(a, b, rtol=0, atol=GRID_ATOL)
+               for a, b in zip(reference, current))
+
+
+def _grid_diagnostics(reference, current):
+    def summary(axis):
+        return dict(count=len(axis), first_degrees=float(axis[0]), last_degrees=float(axis[-1]),
+                    step_degrees=float((axis[-1]-axis[0])/(len(axis)-1)))
+    return {name: dict(reference=summary(a), received=summary(b),
+                       max_abs_difference_degrees=float(np.max(np.abs(a-b))) if a.shape == b.shape else None)
+            for name, a, b in zip(['latitude', 'longitude'], reference, current)}
+
+
 def _read_variable(ds, variable, selected, times):
     dimensions = list(variable.dimensions)
     time_dim = next((d for d in dimensions if d in {'valid_time', 'time'}), None)
@@ -165,10 +192,7 @@ def _read_variable(ds, variable, selected, times):
     lon = (np.asarray(ds['longitude'][:], float)+180) % 360-180
     lat_order, lon_order = np.argsort(-lat), np.argsort(lon)
     lat, lon = lat[lat_order], lon[lon_order]
-    if (len(lat) < 2 or len(lon) < 2 or np.any(np.diff(lat) >= 0)
-            or np.any(np.diff(lon) <= 0) or not np.allclose(np.diff(lat), np.diff(lat)[0])
-            or not np.allclose(np.diff(lon), np.diff(lon)[0])):
-        raise ValueError('Expected a unique regular latitude/longitude grid')
+    lat, lon = _regular_axis(lat, 'latitude'), _regular_axis(lon, 'longitude')
     data = np.take(np.take(data, lat_order, axis=-2), lon_order, axis=-1)
     levels = None
     if level_dim:
@@ -215,8 +239,9 @@ def read_response(path, required, day=None):
                     record = _read_variable(ds, variable, selected, times)
                     if name in result:
                         old = result[name]
-                        if (any(not np.array_equal(old[key], record[key]) for key in
-                                ['times', 'latitude', 'longitude', 'levels'])
+                        if (not _same_grid((old['latitude'], old['longitude']),
+                                           (record['latitude'], record['longitude']))
+                                or any(not np.array_equal(old[key], record[key]) for key in ['times', 'levels'])
                                 or not np.array_equal(old['data'], record['data'], equal_nan=True)):
                             raise ValueError(f'Conflicting duplicate field: {name}')
                     result[name] = record
@@ -328,6 +353,7 @@ def run_pipeline(geojson, product, output_dir, cache_dir, start, end, *, project
                **forcing, area_north_west_south_east=area, chunk_days=chunk_days,
                daily_schema=daily_schema(product), code_sha256={p.name: sha256(p) for p in dependencies},
                methods=dict(spatial='WGS84 geodesic polygon/native-grid intersections; full-area coverage required',
+                            grid_coordinates='Regular axes reconstructed between endpoints; maximum coordinate residual and cross-field difference 0.00002 degrees; no data interpolation',
                             states='24 instantaneous hours 00–23 UTC; extremes of hourly catchment means',
                             accumulations='ERA5-Land D+1 00 UTC endpoint represents the complete previous 24 hours; valid_hours=24 for a valid endpoint',
                             evapotranspiration='Negative ECMWF evaporation multiplied by -1000; negative values retain condensation',
@@ -342,7 +368,18 @@ def run_pipeline(geojson, product, output_dir, cache_dir, start, end, *, project
     output_dir.mkdir(parents=True, exist_ok=True); cache_dir.mkdir(parents=True, exist_ok=True)
     run_path = output_dir/'run.json'
     if run_path.exists() and json.loads(run_path.read_text()) != run:
-        raise ValueError('Output configuration differs; use a new output directory')
+        previous = json.loads(run_path.read_text())
+        processing_keys = {'code_sha256', 'methods', 'daily_schema'}
+        request_config = lambda value: {key: item for key, item in value.items() if key not in processing_keys}
+        if (request_config(previous) != request_config(run)
+                or any(output_dir.glob('month_*.json')) or any(output_dir.glob('daily_*.csv'))
+                or any(output_dir.glob('daily_*.csv.gz'))):
+            raise ValueError('Output configuration differs; use a new output directory and retain the cache directory')
+        # No completed CDS output can mix processing versions. Raw request hashes remain unchanged.
+        history = output_dir/'run_history'
+        history.mkdir(exist_ok=True)
+        atomic_json(history/f'{json_hash(previous)}.json', previous)
+        print('Updated unfinished CDS processing configuration; retaining verified request cache', flush=True)
     atomic_json(run_path, run)
     manifest_path = cache_dir/'requests.manifest.json'
     manifest = json.loads(manifest_path.read_text()) if manifest_path.exists() else {}
@@ -381,19 +418,27 @@ def run_pipeline(geojson, product, output_dir, cache_dir, start, end, *, project
                             if (f'{target_day.year:04d}' != request_year or f'{target_day.month:02d}' != request_month
                                     or f'{target_day.day:02d}' not in request_days): continue
                             records[spec['kind']] = read_response(path, spec['fields'], target_day)
-                        for fields in records.values():
-                            for record in fields.values():
+                        for kind, fields in records.items():
+                            for name, record in fields.items():
                                 current = (record['latitude'], record['longitude'])
+                                label = f'{day} {kind}/{name}'
                                 if grid is None:
                                     grid = current
+                                    grid_label = label
                                     weights, info = {}, []
                                     for feature in features:
                                         project = feature['properties']['id']
                                         weights[project], detail = fractional_weights(feature['geometry'], grid[1], grid[0], identity)
                                         info.append(dict(project_id=project, **detail))
                                     atomic_json(output_dir/'polygon_weights.json', info)
-                                elif not all(np.array_equal(a, b) for a, b in zip(grid, current)):
-                                    raise ValueError('CDS grid changed between requested fields')
+                                elif not _same_grid(grid, current):
+                                    axes = _grid_diagnostics(grid, current)
+                                    diagnostic = output_dir/'grid_mismatch.json'
+                                    atomic_json(diagnostic, dict(reference_field=grid_label, received_field=label,
+                                                                tolerance_degrees=GRID_ATOL, axes=axes))
+                                    detail = '; '.join(f'{axis}: {values}' for axis, values in axes.items())
+                                    raise ValueError(f'CDS grid mismatch for {label} versus {grid_label}; '
+                                                     f'{detail}. Details: {diagnostic}')
                         if product == 'era5-land':
                             states = {key: align_hours(record, day) for key, record in records['states'].items()}
                             accumulated = {key: align_hours(record, day+timedelta(days=1), 1)[0]
@@ -416,6 +461,7 @@ def run_pipeline(geojson, product, output_dir, cache_dir, start, end, *, project
             print(f'{month}: saved {count} daily values', flush=True)
         finally:
             temporary.unlink(missing_ok=True)
+    (output_dir/'grid_mismatch.json').unlink(missing_ok=True)
     return run
 
 

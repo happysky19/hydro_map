@@ -55,7 +55,22 @@ storage while `--output` points to the delivery location. Existing files from
 separate manual runs are not automatically discovered or moved. Do not run
 two commands against the same working/cache directories concurrently. After
 changing dates, geometry or processing code, use a new working directory;
-the source pipelines reject incompatible run configurations.
+the source pipelines reject incompatible run configurations. One exception
+allows a CDS processing update when no monthly output or completion manifest
+exists yet and the request configuration is unchanged. The previous run
+metadata is retained under `run_history/`, and verified raw responses are
+reused. This does not change AORC resume checks.
+
+CDS coordinate encodings can differ slightly across files. Regular axes are
+reconstructed between their endpoints with an absolute residual limit of
+0.00002 degrees, covering float32 coordinate rounding. Cross-field checks
+require equal dimensions and coordinate differences within the same absolute
+limit; values are not interpolated. A larger shift, different resolution or
+different dimensions still stops processing. A cross-field mismatch writes
+`grid_mismatch.json` in the affected source directory with the field names,
+axis lengths, bounds, spacing and maximum differences. After a precision-check
+fix, repeat the original command with the same paths and options to reuse the
+downloaded data. Keep the working folder and cache intact.
 
 `--max-download-gb` defaults to a 2,000 GB **AORC network-read ceiling per
 invocation**, not a file-size estimate or a CDS limit. Use
@@ -207,7 +222,8 @@ space. Processing reads time slices rather than loading a 30-year cube.
 Repeat an identical command to resume verified completed periods. AORC writes
 annual files; CDS writes monthly files. Configuration and output hashes are
 checked before reuse. Do not overwrite an old run after changing processing
-code, geometry or options; use a new directory. Keep the source manifests with
+code, geometry or options; use a new directory, except for the unfinished CDS
+processing update described above. Keep the source manifests with
 the data. Raw AORC meteorological chunks are discarded after all requested
 base and derived products consume them unless `--keep-chunks` is supplied.
 
@@ -375,18 +391,21 @@ inputs. Missing or flagged values require a separately chosen treatment.
 
 ## Quality, interpretation and validation
 
-Validation on 2026-10-06 passed 76 core tests and 106 research tests, including
+Validation on 2026-10-06 passed 76 core tests and 115 research tests, including
 all three source-processing contracts through the final exporter across a
 December/January boundary using synthetic CDS responses. The unified entry
 point also tests resume without repeat retrieval, routing-note retention,
 early credential failure and preservation of a previous delivery after a
-source failure. A real cached AORC
+source failure. CDS tests cover coordinate rounding, rejection of real grid
+shifts and dimension changes, and resuming a failed grid check after a code
+update without downloading AORC or the cached ERA5-Land responses again.
+A real cached AORC
 replay for 43 projects over 2025-12-29 through 2025-12-31 produced 2,451 daily
 records: 2,322 valid and 129 flagged precipitation/rain/snow values on the
 last date. Rain plus snow matched precipitation in all 86 complete project-days
 within 1.1e-13 mm. CSV and Parquet exports both contained 129 rows. The CDS
-request previews cover all 43 projects, but real authenticated retrieval has
-not yet been verified.
+request previews cover all 43 projects. Local CDS tests use synthetic
+responses; authenticated end-to-end CDS output has not been validated here.
 
 - Area averages include fractional native grid-cell intersections. Invalid
   cells never become zero and valid cells are not renormalized to represent
