@@ -1,7 +1,8 @@
 """Inspect catchments and write a download plan without making network requests."""
 
 import argparse
-from datetime import date
+from calendar import isleap
+from datetime import date, timedelta
 import hashlib
 import json
 from pathlib import Path
@@ -50,6 +51,9 @@ def make_plan(geojson, config):
     if unknown:
         raise ValueError(f'Pilot projects are absent from GeoJSON: {sorted(unknown)}')
     days = (end - start).days + 1
+    daymet_gaps = [date(year, 12, 31).isoformat()
+                   for year in range(start.year, end.year + 1)
+                   if isleap(year) and start <= date(year, 12, 31) <= end]
     return {
         'status': 'planning_only_not_source_approval',
         'input_file': geojson.name,
@@ -57,16 +61,21 @@ def make_plan(geojson, config):
         'period': config['period'],
         'expected_gregorian_days_per_project': days,
         'expected_project_day_rows': len(projects) * days,
+        'hour_ending_precipitation_window_utc': [
+            f'{start.isoformat()}T01:00:00Z',
+            f'{(end + timedelta(days=1)).isoformat()}T00:00:00Z'],
+        'daymet_calendar_gaps': daymet_gaps,
+        'expected_daymet_records_per_project': days - len(daymet_gaps),
         'project_count': len(projects),
         'pilot_projects': pilots,
         'sources': config['sources'],
         'projects': projects,
         'unresolved_checks': [
-            'Provider grid-cell bounds and fractional polygon coverage',
-            'All variables and timestamps, including adjacent-day boundary hours',
-            'AORC corrected-mask release and affected cells',
-            'Daymet calendar alignment and full-polygon extraction',
-            'ERA5 and ERA5-Land authenticated sample retrieval',
+            'Every required data cell and timestamp; sample audits do not establish full-period coverage',
+            'AORC masking defects outside audited hours; native comparison or documented correction',
+            'Daymet remaining project/time coverage and local-day versus UTC alignment',
+            'ERA5-Land pre-2001 and soil-field access through the complete CDS archive',
+            'ERA5 atmospheric profiles and cloud-field access',
             'Flow target, day definition, station mapping, and missing observations',
             'Out-of-sample hydrologic performance',
         ],
