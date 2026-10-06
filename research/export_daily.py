@@ -347,6 +347,14 @@ def export_daily(geojson, input_dirs, start, end, output):
                 raise ValueError(f'Export column name collision: {base}')
             bases.append(base)
             columns[base] = dict(source=source, variable=variable, **definition)
+            height = None
+            if source == 'aorc_v1.1' and variable in {'u_wind_ms', 'v_wind_ms', 'wind_speed_ms'}:
+                height = 10
+            elif (source in {'aorc_v1.1', 'era5_land_cds'}
+                  and variable in {'tmean_c', 'tmin_c', 'tmax_c', 'specific_humidity_kgkg'}):
+                height = 2
+            if height is not None:
+                columns[base].update(reference_height_m=height, height_reference='above local ground')
             for key, name in zip(QUALITY, names[1:]):
                 qc_columns[name] = dict(source=source, variable=variable, value_column=base, quality_field=key,
                                         description=f'{key} for {base}')

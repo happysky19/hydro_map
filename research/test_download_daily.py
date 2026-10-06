@@ -82,6 +82,11 @@ class DownloadDailyTests(unittest.TestCase):
         self.assertEqual(float(rows[0]['era5_land_cds__precipitation_mm']), 2.)
         self.assertEqual(float(rows[0]['era5_cds__cloud_cover_fraction']), .5)
         self.assertEqual(report['project_count'], 1)
+        self.assertEqual(report['columns']['aorc_v1_1__wind_speed_m_s']['reference_height_m'], 10)
+        self.assertEqual(report['columns']['era5_land_cds__tmean_degC']['reference_height_m'], 2)
+        checks = Path(str(self.output)+'.checks')
+        self.assertTrue((checks/'timeseries.pdf').is_file())
+        self.assertEqual(json.loads((checks/'summary.json').read_text())['failed_checks'], 0)
         self.assertNotIn('Turbine inflow', stream.getvalue())
         for item in report['inputs']:
             self.assertTrue(item['metadata']['warnings'])
@@ -94,6 +99,22 @@ class DownloadDailyTests(unittest.TestCase):
             with self.assertRaisesRegex(OSError, 'CDS configuration'):
                 self.pipeline.run(self.geojson, self.day, self.day, self.output)
         self.assertFalse(self.output.exists())
+
+    def test_post_export_check_failure_reports_that_delivery_exists(self):
+        with ExitStack() as stack, redirect_stdout(io.StringIO()):
+            self.aorc_inputs(stack)
+            stack.enter_context(patch('cdsapi.Client', return_value=FakeClient()))
+            stack.enter_context(patch.object(sys, 'argv', ['download_daily.py',
+                '--geojson', str(self.geojson), '--start', str(self.day), '--end', str(self.day),
+                '--output', str(self.output)]))
+            stack.enter_context(patch('download_daily.check_file', side_effect=OSError('Plot failed')))
+            from contextlib import redirect_stderr
+            errors = io.StringIO()
+            with redirect_stderr(errors):
+                self.assertEqual(self.pipeline.main(), 2)
+        self.assertTrue(self.output.is_file())
+        self.assertIn('saved', errors.getvalue())
+        self.assertNotIn('not replaced', errors.getvalue())
 
     def test_failed_grid_check_resumes_aorc_and_cached_land_after_code_update(self):
         client = FakeClient()

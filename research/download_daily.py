@@ -16,6 +16,11 @@ os.environ.setdefault('OMP_NUM_THREADS', '1')
 import download_aorc
 import download_cds
 from export_daily import export_daily
+from check_daily import check_file
+
+
+class DeliveryCheckError(RuntimeError):
+    """A delivery was published but its subsequent checks need attention."""
 
 
 def run(geojson, start, end, output=None, *, work_dir=None, cache_dir=None,
@@ -51,7 +56,7 @@ def run(geojson, start, end, output=None, *, work_dir=None, cache_dir=None,
     cache_dir.mkdir(parents=True, exist_ok=True)
     folders = [work_dir / name for name in ('aorc', 'era5-land', 'era5')]
     print(f'{len(polygons)} projects; {(end-start).days+1} UTC days; working files: {work_dir}', flush=True)
-    print(f'[1/4] AORC: download, native-grid diagnostics and daily aggregation '
+    print(f'[1/5] AORC: download, native-grid diagnostics and daily aggregation '
           f'(transfer ceiling {max_download_gb:g} GB)', flush=True)
     download_aorc.run(argparse.Namespace(
         geojson=geojson, start=start, end=end, output_dir=folders[0],
@@ -59,14 +64,23 @@ def run(geojson, start, end, output=None, *, work_dir=None, cache_dir=None,
         derive=True, workers=workers, max_download_gb=max_download_gb,
         cache_only=False, refresh_incomplete=False, keep_chunks=False))
     for index, product in enumerate(('era5-land', 'era5'), start=1):
-        print(f'[{index+1}/4] {product}: download and daily catchment statistics', flush=True)
+        print(f'[{index+1}/5] {product}: download and daily catchment statistics', flush=True)
         download_cds.run_pipeline(geojson, product, folders[index], cache_dir / 'cds',
                                   start, end, chunk_days=chunk_days, client=cds_client)
-    print('[4/4] Verify source manifests and export daily values and QC tables', flush=True)
+    print('[4/5] Verify source manifests and export daily values and QC tables', flush=True)
     report = export_daily(geojson, folders, start, end, output)
     print(f"Saved {report['row_count']:,} project-day rows of values to {output}", flush=True)
     print(f"Quality fields: {output.with_name(report['qc_file'])}", flush=True)
     print(f'Units, quality definitions and routing notes: {output}.manifest.json', flush=True)
+    print('[5/5] Check daily consistency and plot coverage, comparisons and time series', flush=True)
+    try:
+        checks = check_file(output)
+        if checks['failed_checks']:
+            raise ValueError(f"{checks['failed_checks']} consistency checks failed; see {output}.checks")
+    except Exception as error:
+        raise DeliveryCheckError(f'Values and QC were saved to {output.parent}. '
+                                 f'Delivery checks need attention: {error}. '
+                                 f'Retry without downloading: python research/check_daily.py "{output}"') from error
     return report
 
 
@@ -93,6 +107,9 @@ def main():
     except KeyboardInterrupt:
         print('Interrupted. Repeat the same command to resume completed periods.', file=sys.stderr)
         return 130
+    except DeliveryCheckError as error:
+        print(str(error), file=sys.stderr)
+        return 2
     except Exception as error:
         print(f'Download failed: {error}', file=sys.stderr)
         print('The requested delivery was not replaced. Completed source periods remain '
