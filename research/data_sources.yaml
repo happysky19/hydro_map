@@ -28,10 +28,10 @@ sources:
   era5_land:
     role: optional_land_state_and_forcing_comparison
     dataset: reanalysis-era5-land
-    status: ncar_three_field_43_project_year_end_sample_verified_complete_cds_archive_access_pending
+    status: ncar_three_field_sample_verified_cds_pipeline_implemented_authenticated_validation_pending
     tested_mirror: https://gdex.ucar.edu/datasets/d633008/
     tested_mirror_start: '2001-11-01T01:00:00Z'
   era5:
     role: optional_atmospheric_fields
     datasets: [reanalysis-era5-single-levels, reanalysis-era5-pressure-levels]
-    status: documentation_verified_authenticated_access_pending
+    status: cds_pipeline_implemented_synthetic_tests_pass_authenticated_validation_pending

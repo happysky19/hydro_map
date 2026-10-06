@@ -85,6 +85,48 @@ class DailyAggregationTests(unittest.TestCase):
                 self.assertEqual(float(result['shortwave_down_mean_wm2']['value']), expected)
                 self.assertAlmostEqual(float(result['shortwave_down_energy_mjm2']['value']), expected * .0864)
 
+    def test_derived_phase_sums_and_diagnostic_means(self):
+        rows = []
+        for variable, units, kind in [('rainfall_mm', 'mm', 'hour_ending_amount'),
+                ('snowfall_mm', 'mm', 'hour_ending_amount'),
+                ('relative_humidity_pct', '%', 'instantaneous'),
+                ('vapor_pressure_deficit_kpa', 'kPa', 'instantaneous'),
+                ('wet_bulb_temperature_c', 'degC', 'instantaneous'),
+                ('wind_speed_ms', 'm/s', 'instantaneous')]:
+            rows.extend(hourly(variable, [2.] * 25, units=units, kind=kind))
+        rows.sort(key=lambda row: (row['source'], row['project_id'], row['variable'], row['time_utc']))
+        result = {r['variable']: r for r in self.run_daily(rows)}
+        self.assertEqual(float(result['rainfall_mm']['value']), 48.)
+        self.assertEqual(float(result['snowfall_mm']['value']), 48.)
+        self.assertEqual(float(result['wind_speed_ms']['value']), 2.)
+        self.assertEqual(len(result), 6)
+
+    def test_pet_is_opt_in_and_inherits_temperature_coverage_and_qc(self):
+        rows = hourly('temperature_c', list(range(24)))
+        self.assertNotIn('pet_hargreaves_mm', {r['variable'] for r in self.run_daily(rows)})
+        for complete in (True, False):
+            if not complete:
+                rows[8].update(value='', valid_area_fraction=.75, qc='incomplete_area')
+            self.write(rows)
+            aggregate_daily(self.input, self.output, date(2025, 12, 31), date(2025, 12, 31),
+                            pet_latitudes={'A': 45.})
+            with self.output.open() as stream:
+                result = {r['variable']: r for r in csv.DictReader(stream)}
+            pet, temperature = result['pet_hargreaves_mm'], result['tmean_c']
+            self.assertEqual(pet['units'], 'mm/day')
+            for key in ('qc', 'expected_hours', 'valid_hours', 'min_valid_area_fraction'):
+                self.assertEqual(pet[key], temperature[key])
+            self.assertEqual(pet['value'] != '', complete)
+            if complete:
+                self.assertGreater(float(pet['value']), 0.)
+
+    def test_pet_requires_explicit_finite_centroid_latitude(self):
+        self.write(hourly('temperature_c', [10.] * 24))
+        for latitudes in ({}, {'A': float('nan')}, {'A': 91.}):
+            with self.subTest(latitudes=latitudes), self.assertRaises(ValueError):
+                aggregate_daily(self.input, self.output, date(2025, 12, 31), date(2025, 12, 31),
+                                pet_latitudes=latitudes)
+
     def test_duplicate_order_units_and_metadata_errors_preserve_previous_output(self):
         base = hourly('temperature_c', [1.] * 24)
         scenarios = [base + [base[-1]], list(reversed(base))]

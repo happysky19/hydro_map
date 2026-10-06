@@ -5,7 +5,9 @@ must already use the units below; .gz input/output paths use gzip text streams.
 Only complete 24-hour, full-area days yield
 values. Temperature extrema are extrema of the HOURLY CATCHMENT MEAN, not
 areal means of cellwise extrema. Radiation energy from instantaneous samples
-is a rectangular hourly integration estimate. No nonlinear fields are derived.
+is a rectangular hourly integration estimate. Hourly nonlinear fields must be
+derived on native cells before spatial averaging. Optional daily PET uses
+catchment temperature statistics and the supplied polygon centroid latitude.
 """
 
 import argparse
@@ -16,6 +18,8 @@ from itertools import groupby
 import math
 from pathlib import Path
 import tempfile
+
+from meteorology import DERIVED_FIELDS, hargreaves_pet
 
 
 HOURLY_FIELDS = ['source', 'project_id', 'time_utc', 'variable', 'value', 'units',
@@ -33,6 +37,8 @@ RULES = {
     'longwave_down_wm2': ('W/m2', {'instantaneous', 'hour_ending_mean'}),
     'snow_water_equivalent_mm': ('mm', {'instantaneous'}),
 }
+RULES.update({name: (units, {kind}) for name, (units, kind) in DERIVED_FIELDS.items()})
+AMOUNTS = {'precipitation_mm', 'rainfall_mm', 'snowfall_mm'}
 AREA_TOLERANCE = 1e-9
 
 
@@ -80,10 +86,26 @@ def _statistics(variable, numbers):
         prefix = variable.removesuffix('_wm2')
         return [(prefix + '_mean_wm2', 'W/m2', total / 24),
                 (prefix + '_energy_mjm2', 'MJ/m2', total * .0036)]
-    return [(variable, RULES[variable][0], total if variable == 'precipitation_mm' else total / 24)]
+    return [(variable, RULES[variable][0], total if variable in AMOUNTS else total / 24)]
 
 
-def _daily_rows(key, rows, start, end):
+def daily_schema(variables, include_pet=False):
+    """Serializable names, units and statistics for the exact emitted daily fields."""
+    result = {}
+    for variable in sorted(variables):
+        for name, units, _ in _statistics(variable, [0.] * 24):
+            statistic = ('sum' if variable in AMOUNTS else
+                         'minimum_of_hourly_catchment_means' if name == 'tmin_c' else
+                         'maximum_of_hourly_catchment_means' if name == 'tmax_c' else
+                         'hourly_rectangular_energy_integral' if name.endswith('_energy_mjm2') else
+                         'mean_of_hourly_catchment_means')
+            result[name] = dict(units=units, statistic=statistic)
+    if include_pet:
+        result['pet_hargreaves_mm'] = dict(units='mm/day', statistic='daily_hargreaves_samani_estimate')
+    return result
+
+
+def _daily_rows(key, rows, start, end, pet_latitude=None):
     source, project, variable = key
     rows = iter(rows)
     current = next(rows, None)
@@ -99,7 +121,11 @@ def _daily_rows(key, rows, start, end):
         complete = valid == 24
         # Missing dates still emit every statistic, with blank values.
         numbers = [row['number'] for row in bucket] if complete else [0.] * 24
-        for name, units, value in _statistics(variable, numbers):
+        statistics = _statistics(variable, numbers)
+        if variable == 'temperature_c' and pet_latitude is not None:
+            value = hargreaves_pet(*(stat[2] for stat in statistics), pet_latitude, day) if complete else 0.
+            statistics.append(('pet_hargreaves_mm', 'mm/day', value))
+        for name, units, value in statistics:
             if complete and not math.isfinite(value):
                 raise ValueError('Daily statistic is not finite')
             yield dict(date=day.isoformat(), source=source, project_id=project,
@@ -113,12 +139,14 @@ def _daily_rows(key, rows, start, end):
         pass
 
 
-def aggregate_daily(hourly_csv, daily_csv, start, end):
+def aggregate_daily(hourly_csv, daily_csv, start, end, pet_latitudes=None):
     """Write a complete date grid per seen series; atomically replace output.
 
     Source groups never blend. At most one day's 24 observations are retained.
     Missing timestamps imply zero minimum area coverage for that day. A failed
     run leaves an existing output unchanged and removes its temporary file.
+    pet_latitudes enables a daily Hargreaves estimate for temperature series;
+    its QC and coverage are exactly those of the required temperature statistics.
     """
     hourly_csv, daily_csv = Path(hourly_csv), Path(daily_csv)
     if start > end:
@@ -137,7 +165,12 @@ def aggregate_daily(hourly_csv, daily_csv, start, end):
             writer = csv.DictWriter(output, fieldnames=DAILY_FIELDS)
             writer.writeheader()
             for key, rows in groupby(_hourly_rows(stream), key=lambda row: row['key']):
-                for row in _daily_rows(key, rows, start, end):
+                latitude = None
+                if pet_latitudes is not None and key[2] == 'temperature_c':
+                    latitude = pet_latitudes.get(key[1])
+                    if latitude is None or not math.isfinite(latitude) or not -90 <= latitude <= 90:
+                        raise ValueError(f'PET needs a finite centroid latitude for {key[1]}')
+                for row in _daily_rows(key, rows, start, end, latitude):
                     writer.writerow(row)
                     count += 1
             if not count:

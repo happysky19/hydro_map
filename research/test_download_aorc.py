@@ -11,7 +11,8 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 
-from download_aorc import BASE, Store, accumulate, extract_series, load_polygons, requested_hours, run, unpack
+from download_aorc import (BASE, Store, accumulate, extract_native_series, extract_series,
+                           load_polygons, requested_hours, run, unpack)
 
 
 class AorcDownloadTests(unittest.TestCase):
@@ -149,6 +150,124 @@ class AorcDownloadTests(unittest.TestCase):
         np.testing.assert_allclose(sums['A'], np.full(24, .75))
         np.testing.assert_allclose(coverage['A'], np.full(24, .25))
 
+    def native_derived_extraction(self, missing_union=False, missing_boundary_precip=False):
+        variables = ['APCP_surface', 'TMP_2maboveground', 'SPFH_2maboveground',
+                     'PRES_surface', 'UGRD_10maboveground', 'VGRD_10maboveground']
+        scales = {'TMP_2maboveground': (1., 273.15), 'SPFH_2maboveground': (.000001, 0.),
+                  'PRES_surface': (10., 0.)}
+        metas = {year: {} for year in (2024, 2025)}
+        for meta in metas.values():
+            for variable in variables:
+                scale, offset = scales.get(variable, (1., 0.))
+                meta[variable + '/.zattrs'] = dict(scale_factor=scale, add_offset=offset,
+                                                  missing_value=-32767)
+                meta[variable + '/.zarray'] = dict(fill_value=-32767)
+        times = {year: requested_hours(dt.date(year, 1, 1), dt.date(year, 12, 31), False)
+                 for year in metas}
+        blocks = {(0, 0): {'A': (np.array([0, 0]), np.array([0, 1]), np.array([.5, .5]))}}
+        read_urls, discarded = [], []
+
+        class FakeStore:
+            bytes = 0
+
+            def read(self, url):
+                read_urls.append(url)
+                if missing_boundary_precip and '2025.zarr/APCP' in url:
+                    raise FileNotFoundError(url)
+                return url.encode(), None
+
+            def discard(self, url):
+                discarded.append(url)
+
+        def decoded(payload, dtype, zstd):
+            variable = payload.decode().split('/')[-2]
+            pair = {'APCP_surface': [2, 4], 'TMP_2maboveground': [-2, 3],
+                    'SPFH_2maboveground': [3653, 5260], 'PRES_surface': [9000, 9000],
+                    'UGRD_10maboveground': [3, -3], 'VGRD_10maboveground': [4, -4]}[variable]
+            if missing_union and variable == 'SPFH_2maboveground':
+                pair[1] = -32767
+            if missing_union and variable == 'PRES_surface':
+                pair[0] = -32767
+            grid = np.zeros((1, 1, 256), dtype=np.int16)
+            grid[0, 0, :2] = pair
+            return np.broadcast_to(grid, (144, 128, 256)), 0
+
+        with patch('download_aorc.decode', side_effect=decoded), patch('builtins.print'):
+            result = extract_native_series(FakeStore(), metas, times, blocks, variables,
+                dt.date(2024, 12, 31), dt.date(2024, 12, 31), 'unused', 2, False)
+        self.assertEqual(len(read_urls), len(set(read_urls)))
+        self.assertEqual(len(read_urls), 12)
+        self.assertEqual(len(discarded), 11 if missing_boundary_precip else 12)
+        return result
+
+    def test_native_derived_extraction_preserves_nonlinear_cellwise_wind_and_phase(self):
+        result = self.native_derived_extraction()
+        np.testing.assert_allclose(result['wind_speed_ms'][1]['A'], np.full(24, 5.))
+        np.testing.assert_allclose(result['rainfall_mm'][1]['A'], np.full(24, 2.))
+        np.testing.assert_allclose(result['snowfall_mm'][1]['A'], np.full(24, 1.))
+        for name in result:
+            np.testing.assert_allclose(result[name][2]['A'], np.ones(24))
+        self.assertEqual(result['rainfall_mm'][0][-1], dt.datetime(2025, 1, 1, tzinfo=dt.timezone.utc).timestamp())
+        self.assertEqual(result['relative_humidity_pct'][0][-1], dt.datetime(2024, 12, 31, 23, tzinfo=dt.timezone.utc).timestamp())
+
+    def test_derived_missing_mask_is_union_not_minimum_of_input_coverages(self):
+        result = self.native_derived_extraction(missing_union=True)
+        np.testing.assert_allclose(result['specific_humidity_kgkg'][2]['A'], np.full(24, .5))
+        np.testing.assert_allclose(result['surface_pressure_pa'][2]['A'], np.full(24, .5))
+        for name in ('relative_humidity_pct', 'wet_bulb_temperature_c', 'rainfall_mm', 'snowfall_mm'):
+            np.testing.assert_allclose(result[name][2]['A'], np.zeros(24))
+        np.testing.assert_allclose(result['wind_speed_ms'][2]['A'], np.ones(24))
+
+    def test_boundary_precipitation_gap_only_masks_phase_amounts(self):
+        result = self.native_derived_extraction(missing_boundary_precip=True)
+        for name in ('rainfall_mm', 'snowfall_mm', 'precipitation_mm'):
+            np.testing.assert_allclose(result[name][2]['A'], [1.] * 23 + [0.])
+        for name in ('temperature_c', 'relative_humidity_pct', 'wet_bulb_temperature_c'):
+            np.testing.assert_allclose(result[name][2]['A'], np.ones(24))
+
+    def test_derive_run_records_methods_dependencies_schema_and_pet(self):
+        extracted = self.native_derived_extraction()
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+            geojson = folder / 'catchment.geojson'
+            geojson.write_text(json.dumps(dict(type='FeatureCollection', features=[dict(
+                type='Feature', properties=dict(id='A', part='local'), geometry=dict(type='Polygon',
+                coordinates=[[[0, 44], [1, 44], [1, 46], [0, 46], [0, 44]]]))])))
+            args = SimpleNamespace(geojson=geojson, projects=None, start=dt.date(2024, 12, 31),
+                end=dt.date(2024, 12, 31), output_dir=folder / 'output', cache_dir=folder / 'cache',
+                variables=['APCP_surface'], workers=1, max_download_gb=.001,
+                cache_only=True, refresh_incomplete=False, keep_chunks=False, derive=True)
+
+            def fake_axis(store, year, name, metadata, zstd):
+                return (requested_hours(dt.date(year, 1, 1), dt.date(year, 12, 31), False)
+                        if name == 'time' else np.array([0., 1.]))
+
+            with patch('download_aorc.shutil.which', return_value='zstd'), \
+                 patch('download_aorc.metadata', return_value={}), \
+                 patch('download_aorc.axis', side_effect=fake_axis), \
+                 patch('download_aorc.weights', return_value={
+                     'A': (np.array([0]), np.array([0]), np.array([1.]))}), \
+                 patch('download_aorc.extract_native_series', return_value=extracted) as native, \
+                 patch('download_aorc.extract_series', side_effect=AssertionError('Legacy extractor used')), \
+                 patch('builtins.print'):
+                run(args)
+                run(args)
+            self.assertEqual(native.call_count, 1)
+            metadata = json.loads((args.output_dir / 'run.json').read_text())
+            self.assertEqual(metadata['source_id'], 'aorc_v1.1')
+            self.assertEqual(len(metadata['variables']), 6)
+            self.assertEqual(metadata['pet_centroid_latitudes'], {'A': 45.})
+            self.assertIn('meteorology.py', metadata['code_sha256'])
+            self.assertEqual(metadata['derived_methods']['phase']['snow_threshold_c'], .5)
+            with gzip.open(args.output_dir / 'daily_2024.csv.gz', 'rt') as stream:
+                rows = {row['variable']: row for row in csv.DictReader(stream)}
+            self.assertEqual(set(rows), set(metadata['daily_schema']))
+            self.assertEqual(len(rows), 15)
+            self.assertTrue(all(row['qc'] == 'valid' and row['valid_hours'] == '24' for row in rows.values()))
+            self.assertEqual(float(rows['rainfall_mm']['value']) + float(rows['snowfall_mm']['value']),
+                             float(rows['precipitation_mm']['value']))
+            self.assertEqual(rows['pet_hargreaves_mm']['units'], 'mm/day')
+
     def test_refresh_incomplete_recomputes_year_while_normal_resume_skips(self):
         with tempfile.TemporaryDirectory() as directory:
             folder = Path(directory)
@@ -183,6 +302,8 @@ class AorcDownloadTests(unittest.TestCase):
                  patch('builtins.print'):
                 run(args)
                 metadata = json.loads((args.output_dir / 'run.json').read_text())
+                self.assertFalse(metadata['derive'])
+                self.assertEqual(set(metadata['daily_schema']), {'precipitation_mm'})
                 self.assertEqual(metadata['forcing_groups'], {'A': ['A']})
                 self.assertEqual(metadata['project_forcing']['A']['forcing_group'], 'A')
                 self.assertEqual(metadata['project_forcing']['A']['diversion_intake_project'], 'UPSTREAM')

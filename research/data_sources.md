@@ -2,6 +2,11 @@
 
 Checked 6 October 2026. Research status: **AORC is the leading candidate; no source has passed full-period, full-catchment validation.** These scripts are separate from the production CLI.
 
+The [data pipeline guide](../docs/data_pipeline.md) documents the implemented
+AORC diagnostics, authenticated CDS retrieval and unified daily CSV/Parquet
+export. The CDS path has synthetic integration tests and verified request
+previews; authenticated provider retrieval remains to be tested.
+
 ## Decision
 
 Start with AORC 1.1 for the core meteorological forcing over both US and Canadian catchments. Compare precipitation and temperature with Daymet V4 R1. Evaluate ERA5-Land as a consistent alternative forcing experiment and a source of supplementary land states; use ERA5 for atmospheric fields unavailable in the other products. Do not splice sources at the international border without evaluating the resulting discontinuity.
