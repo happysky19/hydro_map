@@ -11,6 +11,7 @@ import yaml
 
 from hydro_map.basins import area_km2
 from hydro_map.plotting import load_features
+from routing_metadata import routing_metadata, routing_warning
 
 
 def forcing_metadata(features, selected=None):
@@ -29,7 +30,7 @@ def forcing_metadata(features, selected=None):
             if props['part'] != other_part or not geometry.equals(other_geometry):
                 raise ValueError(f'Forcing group {group} must have the same geometry and part')
         references[group] = (geometry, props['part'])
-        record = {'forcing_group': group}
+        record = {'forcing_group': group, **routing_metadata(identifier, props)}
         for key in ('geometry_status', 'shared_outlet_projects'):
             if key in props:
                 record[key] = props[key]
@@ -44,6 +45,8 @@ def forcing_metadata(features, selected=None):
     groups, warnings = {}, []
     for identifier, record in sorted(project_forcing.items()):
         groups.setdefault(record['forcing_group'], []).append(identifier)
+        if record.get('catchment_role') == 'natural_reach_at_tailrace':
+            warnings.append(routing_warning(identifier, record))
     for group, identifiers in sorted(groups.items()):
         shared = len(identifiers) > 1 or any(
             project_forcing[identifier].get('geometry_status') == 'shared_unit_approximation'
@@ -144,6 +147,8 @@ def main():
     args.output.write_text(json.dumps(plan, indent=2, allow_nan=False) + '\n')
     print(f"Planned {plan['project_count']} projects and "
           f"{plan['expected_project_day_rows']:,} project-day rows; no data downloaded.")
+    for warning in plan['warnings']:
+        print(warning)
 
 
 if __name__ == '__main__':

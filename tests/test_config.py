@@ -32,6 +32,30 @@ projects:
         with self.assertRaisesRegex(ValueError, 'delineation'):
             self.load(body.replace('outlet_cell', 'unknown_method'))
 
+    def test_diversion_return_requires_explicit_role_intake_and_operations(self):
+        body = """
+dataset: {region: na, delineation: outlet_cell}
+projects:
+  - {id: UPPER, name: Upper, outlet: {hybas_id: 1, lon: -118, lat: 52, grid_lon: -118, grid_lat: 52, grid_reference: River}}
+  - id: RETURN
+    name: Return
+    catchment_role: natural_reach_at_tailrace
+    diversion_intake_project: UPPER
+    routing_requires_operations: true
+    outlet: {hybas_id: 1, lon: -118, lat: 51, grid_lon: -118, grid_lat: 51, grid_reference: River return}
+"""
+        result = self.load(body)
+        self.assertTrue(result.projects[1].metadata['routing_requires_operations'])
+        for original, replacement in [
+            ('routing_requires_operations: true', 'routing_requires_operations: false'),
+            ('routing_requires_operations: true', "routing_requires_operations: 'true'"),
+            ('diversion_intake_project: UPPER', 'diversion_intake_project: MISSING'),
+            ('diversion_intake_project: UPPER', 'diversion_intake_project: RETURN'),
+            ('catchment_role: natural_reach_at_tailrace', 'catchment_role: dam_outlet'),
+        ]:
+            with self.subTest(replacement=replacement), self.assertRaises(ValueError):
+                self.load(body.replace(original, replacement))
+
     def test_duplicate_outlet_units_are_rejected(self):
         with self.assertRaisesRegex(ValueError, "same.*unit"):
             self.load("""

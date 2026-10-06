@@ -81,6 +81,12 @@ projects:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             config = self.cell_config(root)
+            config.write_text(config.read_text().replace('    name: Dam\n',
+                '    name: Dam\n    catchment_role: natural_reach_at_tailrace\n'
+                '    diversion_intake_project: UPSTREAM\n    routing_requires_operations: true\n') +
+                f'  - id: UPSTREAM\n    name: Upstream\n'
+                f'    outlet: {{hybas_id: 1, lon: 0.5, lat: {0.5 + 2 / 240}, '
+                f'grid_lon: 0.5, grid_lat: {0.5 + 2 / 240}, grid_reference: checked channel cell}}\n')
             source = root / "units.shp"
             with shapefile.Writer(str(source)) as writer:
                 for field in ("HYBAS_ID", "NEXT_DOWN", "ENDO"):
@@ -100,17 +106,21 @@ projects:
                     raster.write(array, 1)
             for explicit in (True, False):
                 output = root / f"cell_{explicit}.geojson"
+                messages = io.StringIO()
                 options = (["--flow-direction", str(direction), "--flow-accumulation", str(accumulation)]
                            if explicit else [])
                 with self.subTest(explicit=explicit), \
                         patch("hydro_map.data.download_flow_dataset", return_value=(direction, accumulation),
                               side_effect=AssertionError("explicit rasters must work offline") if explicit else None), \
-                        contextlib.redirect_stdout(io.StringIO()):
+                        contextlib.redirect_stdout(messages):
                     status = main(["build", str(config), "--source", str(source),
                                    "--output", str(output), *options])
                 self.assertEqual(status, 0)
                 feature = json.loads(output.read_text())["features"][0]
                 self.assertEqual(feature["properties"]["cell_count_total"], 3)
+                self.assertIn('bypassed river', messages.getvalue())
+                self.assertIn('UPSTREAM', messages.getvalue())
+                self.assertIn('turbine inflow', messages.getvalue())
 
     def test_offline_build_writes_selected_geojson_with_recorded_settings(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -154,6 +154,8 @@ def main():
         raise ValueError('Catchments require unique nonempty identifiers')
     bounds = subset_query(features)
     forcing = forcing_metadata(features)
+    for warning in forcing['warnings']:
+        print(warning, flush=True)
     manifest_path = args.output/'requests.json'
     manifest = json.loads(manifest_path.read_text()) if manifest_path.exists() else {}
     transferred = 0

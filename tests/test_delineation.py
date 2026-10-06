@@ -70,6 +70,21 @@ class DelineationTests(unittest.TestCase):
         total = self.build(part='total')['features'][1]
         self.assertAlmostEqual(shape(total['geometry']).area, 8 / 240 ** 2)
 
+    def test_diversion_return_keeps_natural_network_and_requires_upstream_intake(self):
+        upper, lower = self.config.projects
+        metadata = dict(catchment_role='natural_reach_at_tailrace',
+                        diversion_intake_project='UPPER', routing_requires_operations=True)
+        self.config = replace(self.config, projects=(upper, replace(lower, metadata=metadata)))
+        props = self.build()['features'][1]['properties']
+        self.assertEqual(props['up'], ['UPPER'])
+        self.assertEqual(props['cell_count_local'], 6)
+        self.assertEqual(props['diversion_intake_project'], 'UPPER')
+        self.assertTrue(props['routing_requires_operations'])
+        self.config = replace(self.config, projects=(replace(upper, metadata=dict(
+            metadata, diversion_intake_project='LOWER')), lower))
+        with self.assertRaisesRegex(ValueError, 'upstream'):
+            self.build()
+
     def test_shared_group_uses_downstream_member_and_subtracts_upper_once(self):
         self.config = replace(self.config, projects=(self.config.projects[0],
             self.project('LOWER', 6, 'PAIR'), self.project('LOWER_B', 7, 'PAIR')))

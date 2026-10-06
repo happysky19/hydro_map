@@ -95,6 +95,12 @@ def build_cell_catchments(config, source, part, selected, flow_direction, flow_a
                  totals[g][points[outlets[group].id]]]
         downstream[group] = min(below, key=counts.get) if below else None
 
+    project_groups = {p.id: group for group, members in groups.items() for p in members}
+    for project in config.projects:
+        intake = project.metadata.get('diversion_intake_project')
+        if intake is not None and project_groups.get(intake) not in above[project_groups[project.id]]:
+            raise ValueError(f'{project.id}: diversion intake must be upstream of the natural return-point outlet')
+
     features = []
     for group, members in groups.items():
         if not any(p.id.casefold() in selected for p in members):
@@ -149,7 +155,7 @@ def build_cell_catchments(config, source, part, selected, flow_direction, flow_a
         'source_accumulation_units': 'hectares, converted to km2; independent source area convention',
         'delineation': 'All D8 cells reaching the documented outlet cell; selected upstream totals removed for local catchments',
         'grid_resolution_arcseconds': 15, 'include_virtual_connections': False,
-        'network_resolution': 'Physical D8 connectivity between forcing-group outlet cells',
+        'network_resolution': 'Natural D8 drainage between outlet cells; engineered flow allocation is separate',
         'local_cutoffs': [p.id for p in config.projects], 'forcing_group_count': len(groups),
         'shared_outlet_groups': {g: [p.id for p in members] for g, members in groups.items() if len(members) > 1},
         'shared_group_rule': 'Use the downstream-most selected member cell; duplicate group geometry is not additive',

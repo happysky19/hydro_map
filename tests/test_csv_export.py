@@ -87,6 +87,30 @@ class CsvExportTests(unittest.TestCase):
             self.assertEqual(len(row), 10)
             self.assertEqual(row['PolygonName'], 'Example shared local catchment [PAIR]')
 
+    def test_diversion_metadata_survives_csv_and_labels_the_natural_reach(self):
+        collection = self.collection()
+        collection['features'][0]['properties'].update(
+            catchment_role='natural_reach_at_tailrace', diversion_intake_project='UPSTREAM',
+            routing_requires_operations=True)
+        with tempfile.TemporaryDirectory() as directory:
+            table, bbox = Path(directory) / 'catchments.csv', Path(directory) / 'bbox.csv'
+            write_geometry_csv(collection, table)
+            with table.open(newline='') as stream:
+                reader = csv.DictReader(stream)
+                row = next(reader)
+            self.assertEqual(reader.fieldnames[:10],
+                             ['id', 'name', 'kind', 'mw', 'lat', 'lon', 'area', 'area_local', 'part', 'geometry'])
+            self.assertEqual(reader.fieldnames[-3:],
+                             ['catchment_role', 'diversion_intake_project', 'routing_requires_operations'])
+            self.assertEqual(row['catchment_role'], 'natural_reach_at_tailrace')
+            self.assertEqual(row['diversion_intake_project'], 'UPSTREAM')
+            self.assertEqual(row['routing_requires_operations'], 'true')
+            write_bbox_csv(collection, bbox)
+            with bbox.open(newline='') as stream:
+                row = next(csv.DictReader(stream))
+            self.assertEqual(len(row), 10)
+            self.assertEqual(row['PolygonName'], 'Example local natural reach catchment at tailrace')
+
 
 if __name__ == "__main__":
     unittest.main()

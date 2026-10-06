@@ -85,7 +85,8 @@ def load_config(path: Path) -> Config:
         raise ValueError("projects must be a nonempty list")
     projects, ids, codes = [], set(), set()
     units, groups = defaultdict(list), defaultdict(list)
-    metadata_keys = {"river", "country", "owner", "kind", "note", "mw", "project_code", "outlet_group"}
+    metadata_keys = {"river", "country", "owner", "kind", "note", "mw", "project_code", "outlet_group",
+                     "catchment_role", "diversion_intake_project", "routing_requires_operations"}
     for index, row in enumerate(rows):
         _mapping(row, {"id", "name", "outlet"} | metadata_keys, f"project {index + 1}")
         project_id = _text(row.get("id"), "project.id")
@@ -118,8 +119,22 @@ def load_config(path: Path) -> Config:
             if key == "mw":
                 if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
                     raise ValueError(f"{project_id}: mw must be a finite nonnegative number")
+            elif key == 'routing_requires_operations':
+                if type(value) is not bool:
+                    raise ValueError(f'{project_id}: routing_requires_operations must be a YAML boolean')
             else:
                 _text(value, f"{project_id}.{key}")
+        role = metadata.get('catchment_role', 'dam_outlet')
+        if role not in {'dam_outlet', 'natural_reach_at_tailrace'}:
+            raise ValueError(f'{project_id}: unknown catchment_role')
+        if role == 'natural_reach_at_tailrace':
+            if (delineation != 'outlet_cell' or 'diversion_intake_project' not in metadata
+                    or metadata.get('routing_requires_operations') is not True
+                    or 'outlet_group' in metadata):
+                raise ValueError(f'{project_id}: a tailrace reach requires an independent outlet cell, '
+                                 'diversion_intake_project and routing_requires_operations: true')
+        elif 'diversion_intake_project' in metadata:
+            raise ValueError(f'{project_id}: diversion_intake_project requires a tailrace reach role')
         group = metadata.get('outlet_group')
         if group is not None and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", group):
             raise ValueError(f"Invalid outlet group: {group}")
@@ -134,6 +149,11 @@ def load_config(path: Path) -> Config:
         units[unit].append(projects[-1])
         if group is not None:
             groups[group.casefold()].append(projects[-1])
+    project_ids = {p.id for p in projects}
+    for project in projects:
+        intake = project.metadata.get('diversion_intake_project')
+        if intake is not None and (intake not in project_ids or intake == project.id):
+            raise ValueError(f'{project.id}: diversion_intake_project must identify another configured project')
     for unit, members in units.items():
         names = [p.metadata.get('outlet_group') for p in members]
         if delineation == 'outlet_unit' and len(members) > 1 and (None in names or len(set(names)) != 1):

@@ -5,25 +5,32 @@ catchments. They do not provide sensor-only observations or demonstrate
 hydrologic forecast skill. The requested window is **1996-01-01 through
 2025-12-31**: 10,958 Gregorian dates, including leap days.
 
-Verified on 2026-10-06 using the corrected `outlet_cell` D8 boundaries for
-December 29–31:
+The current `outlet_cell` boundaries contain **43 independent local drainage
+domains**, with no shared project polygons. Bounded December 29–31, 2025
+replays completed on 2026-10-06:
 
-- ERA5-Land: all 43 project records, 41 forcing groups, 645 valid daily
-  statistics out of 645. Both shared pairs have identical values. This offline
-  check reused verified cached responses covering a slightly wider region;
-  request URLs and response hashes were retained and polygon weights were
-  recomputed. No new bytes were downloaded.
-- AORC: all 43 projects and all eight variables were reprocessed on the
-  compute host from verified cached chunks. Of 1,548 daily statistics, 1,505
-  are valid; the 43 blanks are December 31 precipitation totals. Both shared
-  pairs have identical values. A fresh source check confirmed the missing
-  2026 boundary archive. No source data bytes were downloaded. The separate
-  local Mica/Oxbow offline check returned 70 valid statistics out of 72.
+- ERA5-Land: all 43 domains, 9,417 hourly rows and 645 valid daily statistics
+  out of 645, saved under `outputs/era5_land_demo_43_independent`. Verified
+  cached responses covered the required region; request URLs and response
+  hashes were retained and polygon weights were recomputed. No new network
+  bytes were downloaded.
+- AORC: all 43 domains and all eight variables were reprocessed on the
+  compute host from verified cached chunks, producing 1,548 daily rows under
+  `data/aorc_demo_43_independent`: 1,505 valid statistics and 43 blank December
+  31 precipitation totals with 23 of 24 hours, because the required 2026
+  boundary archive is absent. Each formerly shared pair differs in all 35
+  paired valid daily statistics. Geometry and output hashes, 43 distinct
+  forcing groups, and retained routing metadata/warnings were verified.
+  No new network bytes were downloaded.
 
 The earlier **whole-unit geometry** demo covered all 43 projects and returned
 1,505 valid AORC statistics out of 1,548, plus 645 valid ERA5-Land statistics.
-Those results remain evidence of retrieval and aggregation, but their polygon
-means are superseded by the corrected boundaries. Rebuild weights and write to a new output directory whenever geometry changes.
+An intermediate D8 demo used 41 forcing groups for 43 project rows; both
+shared pairs had identical weather values. The separate Mica/Oxbow offline
+check returned 70 valid AORC statistics out of 72. These earlier results
+remain evidence of retrieval and aggregation, but their polygon means do
+not validate the current independent domains. Rebuild weights and write to
+a new output directory whenever geometry changes.
 
 An earlier independent comparison of Mica/Oxbow AORC against native NOAA
 P/T/q/p on December 31 at 22Z and 23Z found zero raw-value or mask differences
@@ -48,40 +55,52 @@ built D8 file in the commands below:
 
 ```sh
 hydro-map build configs/columbia.yaml --cache-dir data \
-  --output outputs/projects43_d8/dam_catchments.geojson
+  --output outputs/projects43_independent/dam_catchments.geojson
 ```
+
+On the compute host, place that GeoJSON under `inputs/projects43_independent`.
+The bounded replay below uses an existing verified source cache; omit
+`--cache-only` to permit downloads within the specified transfer ceiling.
 
 ```sh
 python research/download_aorc.py \
-  --geojson outputs/projects43_d8/dam_catchments.geojson \
-  --output-dir outputs/aorc_demo_43_d8 --cache-dir data/aorc_demo_cache \
+  --geojson inputs/projects43_independent/dam_catchments.geojson \
+  --output-dir data/aorc_demo_43_independent --cache-dir cache/aorc \
   --start 2025-12-29 --end 2025-12-31 \
-  --projects MICA OXBOW --max-download-gb 1 --keep-chunks
+  --cache-only --max-download-gb 1 --keep-chunks
 ```
 
-Omit `--projects` to use every feature. Input features require unique string
+All features are used by default; add `--projects MICA OXBOW` for a subset.
+Input features require unique string
 `properties.id` values and a consistent `properties.part` of `local` or `total`.
 Invalid geometries and incomplete grid coverage are rejected. Weights are
 fractional intersections of native cells and polygons in the equal-area
 EPSG:6933 projection. Longitude/latitude are never treated as planar area.
 The input geometry hash and exact request hashes are recorded.
 
-The four shared-unit approximations remain separate project rows. `run.json`
-records their `forcing_group`, `geometry_status` and shared members. Count
-each group once in an area or water-volume balance; duplicated project rows
-are not independent local catchments. Declared shared members must have
-identical geometry and catchment part. Unmarked duplicate geometries are not
+Each current project has its own `forcing_group`. Kootenay Canal's polygon
+is the natural river reach at the tailrace, including lateral runoff to the
+bypassed river. It does not define exclusive turbine inflow. `run.json`
+retains `catchment_role: natural_reach_at_tailrace`,
+`diversion_intake_project: CORRA_LINN` and `routing_requires_operations: true`.
+Diversion, bypass, spill and storage allocation require operating data and
+a separate routing model. The download plan and ERA5-Land summary retain
+the same interpretation.
+
+Other configurations may still declare shared groups. Their members must
+have identical geometry and catchment part, and each group must be counted
+once in an area or water-volume balance. Unmarked equal geometries are not
 automatically assigned a shared group.
 
-For all 43 projects and 30 years, run on a compute host with reliable network
+For all 43 domains and 30 years, use a compute host with reliable network
 access. Source reads are potentially TB-scale even though the output tables
 are much smaller. A 2,000 GB transfer ceiling is an upper limit, not an estimate
-of the downloaded table size:
+of the downloaded table size. For full-period extraction, use:
 
 ```sh
 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 python research/download_aorc.py \
-  --geojson inputs/projects43_d8/dam_catchments.geojson \
-  --output-dir data/aorc_1996_2025_projects43_d8 --cache-dir cache/aorc \
+  --geojson inputs/projects43_independent/dam_catchments.geojson \
+  --output-dir data/aorc_1996_2025_projects43_independent --cache-dir cache/aorc \
   --start 1996-01-01 --end 2025-12-31 --workers 4 \
   --max-download-gb 2000
 ```
@@ -131,13 +150,13 @@ Sources: [NOAA AORC distribution](https://hydrology.nws.noaa.gov/pub/AORC/V1.1/)
 
 ```sh
 python research/download_era5_land.py \
-  --geojson outputs/projects43_d8/dam_catchments.geojson \
-  --output outputs/era5_land_demo_43_d8 \
+  --geojson outputs/projects43_independent/dam_catchments.geojson \
+  --output outputs/era5_land_demo_43_independent \
   --start-date 2025-12-29 --end-date 2025-12-31
 
 python research/aggregate_daily.py \
-  --input outputs/era5_land_demo_43_d8/hourly.csv \
-  --output outputs/era5_land_demo_43_d8/daily.csv \
+  --input outputs/era5_land_demo_43_independent/hourly.csv \
+  --output outputs/era5_land_demo_43_independent/daily.csv \
   --start 2025-12-29 --end 2025-12-31
 ```
 
