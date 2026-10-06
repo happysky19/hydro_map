@@ -9,14 +9,39 @@ import unittest
 from unittest.mock import patch
 
 import numpy as np
+from shapely.geometry import box
 
-from download_era5_land import catalog_segments, deaccumulate_precipitation, main, merge_segments, request_windows, validate_metadata
+from download_era5_land import catalog_segments, deaccumulate_precipitation, main, merge_segments, request_windows, subset_query, validate_metadata
 
 
 class HourlyEra5LandTests(unittest.TestCase):
     def setUp(self):
         self.start = datetime(2025,12,29,tzinfo=timezone.utc)
         self.times = np.array([(self.start+timedelta(hours=i)).timestamp() for i in range(73)])
+
+    def test_subset_follows_geometry_and_pads_western_projects(self):
+        features = [{'properties': {'id': 'LOOKOUT_POINT', 'part': 'local'},
+                     'geometry': box(-122.755, 43.8, -122.2, 44.1)},
+                    {'properties': {'id': 'MICA', 'part': 'local'},
+                     'geometry': box(-119, 51.5, -118, 52.9)}]
+        query = subset_query(features)
+        self.assertEqual(query, {'west': 237.1, 'south': 43.7,
+                                 'east': 242.1, 'north': 53.0})
+        for feature in features:
+            west, south, east, north = feature['geometry'].bounds
+            self.assertLessEqual(query['west']-360, west-.1)
+            self.assertLessEqual(query['south'], south-.1+1e-12)
+            self.assertGreaterEqual(query['east']-360, east+.1-1e-12)
+            self.assertGreaterEqual(query['north'], north+.1-1e-12)
+        features[0]['properties']['part'] = 'total'
+        with self.assertRaisesRegex(ValueError, 'local catchments'):
+            subset_query(features)
+
+    def test_subset_rejects_a_wrapped_longitude_request(self):
+        features = [{'properties': {'id': 'A', 'part': 'local'},
+                     'geometry': box(-1, 45, 1, 46)}]
+        with self.assertRaisesRegex(ValueError, 'longitude seam'):
+            subset_query(features)
 
     def test_three_daily_cycles_reset_at_01_and_end_at_next_00(self):
         cumulative = np.array([24 if i%24 == 0 else i%24 for i in range(73)],dtype=float)[:,None,None]/1000

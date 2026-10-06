@@ -115,33 +115,45 @@ def build_catchments(config: Config, source: Path, part="local", project_ids=Non
                 raise ValueError(f"{project.id}: outlet reference point is outside HydroBASINS unit {project.hybas_id}")
             totals[project.id] = upstream(project.hybas_id)
 
-        project_by_unit = {project.hybas_id: project.id for project in config.projects}
+        project_by_unit = defaultdict(list)
+        for project in config.projects:
+            project_by_unit[project.hybas_id].append(project.id)
         next_project = {}
         for project in config.projects:
             current = downstream[project.hybas_id]
             while current and current not in project_by_unit:
                 current = downstream[current]
-            next_project[project.id] = project_by_unit.get(current)
+            next_project[project.id] = project_by_unit.get(current, [])
 
         features = []
         for project in config.projects:
             if project.id.casefold() not in selected:
                 continue
             members = totals[project.id]
-            above = [p.id for p in config.projects if p.id != project.id and p.hybas_id in members]
+            above = [p.id for p in config.projects
+                     if p.hybas_id != project.hybas_id and p.hybas_id in members]
             removed = set().union(*(totals[value] for value in above))
             local = members - removed
             total_geometry = _polygonal(shapely.union_all([geometry(unit) for unit in sorted(members)]))
             local_geometry = _polygonal(shapely.union_all([geometry(unit) for unit in sorted(local)]))
             chosen = local_geometry if part == "local" else total_geometry
             chosen_ids = local if part == "local" else members
+            shared = project_by_unit[project.hybas_id]
+            downstream_projects = next_project[project.id]
             properties = {
+                "kind": None, "mw": None,
                 **project.metadata,
                 "id": project.id, "name": project.name, "lat": project.lat, "lon": project.lon,
-                "area": area_km2(chosen), "area_local": area_km2(local_geometry),
+                "area": area_km2(total_geometry), "area_local": area_km2(local_geometry),
                 "area_total": area_km2(total_geometry),
-                "up": [value for value in above if next_project[value] == project.id],
-                "above": above, "down": next_project[project.id], "part": part,
+                "area_geometry": area_km2(chosen),
+                "up": [value for value in above if project.id in next_project[value]],
+                "above": above,
+                "down": downstream_projects[0] if len(downstream_projects) == 1 else None,
+                "down_candidates": downstream_projects, "part": part,
+                "forcing_group": project.metadata.get("outlet_group", project.id),
+                "geometry_status": "shared_unit_approximation" if len(shared) > 1 else "hydrobasins_delineation",
+                "shared_outlet_projects": shared if len(shared) > 1 else [],
                 "hybas_id": project.hybas_id, "hybas_ids": sorted(chosen_ids),
                 "unit_count": len(chosen_ids),
                 "outlet_source": project.source, "outlet_reference": project.reference,
@@ -153,6 +165,7 @@ def build_catchments(config: Config, source: Path, part="local", project_ids=Non
     return {
         "type": "FeatureCollection",
         "metadata": {
+            "schema_version": 2, "area_property": "total upstream catchment",
             "dataset": "HydroBASINS standard", "region": config.dataset.region,
             "level": config.dataset.level, "version": config.dataset.version,
             "source_url": f"https://data.hydrosheds.org/file/hydrobasins/standard/{stem}.zip",
@@ -160,6 +173,10 @@ def build_catchments(config: Config, source: Path, part="local", project_ids=Non
             "area_units": "km2", "area_method": "WGS84 ellipsoidal polygon area",
             "delineation": "Whole outlet subbasin plus upstream units; no dam-wall split",
             "local_cutoffs": [project.id for project in config.projects],
+            "forcing_group_count": len(project_by_unit),
+            "shared_outlet_groups": {p.metadata["outlet_group"]: project_by_unit[p.hybas_id]
+                                     for p in config.projects if "outlet_group" in p.metadata},
+            "network_resolution": "HydroBASINS outlet units; within-unit project order is unresolved",
             "repaired_geometry_count": len(repaired), "repaired_hybas_ids": sorted(repaired),
             "source_sha256": {suffix: _sha256(source.with_suffix(suffix))
                               for suffix in (".shp", ".shx", ".dbf", ".prj")},

@@ -1,5 +1,6 @@
 """Read explicit project outlets and dataset settings."""
 
+from collections import defaultdict
 from dataclasses import dataclass, field
 import math
 from pathlib import Path
@@ -73,8 +74,9 @@ def load_config(path: Path) -> Config:
     rows = document.get("projects")
     if not isinstance(rows, list) or not rows:
         raise ValueError("projects must be a nonempty list")
-    projects, ids, units, codes = [], set(), set(), set()
-    metadata_keys = {"river", "country", "owner", "kind", "note", "mw", "project_code"}
+    projects, ids, codes = [], set(), set()
+    units, groups = defaultdict(list), defaultdict(list)
+    metadata_keys = {"river", "country", "owner", "kind", "note", "mw", "project_code", "outlet_group"}
     for index, row in enumerate(rows):
         _mapping(row, {"id", "name", "outlet"} | metadata_keys, f"project {index + 1}")
         project_id = _text(row.get("id"), "project.id")
@@ -87,8 +89,6 @@ def load_config(path: Path) -> Config:
         unit = outlet.get("hybas_id")
         if type(unit) is not int or unit <= 0:
             raise ValueError(f"{project_id}: hybas_id must be a positive integer")
-        if unit in units:
-            raise ValueError(f"{project_id}: two projects select the same HydroBASINS unit {unit}; use finer delineation")
         coordinates = []
         for key, limit in (("lon", 180), ("lat", 90)):
             value = outlet.get(key)
@@ -105,6 +105,9 @@ def load_config(path: Path) -> Config:
                     raise ValueError(f"{project_id}: mw must be a finite nonnegative number")
             else:
                 _text(value, f"{project_id}.{key}")
+        group = metadata.get('outlet_group')
+        if group is not None and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", group):
+            raise ValueError(f"Invalid outlet group: {group}")
         code = metadata.get("project_code", project_id)
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", code) or code.casefold() in codes:
             raise ValueError(f"Invalid or duplicate project code: {code}")
@@ -112,5 +115,16 @@ def load_config(path: Path) -> Config:
         projects.append(Project(project_id, _text(row.get("name"), f"{project_id}.name"),
                                 unit, *coordinates, outlet.get("source"), outlet.get("reference"), metadata))
         ids.add(project_id.casefold())
-        units.add(unit)
+        units[unit].append(projects[-1])
+        if group is not None:
+            groups[group.casefold()].append(projects[-1])
+    for unit, members in units.items():
+        names = [p.metadata.get('outlet_group') for p in members]
+        if len(members) > 1 and (None in names or len(set(names)) != 1):
+            raise ValueError(f"Projects select the same HydroBASINS unit {unit}; declare one shared outlet_group or use finer delineation")
+    for group, members in groups.items():
+        if len({p.hybas_id for p in members}) != 1:
+            raise ValueError(f"Outlet group {group} spans different HydroBASINS units")
+        if len(members) < 2 or group in ids:
+            raise ValueError(f"Outlet group {group} requires at least two projects and an ID distinct from project IDs")
     return Config(Dataset(region, level, version, virtual), tuple(projects))

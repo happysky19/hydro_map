@@ -55,7 +55,13 @@ projects:
         lower_geom = shape(features["LOWER"]["geometry"])
         self.assertAlmostEqual(upper_geom.intersection(lower_geom).area, 0)
         self.assertAlmostEqual(lower_geom.area, 2)
-        self.assertAlmostEqual(lower["area"], 24613.9071125, places=4)
+        self.assertAlmostEqual(lower["area_geometry"], 24613.9071125, places=4)
+        self.assertAlmostEqual(lower["area_local"], lower["area_geometry"])
+        self.assertEqual(lower["area"], lower["area_total"])
+        self.assertGreater(lower["area"], lower["area_local"])
+        self.assertIsNone(lower["kind"])
+        self.assertIsNone(lower["mw"])
+        self.assertEqual(collection["metadata"]["schema_version"], 2)
 
     def test_virtual_link_is_an_explicit_topology_choice(self):
         from dataclasses import replace
@@ -70,6 +76,38 @@ projects:
         result = self.build(project_ids=["lower"])
         self.assertEqual(len(result["features"]), 1)
         self.assertEqual(result["features"][0]["properties"]["hybas_ids"], [2, 3])
+
+    def test_shared_projects_keep_one_forcing_area_without_mutual_subtraction(self):
+        self.yaml.write_text(self.yaml.read_text().replace('name: Upper,', 'name: Upper, outlet_group: UPPER_PAIR,') +
+            '  - {id: UPPER_B, name: Upper B, outlet_group: UPPER_PAIR, outlet: {hybas_id: 1, lon: 0.6, lat: 1.6}}\n')
+        result = self.build()
+        features = {f['id']: f for f in result['features']}
+        a, b = features['UPPER'], features['UPPER_B']
+        self.assertEqual(a['geometry'], b['geometry'])
+        self.assertGreater(a['properties']['area_local'], 0)
+        self.assertEqual(a['properties']['forcing_group'], 'UPPER_PAIR')
+        self.assertEqual(a['properties']['geometry_status'], 'shared_unit_approximation')
+        self.assertEqual(a['properties']['shared_outlet_projects'], ['UPPER', 'UPPER_B'])
+        self.assertEqual(a['properties']['above'], [])
+        lower = features['LOWER']['properties']
+        self.assertEqual(lower['hybas_ids'], [2, 3])
+        self.assertEqual(lower['up'], ['UPPER', 'UPPER_B'])
+        self.assertEqual(lower['forcing_group'], 'LOWER')
+        self.assertEqual(result['metadata']['forcing_group_count'], 2)
+        filtered = self.build(project_ids=['UPPER_B'])['features'][0]
+        self.assertEqual(filtered['geometry'], b['geometry'])
+        self.assertEqual(filtered['properties']['shared_outlet_projects'], ['UPPER', 'UPPER_B'])
+
+    def test_upstream_link_to_shared_group_has_explicit_candidates(self):
+        self.yaml.write_text(self.yaml.read_text().replace('name: Lower,', 'name: Lower, outlet_group: LOWER_PAIR,') +
+            '  - {id: LOWER_B, name: Lower B, outlet_group: LOWER_PAIR, outlet: {hybas_id: 3, lon: 0.6, lat: 0.6}}\n')
+        features = {f['id']: f for f in self.build()['features']}
+        upper = features['UPPER']['properties']
+        self.assertIsNone(upper['down'])
+        self.assertEqual(upper['down_candidates'], ['LOWER', 'LOWER_B'])
+        for key in ('LOWER', 'LOWER_B'):
+            self.assertEqual(features[key]['properties']['above'], ['UPPER'])
+            self.assertEqual(features[key]['properties']['hybas_ids'], [2, 3])
 
     def test_total_area_includes_selected_upstream_dam(self):
         result = self.build(part="total", project_ids=["LOWER"])

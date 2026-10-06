@@ -13,6 +13,50 @@ from hydro_map.basins import area_km2
 from hydro_map.plotting import load_features
 
 
+def forcing_metadata(features, selected=None):
+    """Validate declared shared units without grouping unlabeled equal geometries."""
+    references, project_forcing = {}, {}
+    for feature in features:
+        props, geometry = feature['properties'], feature['geometry']
+        identifier = props['id']
+        group = props.get('forcing_group', identifier)
+        if not isinstance(group, str) or not group or group.strip() != group:
+            raise ValueError(f'{identifier}: forcing_group must be a nonempty string')
+        if identifier in project_forcing:
+            raise ValueError(f'Duplicate project identifier: {identifier}')
+        if group in references:
+            other_geometry, other_part = references[group]
+            if props['part'] != other_part or not geometry.equals(other_geometry):
+                raise ValueError(f'Forcing group {group} must have the same geometry and part')
+        references[group] = (geometry, props['part'])
+        record = {'forcing_group': group}
+        for key in ('geometry_status', 'shared_outlet_projects'):
+            if key in props:
+                record[key] = props[key]
+        members = record.get('shared_outlet_projects', [identifier])
+        if (not isinstance(members, list) or (members and identifier not in members)
+                or any(not isinstance(member, str) or not member.strip() for member in members)
+                or len(set(members)) != len(members)):
+            raise ValueError(f'{identifier}: invalid shared_outlet_projects')
+        project_forcing[identifier] = record
+    if selected is not None:
+        project_forcing = {identifier: project_forcing[identifier] for identifier in selected}
+    groups, warnings = {}, []
+    for identifier, record in sorted(project_forcing.items()):
+        groups.setdefault(record['forcing_group'], []).append(identifier)
+    for group, identifiers in sorted(groups.items()):
+        shared = len(identifiers) > 1 or any(
+            project_forcing[identifier].get('geometry_status') == 'shared_unit_approximation'
+            or len(project_forcing[identifier].get('shared_outlet_projects', [])) > 1
+            for identifier in identifiers)
+        if shared:
+            warnings.append(f'Forcing group {group} uses a shared catchment approximation. '
+                            'Do not sum member catchment areas or derived water volumes; '
+                            'count the forcing group once.')
+    return dict(project_forcing=project_forcing, forcing_groups=groups,
+                forcing_group_count=len(groups), warnings=warnings)
+
+
 def make_plan(geojson, config):
     geojson = Path(geojson)
     if geojson.suffix.lower() not in {'.geojson', '.json'}:
@@ -46,6 +90,9 @@ def make_plan(geojson, config):
         })
     if len(parts) != 1:
         raise ValueError('Do not mix local and total catchments in one extraction plan')
+    forcing = forcing_metadata(features)
+    for project in projects:
+        project.update(forcing['project_forcing'][project['id']])
     pilots = config['pilot_projects']
     unknown = set(pilots) - {p['id'] for p in projects}
     if unknown:
@@ -67,6 +114,7 @@ def make_plan(geojson, config):
         'daymet_calendar_gaps': daymet_gaps,
         'expected_daymet_records_per_project': days - len(daymet_gaps),
         'project_count': len(projects),
+        **forcing,
         'pilot_projects': pilots,
         'sources': config['sources'],
         'projects': projects,

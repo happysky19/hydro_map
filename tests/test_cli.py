@@ -32,9 +32,11 @@ projects:
 """)
             output = root / "result.geojson"
             csv_output = root / "bbox.csv"
+            table_output = root / "catchments.csv"
             with contextlib.redirect_stdout(io.StringIO()):
                 status = main(["build", str(config), "--source", str(source),
-                               "--output", str(output), "--include-virtual", "--csv-output", str(csv_output)])
+                               "--output", str(output), "--include-virtual", "--csv-output", str(csv_output),
+                               "--table-output", str(table_output)])
             self.assertEqual(status, 0)
             result = json.loads(output.read_text())
             self.assertEqual(result["features"][0]["properties"]["id"], "DAM")
@@ -44,6 +46,10 @@ projects:
                 row = next(csv.DictReader(stream))
             self.assertEqual(row["ProjectCode"], "DAM")
             self.assertEqual(row["AreaKm2"], "12308.8")
+            with table_output.open(newline='') as stream:
+                table_row = next(csv.DictReader(stream))
+            self.assertEqual(table_row['id'], 'DAM')
+            self.assertTrue(table_row['geometry'].startswith('POLYGON'))
 
             component = source.with_suffix(".dbf")
             original = component.read_bytes()
@@ -60,6 +66,11 @@ projects:
             with contextlib.redirect_stderr(io.StringIO()):
                 status = main(["build", str(config), "--source", str(source), "--output", str(output),
                                "--csv-output", str(output)])
+            self.assertNotEqual(status, 0)
+            self.assertEqual(output.read_bytes(), original_geojson)
+            with contextlib.redirect_stderr(io.StringIO()):
+                status = main(["build", str(config), "--source", str(source), "--output", str(output),
+                               "--table-output", str(output)])
             self.assertNotEqual(status, 0)
             self.assertEqual(output.read_bytes(), original_geojson)
 

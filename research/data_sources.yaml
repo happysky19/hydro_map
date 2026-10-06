@@ -7,7 +7,7 @@ period:
   aorc_missing_boundary_hour: '2026-01-01T00:00:00Z'
 pilot_projects:
   - MICA
-  - ARROW
+  - HUGH_KEENLEYSIDE
   - ALBENI_FALLS
   - BROWNLEE
   - LOWER_GRANITE
@@ -18,7 +18,7 @@ sources:
     version: '1.1'
     url: https://noaa-nws-aorc-v1-1-1km.s3.amazonaws.com/
     variables: [APCP_surface, TMP_2maboveground, SPFH_2maboveground, PRES_surface, DSWRF_surface, DLWRF_surface, UGRD_10maboveground, VGRD_10maboveground]
-    status: full_time_axis_verified_all_project_samples_verified_full_data_scan_pending
+    status: time_axis_and_43_project_year_end_sample_verified_full_data_scan_pending
   daymet:
     role: independent_method_comparison
     version: V4R1
@@ -28,7 +28,7 @@ sources:
   era5_land:
     role: optional_land_state_and_forcing_comparison
     dataset: reanalysis-era5-land
-    status: ncar_three_field_polygon_sample_verified_complete_cds_archive_access_pending
+    status: ncar_three_field_43_project_year_end_sample_verified_complete_cds_archive_access_pending
     tested_mirror: https://gdex.ucar.edu/datasets/d633008/
     tested_mirror_start: '2001-11-01T01:00:00Z'
   era5:

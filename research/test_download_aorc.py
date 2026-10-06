@@ -11,10 +11,43 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 
-from download_aorc import BASE, Store, accumulate, extract_series, requested_hours, run, unpack
+from download_aorc import BASE, Store, accumulate, extract_series, load_polygons, requested_hours, run, unpack
 
 
 class AorcDownloadTests(unittest.TestCase):
+    def test_declared_forcing_groups_preserve_metadata_and_validate_geometry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/'catchments.geojson'
+            features = [dict(type='Feature', properties=dict(id=identifier, part='local',
+                forcing_group='AB', geometry_status='shared_unit_approximation',
+                shared_outlet_projects=['A', 'B']), geometry=dict(type='Polygon',
+                coordinates=[[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]]))
+                for identifier in ('A', 'B')]
+            path.write_text(json.dumps(dict(type='FeatureCollection', features=features)))
+            polygons, metadata = load_polygons(path, ['B'], include_metadata=True)
+            self.assertEqual(list(polygons), ['B'])
+            self.assertEqual(metadata['forcing_groups'], {'AB': ['B']})
+            self.assertEqual(metadata['project_forcing']['B']['shared_outlet_projects'], ['A', 'B'])
+            self.assertTrue(metadata['warnings'])
+            for feature in features:
+                feature['properties'] = dict(id=feature['properties']['id'], part='local',
+                    shared_outlet_projects=[], geometry_status='hydrobasins_delineation')
+            path.write_text(json.dumps(dict(type='FeatureCollection', features=features)))
+            _, metadata = load_polygons(path, None, include_metadata=True)
+            self.assertEqual(metadata['forcing_groups'], {'A': ['A'], 'B': ['B']})
+            self.assertFalse(metadata['warnings'])
+            for feature in features:
+                feature['properties']['forcing_group'] = 'AB'
+            features[0]['properties']['part'] = 'total'
+            path.write_text(json.dumps(dict(type='FeatureCollection', features=features)))
+            with self.assertRaisesRegex(ValueError, 'same geometry and part'):
+                load_polygons(path, None)
+            features[0]['properties']['part'] = 'local'
+            features[0]['geometry']['coordinates'][0][1][0] = 2
+            path.write_text(json.dumps(dict(type='FeatureCollection', features=features)))
+            with self.assertRaisesRegex(ValueError, 'same geometry and part'):
+                load_polygons(path, ['B'])
+
     def test_amounts_need_next_midnight(self):
         start = end = dt.date(2025, 12, 31)
         states = requested_hours(start, end, False)
@@ -120,6 +153,9 @@ class AorcDownloadTests(unittest.TestCase):
                  patch('download_aorc.extract_series', side_effect=fake_extract), \
                  patch('builtins.print'):
                 run(args)
+                metadata = json.loads((args.output_dir / 'run.json').read_text())
+                self.assertEqual(metadata['forcing_groups'], {'A': ['A']})
+                self.assertEqual(metadata['project_forcing']['A']['forcing_group'], 'A')
                 manifest = args.output_dir / 'year_2025.json'
                 self.assertEqual(json.loads(manifest.read_text())['status'], 'computed_with_gaps')
                 run(args)

@@ -3,7 +3,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from hydro_map.csv_export import write_bbox_csv
+from hydro_map.csv_export import write_bbox_csv, write_geometry_csv
+from shapely import from_wkt
+from shapely.geometry import shape
 
 
 class CsvExportTests(unittest.TestCase):
@@ -51,7 +53,39 @@ class CsvExportTests(unittest.TestCase):
             for buffer in (-1, float("nan"), float("inf")):
                 with self.subTest(buffer=buffer), self.assertRaises(ValueError):
                     write_bbox_csv(self.collection(), path, buffer_degrees=buffer)
-                self.assertEqual(path.read_text(), "keep")
+            self.assertEqual(path.read_text(), "keep")
+
+    def test_geometry_table_preserves_attributes_and_polygon_in_one_file(self):
+        collection = self.collection()
+        props = collection['features'][0]['properties']
+        props.update(kind='storage', mw=120, area=20000, area_total=20000,
+                     area_local=12308.7783615, area_geometry=12308.7783615,
+                     forcing_group='EXAMPLE', geometry_status='hydrobasins_delineation',
+                     shared_outlet_projects=[])
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / 'catchments.csv'
+            write_geometry_csv(collection, output)
+            with output.open(newline='') as stream:
+                row = next(csv.DictReader(stream))
+            self.assertEqual(row['id'], 'EXAMPLE')
+            self.assertEqual(row['kind'], 'storage')
+            self.assertEqual(float(row['mw']), 120)
+            self.assertEqual(float(row['area']), 20000)
+            self.assertGreater(float(row['area']), float(row['area_local']))
+            self.assertTrue(from_wkt(row['geometry']).equals(shape(collection['features'][0]['geometry'])))
+            self.assertEqual(row['shared_outlet_projects'], '[]')
+
+    def test_bbox_table_labels_shared_areas_without_extra_columns(self):
+        collection = self.collection()
+        collection['features'][0]['properties'].update(
+            forcing_group='PAIR', geometry_status='shared_unit_approximation')
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / 'bbox.csv'
+            write_bbox_csv(collection, output)
+            with output.open(newline='') as stream:
+                row = next(csv.DictReader(stream))
+            self.assertEqual(len(row), 10)
+            self.assertEqual(row['PolygonName'], 'Example shared local catchment [PAIR]')
 
 
 if __name__ == "__main__":

@@ -146,10 +146,10 @@ def accumulate(values, normalized_area):
     return np.where(valid, values, 0.) @ normalized_area, valid @ normalized_area
 
 
-def load_polygons(path, selected):
+def load_polygons(path, selected, include_metadata=False):
     doc = json.loads(path.read_text())
     check(doc.get('type') == 'FeatureCollection' and not doc.get('crs'), 'Use WGS84 GeoJSON')
-    features, parts = {}, set()
+    features, parts, project_forcing, references = {}, set(), {}, {}
     for feature in doc['features']:
         identifier = feature['properties']['id']
         check(isinstance(identifier, str) and identifier.strip() == identifier and identifier
@@ -163,13 +163,44 @@ def load_polygons(path, selected):
               geometry.geom_type in ('Polygon', 'MultiPolygon'), f'Invalid geometry: {identifier}')
         west, south, east, north = geometry.bounds
         check(-180 <= west < east <= 180 and -90 <= south < north <= 90, 'Invalid lon/lat bounds')
+        props = feature['properties']
+        group = props.get('forcing_group', identifier)
+        check(isinstance(group, str) and group and group.strip() == group,
+              f'{identifier}: forcing_group must be a nonempty string')
+        if group in references:
+            other_geometry, other_part = references[group]
+            check(part == other_part and geometry.equals(other_geometry),
+                  f'Forcing group {group} must have the same geometry and part')
+        references[group] = (geometry, part)
+        record = {'forcing_group': group, **{key: props[key] for key in
+                  ('geometry_status', 'shared_outlet_projects') if key in props}}
+        members = record.get('shared_outlet_projects', [identifier])
+        check(isinstance(members, list) and (not members or identifier in members) and
+              all(isinstance(member, str) and member.strip() for member in members) and
+              len(set(members)) == len(members), f'{identifier}: invalid shared_outlet_projects')
+        project_forcing[identifier] = record
         features[identifier] = geometry
     check(features, 'No polygons found')
     check(len(parts) == 1, 'Do not mix local and total catchments')
     if selected:
         check(set(selected) <= features.keys(), f'Unknown project IDs: {set(selected) - features.keys()}')
         features = {key: features[key] for key in selected}
-    return features
+    project_forcing = {identifier: project_forcing[identifier] for identifier in sorted(features)}
+    groups, warnings = {}, []
+    for identifier, record in project_forcing.items():
+        groups.setdefault(record['forcing_group'], []).append(identifier)
+    for group, identifiers in sorted(groups.items()):
+        shared = len(identifiers) > 1 or any(
+            project_forcing[identifier].get('geometry_status') == 'shared_unit_approximation'
+            or len(project_forcing[identifier].get('shared_outlet_projects', [])) > 1
+            for identifier in identifiers)
+        if shared:
+            warnings.append(f'Forcing group {group} uses a shared catchment approximation. '
+                            'Do not sum member catchment areas or derived water volumes; '
+                            'count the forcing group once.')
+    forcing = dict(project_forcing=project_forcing, forcing_groups=groups,
+                   forcing_group_count=len(groups), warnings=warnings)
+    return (features, forcing) if include_metadata else features
 
 
 def block_weights(polygon_weights):
@@ -236,10 +267,10 @@ def run(args):
     check(1 <= args.workers <= 8 and args.max_download_gb > 0, 'Invalid workers or download limit')
     zstd = shutil.which('zstd')
     check(zstd is not None, 'Install the zstd command-line decoder')
-    features = load_polygons(args.geojson, args.projects)
+    features, forcing = load_polygons(args.geojson, args.projects, include_metadata=True)
     args.output_dir.mkdir(parents=True, exist_ok=True)
     store = Store(args.cache_dir, args.max_download_gb * 1e9, args.cache_only)
-    config = dict(schema=1, geometry_sha256=digest(args.geojson), projects=sorted(features),
+    config = dict(schema=2, geometry_sha256=digest(args.geojson), projects=sorted(features), **forcing,
                   start=str(args.start), end=str(args.end), variables=sorted(args.variables),
                   source=BASE, area_crs='EPSG:6933', day='UTC',
                   code_sha256={name: digest(Path(__file__).with_name(name)) for name in
@@ -251,6 +282,8 @@ def run(args):
               'Output configuration differs; use a different output directory')
     else:
         atomic_json(config_path, config)
+    for warning in forcing['warnings']:
+        print(warning, flush=True)
     metas, times_by_year, reference, blocks = {}, {}, None, None
 
     def load_year(year, optional=False):

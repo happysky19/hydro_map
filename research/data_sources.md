@@ -6,7 +6,7 @@ Checked 6 October 2026. Research status: **AORC is the leading candidate; no sou
 
 Start with AORC 1.1 for the core meteorological forcing over both US and Canadian catchments. Compare precipitation and temperature with Daymet V4 R1. Evaluate ERA5-Land as a consistent alternative forcing experiment and a source of supplementary land states; use ERA5 for atmospheric fields unavailable in the other products. Do not splice sources at the international border without evaluating the resulting discontinuity.
 
-The requested extraction period is **1996–2025**, with 10,958 Gregorian days and 284,908 project-day rows for 26 projects. All 262,992 AORC hourly time-coordinate values in this window have been checked. The required precipitation boundary at 2026-01-01 00Z is absent from the inspected archives, so the final daily precipitation value remains blank with a quality flag. Earlier audits used 1995–2024; those results remain historical evidence, not the current extraction window. Final day boundaries must match the selected flow target. A complete time axis does not prove that every data cell is present. See [download and daily aggregation](download_demo.md) for the runnable workflow, units and limitations.
+The requested extraction period is **1996–2025**, with 10,958 Gregorian days and 471,194 project-day rows for 43 projects. Two explicitly shared outlet pairs give 41 distinct forcing groups. All 262,992 AORC hourly time-coordinate values in this window have been checked. The required precipitation boundary at 2026-01-01 00Z is absent from the inspected archives, so the final daily precipitation value remains blank with a quality flag. Earlier audits used 26 projects and, in some cases, 1995–2024; those results remain historical evidence, not validation of the full current selection and window. Final day boundaries must match the selected flow target. A complete time axis does not prove that every data cell is present. See [download and daily aggregation](download_demo.md) for the runnable workflow, the verified December 29–31, 2025 sample for all 43 projects, units and limitations.
 
 See [documented model applications](model_data_sources.md) for seven examples of the actual forcing used by NWRFC, NWM, SAC-SMA, LSTM, VIC and Canadian models. The same model structure can use different forcings. NWRFC's calibration also adjusts monthly forcing climatology; matching its data source alone does not reproduce its forecast skill.
 
@@ -143,11 +143,16 @@ The [daily-statistics product](https://cds.climate.copernicus.eu/datasets/derive
 From the repository root, with `hydro-map` installed:
 
 ```bash
-python research/plan_download.py --geojson outputs/catchments.geojson --output outputs/source_validation/download_plan.json
+python research/plan_download.py --geojson outputs/projects43/dam_catchments.geojson --output outputs/projects43/download_plan.json
 python -m unittest discover -s research -p 'test_*.py'
 ```
 
 The plan reads `research/data_sources.yaml`, recalculates unbuffered areas/bounds, records hashes and reports unresolved checks. It does not contact providers, build grid weights or download meteorology.
+
+### Earlier 26-project access probes
+
+The following probes refer to the earlier geometry file and project IDs. For
+current 43-project extraction, use [the download workflow](download_demo.md).
 
 The bounded access probes require `requests`, `numpy` and a `zstd` executable for AORC, and `curl` for Daymet. Use an environment containing the project's dependencies. Generated evidence belongs in ignored `outputs/` or `data/` directories:
 
