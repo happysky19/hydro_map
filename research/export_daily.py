@@ -1,4 +1,4 @@
-"""Export verified daily tables as one UTC row per date and project.
+"""Export verified daily values and QC as aligned UTC project-day tables.
 
 Requires completed annual or monthly manifests covering every requested day
 for each source. Missing observations within that coverage remain null with
@@ -24,6 +24,15 @@ from aggregate_daily import DAILY_FIELDS
 
 
 QUALITY = ('qc', 'valid_hours', 'expected_hours', 'min_valid_area_fraction')
+UNIT_SUFFIXES = {
+    'mm': ('mm', ('mm',)), 'mm/day': ('mm_day', ('mm_day', 'mm')),
+    'degC': ('degC', ('degc', 'c')), 'm': ('m', ('m',)),
+    'm/s': ('m_s', ('m_s', 'ms')), 'kg/kg': ('kg_kg', ('kg_kg', 'kgkg')),
+    'Pa': ('Pa', ('pa',)), 'kPa': ('kPa', ('kpa',)),
+    'W/m2': ('W_m2', ('w_m2', 'wm2')), 'MJ/m2': ('MJ_m2', ('mj_m2', 'mjm2')),
+    'kg/m3': ('kg_m3', ('kg_m3', 'kgm3')), 'm3/m3': ('m3_m3', ('m3_m3', 'm3m3')),
+    '%': ('pct', ('pct',)), '1': ('fraction', ('fraction',)),
+}
 AORC_URL = 'https://noaa-nws-aorc-v1-1-1km.s3.amazonaws.com/'
 AORC_DAILY = {
     'APCP_surface': [('precipitation_mm', 'mm', 'Sum of 24 hour-ending water-equivalent amounts')],
@@ -60,6 +69,19 @@ def _name(value):
     if not isinstance(value, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*', value):
         raise ValueError(f'Unsafe source or variable identifier: {value!r}')
     return re.sub(r'[.-]', '_', value).lower()
+
+
+def _value_column(source, variable, units):
+    """Keep source identity and make the declared unit explicit without conversion."""
+    if units not in UNIT_SUFFIXES:
+        raise ValueError(f'Unsupported export unit: {units!r}')
+    suffix, aliases = UNIT_SUFFIXES[units]
+    name = _name(variable)
+    for alias in aliases:
+        if name.endswith('_' + alias):
+            name = name[:-(len(alias)+1)]
+            break
+    return f'{_name(source)}__{name}_{suffix}'
 
 
 def _schema(run):
@@ -181,6 +203,8 @@ def _inputs(input_dirs, geo_hash, projects, start, end):
 
 def _ingest(db, tables, projects, start, end):
     for path, source, schema, period, first, last in tables:
+        column_names = {variable: _value_column(source, variable, definition['units'])
+                        for variable, definition in schema.items()}
         count, batch = 0, []
         opener = gzip.open if path.suffix == '.gz' else open
         with opener(path, 'rt', newline='', encoding='utf-8') as stream:
@@ -211,7 +235,7 @@ def _ingest(db, tables, projects, start, end):
                         or (qc != 'valid' and value is not None)):
                     raise ValueError(f'{path.name}: value contradicts QC; invalid values must be blank')
                 if start <= stamp <= end:
-                    batch.append((str(stamp), row['project_id'], f'{_name(source)}__{_name(variable)}',
+                    batch.append((str(stamp), row['project_id'], column_names[variable],
                                   value, qc, valid, expected, min(fraction, 1.)))
                     if len(batch) >= 10000:
                         db.executemany('INSERT INTO observations VALUES (?, ?, ?, ?, ?, ?, ?, ?)', batch)
@@ -226,7 +250,7 @@ def _ingest(db, tables, projects, start, end):
         db.commit()
 
 
-def _rows(db, projects, bases, start, end):
+def _rows(db, projects, bases, start, end, *, quality=False):
     offsets = {base: 2 + index * 5 for index, base in enumerate(bases)}
     cursor = iter(db.execute('SELECT * FROM observations ORDER BY date, project, column_name'))
     observation = next(cursor, None)
@@ -239,11 +263,12 @@ def _rows(db, projects, bases, start, end):
                 offset = offsets[observation[2]]
                 row[offset:offset + 5] = observation[3:]
                 observation = next(cursor, None)
-            yield row
+            yield row[:2] + ([value for i in range(len(bases)) for value in row[3+i*5:7+i*5]]
+                             if quality else row[2::5])
         stamp += timedelta(days=1)
 
 
-def _write(path, output, columns, rows):
+def _write(path, output, columns, rows, *, quality=False):
     if output.suffix == '.parquet':
         try:
             import pyarrow as pa
@@ -251,8 +276,10 @@ def _write(path, output, columns, rows):
         except ImportError as error:
             raise ValueError('Parquet export requires the optional pyarrow package') from error
         types = [pa.date32(), pa.string()]
-        for _ in range((len(columns) - 2) // 5):
-            types.extend([pa.float64(), pa.string(), pa.int16(), pa.int16(), pa.float64()])
+        if quality:
+            types.extend([pa.string(), pa.int16(), pa.int16(), pa.float64()] * ((len(columns)-2)//4))
+        else:
+            types.extend([pa.float64()] * (len(columns)-2))
         schema = pa.schema(zip(columns, types))
         with pq.ParquetWriter(path, schema, compression='snappy') as writer:
             batch = []
@@ -273,15 +300,18 @@ def _write(path, output, columns, rows):
 
 
 def export_daily(geojson, input_dirs, start, end, output):
-    """Verify completed source periods and atomically write a bounded-memory pivot."""
+    """Verify periods, stage both tables, and roll back failed file publication."""
     geojson, output = Path(geojson), Path(output)
     companion = Path(str(output) + '.manifest.json')
     if start > end or not input_dirs:
         raise ValueError('Specify input directories and an ordered date interval')
     if not output.name.endswith(('.csv', '.csv.gz', '.parquet')):
         raise ValueError('Output must end in .csv, .csv.gz or .parquet')
-    if output.is_dir() or companion.is_dir():
-        raise ValueError('Output and companion manifest must be files, not directories')
+    suffix = '.csv.gz' if output.name.endswith('.csv.gz') else output.suffix
+    qc_output = output.with_name(output.name[:-len(suffix)] + '_qc' + suffix)
+    destinations = [output, qc_output, companion]
+    if any(path.is_dir() for path in destinations):
+        raise ValueError('Outputs and companion manifest must be files, not directories')
     doc = json.loads(geojson.read_text())
     if doc.get('type') != 'FeatureCollection' or doc.get('crs') or not doc.get('features'):
         raise ValueError('Use a nonempty WGS84 GeoJSON FeatureCollection')
@@ -299,36 +329,39 @@ def export_daily(geojson, input_dirs, start, end, output):
     geo_hash = digest(geojson)
     inputs, tables, schemas, paths = _inputs(input_dirs, geo_hash, projects, start, end)
     paths.add(geojson.resolve())
-    if output.resolve() in paths or companion.resolve() in paths:
+    if any(path.resolve() in paths for path in destinations):
         raise ValueError('Output must not overwrite an input file')
+    if len({path.resolve() for path in destinations}) != len(destinations):
+        raise ValueError('Output files must not refer to the same path')
     columns = {'date': dict(description='UTC calendar date'),
                'project_id': dict(description='Canonical GeoJSON project identifier')}
+    qc_columns = dict(columns)
     if len({_name(source) for source in schemas}) != len(schemas):
         raise ValueError('Source prefix collision after sanitizing identifiers')
     bases = []
     for source, schema in sorted(schemas.items()):
         for variable, definition in sorted(schema.items()):
-            base = f'{_name(source)}__{_name(variable)}'
+            base = _value_column(source, variable, definition['units'])
             names = [base, *[base + '__' + key for key in QUALITY]]
-            if any(name in columns for name in names):
+            if base in columns:
                 raise ValueError(f'Export column name collision: {base}')
             bases.append(base)
             columns[base] = dict(source=source, variable=variable, **definition)
             for key, name in zip(QUALITY, names[1:]):
-                columns[name] = dict(source=source, variable=variable, quality_field=key,
-                                     description=f'{key} for {base}')
-    report = dict(schema_version=1, output_file=output.name, start=str(start), end=str(end),
+                qc_columns[name] = dict(source=source, variable=variable, value_column=base, quality_field=key,
+                                        description=f'{key} for {base}')
+    report = dict(schema_version=2, output_file=output.name, qc_file=qc_output.name, start=str(start), end=str(end),
                   day='UTC', row_key=['date', 'project_id'],
                   row_count=((end - start).days + 1) * len(projects),
                   project_count=len(projects), catchment_part=next(iter(parts)),
                   geometry_file=geojson.name, geometry_sha256=geo_hash,
                   project_metadata=projects, geometry_metadata=doc.get('metadata', {}),
-                  columns=columns, inputs=inputs,
+                  columns=columns, qc_columns=qc_columns, inputs=inputs,
                   missing_policy='Null value and missing_record QC for absent observations within verified period coverage; incomplete manifest coverage is rejected',
                   exporter_sha256=digest(__file__))
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='.daily-export-', dir=output.parent) as folder:
-        temporary, metadata = Path(folder) / 'table', Path(folder) / 'manifest.json'
+        temporary, quality_table, metadata = (Path(folder)/name for name in ('values', 'quality', 'manifest.json'))
         with closing(sqlite3.connect(Path(folder) / 'pivot.sqlite')) as db:
             db.execute('PRAGMA journal_mode=OFF')
             db.execute('PRAGMA synchronous=OFF')
@@ -341,20 +374,27 @@ def export_daily(geojson, input_dirs, start, end, output):
             except sqlite3.IntegrityError as error:
                 raise ValueError('Duplicate source-variable observation for a project and date') from error
             _write(temporary, output, list(columns), _rows(db, projects, bases, start, end))
+            _write(quality_table, qc_output, list(qc_columns),
+                   _rows(db, projects, bases, start, end, quality=True), quality=True)
         report['output_sha256'] = digest(temporary)
+        report['qc_output_sha256'] = digest(quality_table)
         metadata.write_text(json.dumps(report, indent=2, allow_nan=False) + '\n')
-        backup = Path(folder) / 'previous_table'
-        had_output = output.exists() or output.is_symlink()
-        if had_output:
-            os.link(output, backup, follow_symlinks=False)
-        temporary.replace(output)
+        backups, published = {}, []
+        for index, target in enumerate(destinations):
+            if target.exists() or target.is_symlink():
+                backups[target] = Path(folder)/f'previous_{index}'
+                os.link(target, backups[target], follow_symlinks=False)
         try:
-            metadata.replace(companion)
+            # The manifest is the commit marker: consumers verify both output hashes.
+            for staged, target in zip([temporary, quality_table, metadata], destinations):
+                staged.replace(target)
+                published.append(target)
         except OSError:
-            if had_output:
-                backup.replace(output)
-            else:
-                output.unlink()
+            for target in reversed(published):
+                if target in backups:
+                    backups[target].replace(target)
+                else:
+                    target.unlink()
             raise
     return report
 
@@ -365,13 +405,14 @@ def main():
     parser.add_argument('--input-dir', required=True, nargs='+', type=Path)
     parser.add_argument('--start', required=True, type=date.fromisoformat)
     parser.add_argument('--end', required=True, type=date.fromisoformat)
-    parser.add_argument('--output', required=True, type=Path)
+    parser.add_argument('--output', required=True, type=Path, help='Values table; also writes _qc and manifest siblings')
     args = parser.parse_args()
     try:
         report = export_daily(args.geojson, args.input_dir, args.start, args.end, args.output)
     except (ValueError, OSError, csv.Error) as error:
         parser.error(str(error))
     print(f"Wrote {report['row_count']:,} daily project rows to {args.output}")
+    print(f"Quality fields: {args.output.with_name(report['qc_file'])}")
 
 
 if __name__ == '__main__':

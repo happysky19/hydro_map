@@ -31,6 +31,7 @@ class ExportDailyTests(unittest.TestCase):
             for identifier in ('A', 'B')])))
         self.start, self.end = date(2024, 2, 28), date(2024, 3, 1)
         self.output = self.root / 'delivery.csv'
+        self.qc_output = self.root / 'delivery_qc.csv'
 
     def row(self, source='aorc_v1.1', stamp='2024-02-28', project='A', **changes):
         return dict(date=stamp, source=source, project_id=project,
@@ -85,6 +86,12 @@ class ExportDailyTests(unittest.TestCase):
         self.period(cds, [], '2024-03', start='2024-03-01', end='2024-03-01')
         report = self.export([aorc, cds])
         rows = self.read()
+        self.assertEqual(list(rows[0]), ['date', 'project_id', 'aorc_v1_1__precipitation_mm',
+                                         'era5_land_cds__precipitation_mm'])
+        quality = self.read(self.qc_output)
+        self.assertEqual([(r['date'], r['project_id']) for r in quality],
+                         [(r['date'], r['project_id']) for r in rows])
+        self.assertEqual(len(quality[0]), 10)
         self.assertEqual(len(rows), 6)
         self.assertEqual([(r['date'], r['project_id']) for r in rows], [
             ('2024-02-28', 'A'), ('2024-02-28', 'B'), ('2024-02-29', 'A'),
@@ -92,15 +99,58 @@ class ExportDailyTests(unittest.TestCase):
         self.assertEqual(rows[0]['aorc_v1_1__precipitation_mm'], '2.5')
         self.assertEqual(rows[0]['era5_land_cds__precipitation_mm'], '2.5')
         self.assertEqual(rows[2]['aorc_v1_1__precipitation_mm'], '')
-        self.assertEqual(rows[2]['aorc_v1_1__precipitation_mm__qc'], 'missing_record')
-        self.assertEqual(rows[4]['aorc_v1_1__precipitation_mm__qc'], 'invalid_hours')
-        self.assertEqual(rows[4]['aorc_v1_1__precipitation_mm__valid_hours'], '23')
+        self.assertEqual(quality[2]['aorc_v1_1__precipitation_mm__qc'], 'missing_record')
+        self.assertEqual(quality[4]['aorc_v1_1__precipitation_mm__qc'], 'invalid_hours')
+        self.assertEqual(quality[4]['aorc_v1_1__precipitation_mm__valid_hours'], '23')
         manifest = json.loads(Path(str(self.output) + '.manifest.json').read_text())
         self.assertEqual(report['row_count'], 6)
         self.assertEqual(manifest['output_sha256'], digest(self.output))
+        self.assertEqual(manifest['schema_version'], 2)
+        self.assertEqual(manifest['qc_file'], 'delivery_qc.csv')
+        self.assertEqual(manifest['qc_output_sha256'], digest(self.qc_output))
+        self.assertEqual(set(manifest['columns']), set(rows[0]))
+        self.assertEqual(set(manifest['qc_columns']), set(quality[0]))
         self.assertEqual(manifest['columns']['aorc_v1_1__precipitation_mm']['units'], 'mm')
         self.assertEqual(manifest['inputs'][0]['metadata'], json.loads((aorc / 'run.json').read_text()))
         self.assertEqual(manifest['catchment_part'], 'local')
+
+    def test_unit_names_preserve_values_and_source_variable_mapping(self):
+        fields = [
+            ('tmean_c', 'degC', 'tmean_degC', -1.25),
+            ('wind_speed_ms', 'm/s', 'wind_speed_m_s', 5.),
+            ('specific_humidity_kgkg', 'kg/kg', 'specific_humidity_kg_kg', .006),
+            ('surface_pressure_pa', 'Pa', 'surface_pressure_Pa', 90000.),
+            ('vapor_pressure_deficit_kpa', 'kPa', 'vapor_pressure_deficit_kPa', .5),
+            ('shortwave_down_mean_wm2', 'W/m2', 'shortwave_down_mean_W_m2', 100.),
+            ('net_radiation_energy_mjm2', 'MJ/m2', 'net_radiation_energy_MJ_m2', 8.64),
+            ('snow_density_kgm3', 'kg/m3', 'snow_density_kg_m3', 250.),
+            ('soil_moisture_layer1_m3m3', 'm3/m3', 'soil_moisture_layer1_m3_m3', .25),
+            ('relative_humidity_pct', '%', 'relative_humidity_pct', 80.),
+            ('cloud_cover_fraction', '1', 'cloud_cover_fraction', .5),
+            ('snow_depth_m', 'm', 'snow_depth_m', .8),
+            ('precipitation_mm', 'mm', 'precipitation_mm', 0.),
+            ('pet_hargreaves_mm', 'mm/day', 'pet_hargreaves_mm_day', 2.),
+        ]
+        folder = self.source('fields', 'example')
+        path = folder/'run.json'
+        run = json.loads(path.read_text())
+        run['daily_schema'] = {name: dict(units=units, statistic='mean') for name, units, _, _ in fields}
+        path.write_text(json.dumps(run))
+        observations = []
+        for name, units, _, value in fields:
+            row = self.row('example')
+            row.update(variable=name, units=units, value=str(value))
+            observations.append(row)
+        self.period(folder, observations)
+        report = self.export([folder])
+        values = self.read()[0]
+        for name, units, exported, value in fields:
+            with self.subTest(variable=name):
+                column = f'example__{exported}'
+                self.assertIn(column, values)
+                self.assertEqual(float(values[column]), value)
+                self.assertEqual(report['columns'][column]['variable'], name)
+                self.assertEqual(report['columns'][column]['units'], units)
 
     def test_missing_period_is_not_confused_with_missing_observations(self):
         folder = self.source()
@@ -113,11 +163,13 @@ class ExportDailyTests(unittest.TestCase):
         daily = self.period(folder, [self.row()])
         daily.write_bytes(daily.read_bytes() + b'changed')
         self.output.write_text('keep data')
+        self.qc_output.write_text('keep quality')
         companion = Path(str(self.output) + '.manifest.json')
         companion.write_text('keep metadata')
         with self.assertRaisesRegex(ValueError, 'hash'):
             self.export([folder])
         self.assertEqual(self.output.read_text(), 'keep data')
+        self.assertEqual(self.qc_output.read_text(), 'keep quality')
         self.assertEqual(companion.read_text(), 'keep metadata')
 
     def test_duplicate_observations_are_rejected(self):
@@ -175,8 +227,9 @@ class ExportDailyTests(unittest.TestCase):
         (folder / 'run.json').write_text(json.dumps(run))
         self.period(folder, [self.row()])
         self.export([folder])
-        self.assertTrue(all(row['aorc_v1_1__tmean_c'] == '' and
-                            row['aorc_v1_1__tmean_c__qc'] == 'missing_record' for row in self.read()))
+        self.assertTrue(all(row['aorc_v1_1__tmean_degC'] == '' for row in self.read()))
+        self.assertTrue(all(row['aorc_v1_1__tmean_degC__qc'] == 'missing_record'
+                            for row in self.read(self.qc_output)))
 
     def test_manifest_directory_conflict_preserves_existing_output(self):
         folder = self.source()
@@ -191,6 +244,7 @@ class ExportDailyTests(unittest.TestCase):
         folder = self.source()
         self.period(folder, [self.row()])
         self.output.write_text('keep data')
+        self.qc_output.write_text('keep quality')
         companion = Path(str(self.output) + '.manifest.json')
         companion.write_text('keep metadata')
         replace = Path.replace
@@ -203,7 +257,64 @@ class ExportDailyTests(unittest.TestCase):
         with patch.object(Path, 'replace', fail_manifest), self.assertRaisesRegex(OSError, 'interrupted'):
             self.export([folder])
         self.assertEqual(self.output.read_text(), 'keep data')
+        self.assertEqual(self.qc_output.read_text(), 'keep quality')
         self.assertEqual(companion.read_text(), 'keep metadata')
+
+    def test_qc_publish_failure_preserves_the_existing_pair(self):
+        folder = self.source()
+        self.period(folder, [self.row()])
+        self.output.write_text('keep data')
+        self.qc_output.write_text('keep quality')
+        companion = Path(str(self.output) + '.manifest.json')
+        companion.write_text('keep metadata')
+        replace = Path.replace
+        def fail_qc(path, target):
+            if target == self.qc_output:
+                raise OSError('QC publication interrupted')
+            return replace(path, target)
+        with patch.object(Path, 'replace', fail_qc), self.assertRaisesRegex(OSError, 'interrupted'):
+            self.export([folder])
+        self.assertEqual(self.output.read_text(), 'keep data')
+        self.assertEqual(self.qc_output.read_text(), 'keep quality')
+        self.assertEqual(companion.read_text(), 'keep metadata')
+
+    def test_failed_first_publication_removes_both_new_tables(self):
+        folder = self.source()
+        self.period(folder, [self.row()])
+        companion = Path(str(self.output) + '.manifest.json')
+        replace = Path.replace
+        def fail_manifest(path, target):
+            if target == companion:
+                raise OSError('manifest publication interrupted')
+            return replace(path, target)
+        with patch.object(Path, 'replace', fail_manifest), self.assertRaisesRegex(OSError, 'interrupted'):
+            self.export([folder])
+        for path in (self.output, self.qc_output, companion):
+            self.assertFalse(path.exists())
+
+    def test_qc_directory_conflict_does_not_publish_values(self):
+        folder = self.source()
+        self.period(folder, [self.row()])
+        self.qc_output.mkdir()
+        with self.assertRaisesRegex(ValueError, 'directories'):
+            self.export([folder])
+        self.assertFalse(self.output.exists())
+
+    def test_unit_name_collision_and_unknown_units_are_rejected(self):
+        folder = self.source()
+        path = folder/'run.json'
+        run = json.loads(path.read_text())
+        for schema, message in [
+            ({'wind_speed_ms': dict(units='m/s', statistic='mean'),
+              'wind_speed_m_s': dict(units='m/s', statistic='mean')}, 'collision'),
+            ({'temperature': dict(units='furlongs', statistic='mean')}, 'unit'),
+        ]:
+            run['daily_schema'] = schema
+            path.write_text(json.dumps(run))
+            self.period(folder, [])
+            with self.subTest(schema=schema), self.assertRaisesRegex(ValueError, message):
+                self.export([folder])
+            self.assertFalse(self.output.exists())
 
     def test_invalid_qc_cannot_hide_a_numeric_value(self):
         folder = self.source()
@@ -250,6 +361,7 @@ class ExportDailyTests(unittest.TestCase):
         output = self.root / 'delivery.csv.gz'
         self.export([folder], output)
         self.assertEqual(len(self.read(output)), 6)
+        self.assertEqual(len(self.read(self.root/'delivery_qc.csv.gz')), 6)
 
     def test_generated_cds_monthly_tables_export_together(self):
         from download_cds import run_pipeline
@@ -271,7 +383,8 @@ class ExportDailyTests(unittest.TestCase):
         export_daily(self.geojson, folders, stamp, stamp, self.output)
         rows = self.read()
         self.assertEqual(len(rows), 1)
-        self.assertEqual(len(rows[0]), 132)
+        self.assertEqual(len(rows[0]), 28)
+        self.assertEqual(len(self.read(self.qc_output)[0]), 106)
         self.assertAlmostEqual(float(rows[0]['era5_land_cds__snow_water_equivalent_mm']), 200)
         self.assertAlmostEqual(float(rows[0]['era5_cds__cloud_cover_fraction']), .5)
 
@@ -287,6 +400,11 @@ class ExportDailyTests(unittest.TestCase):
         self.assertEqual(rows[0]['date'], self.start)
         self.assertEqual(rows[0]['aorc_v1_1__precipitation_mm'], 2.5)
         self.assertIsNone(rows[1]['aorc_v1_1__precipitation_mm'])
+        quality = pq.read_table(self.root/'delivery_qc.parquet').to_pylist()
+        self.assertEqual(quality[0]['date'], rows[0]['date'])
+        self.assertEqual(quality[1]['aorc_v1_1__precipitation_mm__qc'], 'missing_record')
+        self.assertEqual(quality[0]['aorc_v1_1__precipitation_mm__valid_hours'], 24)
+        self.assertIsInstance(quality[0]['aorc_v1_1__precipitation_mm__min_valid_area_fraction'], float)
 
 
 if __name__ == '__main__':

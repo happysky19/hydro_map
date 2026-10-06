@@ -71,7 +71,13 @@ class DownloadDailyTests(unittest.TestCase):
         with self.output.open() as handle:
             rows = list(csv.DictReader(handle))
         self.assertEqual(len(rows), 1)
-        self.assertEqual(len(rows[0]), 227)
+        self.assertEqual(len(rows[0]), 47)
+        with self.output.with_name('daily_qc.csv').open() as handle:
+            quality = list(csv.DictReader(handle))
+        self.assertEqual(len(quality), len(rows))
+        self.assertEqual(len(quality[0]), 182)
+        self.assertEqual(quality[0]['aorc_v1_1__precipitation_mm__qc'], 'valid')
+        self.assertFalse(any(name.endswith('__qc') for name in rows[0]))
         self.assertEqual(float(rows[0]['aorc_v1_1__precipitation_mm']), 24.)
         self.assertEqual(float(rows[0]['era5_land_cds__precipitation_mm']), 2.)
         self.assertEqual(float(rows[0]['era5_cds__cloud_cover_fraction']), .5)
@@ -140,10 +146,12 @@ class DownloadDailyTests(unittest.TestCase):
         with path.open() as stream:
             row = next(csv.DictReader(stream))
         self.assertEqual(row['project_id'], 'A')
-        self.assertEqual(len(row), 227)
+        self.assertEqual(len(row), 47)
 
     def test_source_failure_preserves_previous_delivery(self):
         self.output.write_text('previous delivery\n')
+        quality = self.output.with_name('daily_qc.csv')
+        quality.write_text('previous quality\n')
         companion = Path(str(self.output) + '.manifest.json')
         companion.write_text('previous manifest\n')
         with ExitStack() as stack:
@@ -153,6 +161,7 @@ class DownloadDailyTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, 'Source unavailable'):
                     self.pipeline.run(self.geojson, self.day, self.day, self.output, cds_client=client)
         self.assertEqual(self.output.read_text(), 'previous delivery\n')
+        self.assertEqual(quality.read_text(), 'previous quality\n')
         self.assertEqual(companion.read_text(), 'previous manifest\n')
 
     def test_invalid_window_and_nonlocal_geometry_rejected_before_network(self):
