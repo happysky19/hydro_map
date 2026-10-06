@@ -8,3 +8,7 @@ data/
 outputs/
 figures/
 .DS_Store
+.cdsapirc
+.ecmwfapirc
+.env
+.env.*

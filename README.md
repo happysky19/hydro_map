@@ -21,6 +21,14 @@ The example uses **HydroSHEDS 15 arc-second flow directions**, tracing every cel
 
 The 43 project records represent **43 distinct local drainage domains**. Seven Mile and Waneta use their own dam outlets. Corra Linn uses its dam outlet; Kootenay Canal uses a downstream river control point at the canal return. No example projects share a polygon. The Canal polygon describes natural runoff generated between Corra Linn and the return reach, including lateral runoff to the bypass river. Turbine inflow also depends on upstream diversion and operating decisions. See [outlet sources and limitations](docs/project_outlets.md).
 
+## Historical daily data
+
+The [data pipeline guide](docs/data_pipeline.md) covers CDS token setup, AORC
+and ERA5/ERA5-Land downloads, derived variables, units, quality flags and final
+CSV/Parquet delivery. The research scripts preserve one source per variable
+and export one row per project and UTC date. Start with a short sample before
+running the full 1996-2025 period.
+
 ## Build options
 
 ```bash

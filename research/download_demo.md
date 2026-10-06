@@ -1,5 +1,10 @@
 # Hourly extraction and daily aggregation
 
+For the full AORC diagnostics, authenticated CDS products and final wide
+CSV/Parquet export, use the [data pipeline guide](../docs/data_pipeline.md).
+The examples and recorded runs below document the earlier base-field and
+public-mirror validations.
+
 These research scripts extract historical gridded estimates over WGS84
 catchments. They do not provide sensor-only observations or demonstrate
 hydrologic forecast skill. The requested window is **1996-01-01 through
