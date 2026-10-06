@@ -37,6 +37,8 @@ and derived variables, and exports `catchment_daily.csv` with 47 columns
 (the same keys and per-variable quality fields), and
 `catchment_daily.csv.manifest.json` with units and provenance. Both tables
 have the same 129 project-day rows in this example. Keep all three files.
+It also writes `catchment_daily.csv.checks/` with coverage and source-comparison
+plots, a PDF of project time series, and consistency/QC reports.
 Repeat the same command to resume completed source periods. AORC also needs
 the `zstd` command-line decoder on `PATH`.
 
@@ -45,6 +47,14 @@ and ERA5/ERA5-Land downloads, derived variables, units, quality flags and final
 CSV/Parquet delivery. The research scripts preserve one source per variable
 and export one row per project and UTC date. Start with a short sample before
 running the full 1996-2025 period.
+
+Read the [daily data notes](docs/data_notes.md) for measurement heights,
+variable definitions and how to interpret the checks. AORC wind is **10 m
+above ground**. To check an existing delivery without downloading again:
+
+```bash
+python research/check_daily.py outputs/catchment_daily.csv
+```
 
 ## Build options
 

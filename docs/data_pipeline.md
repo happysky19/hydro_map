@@ -20,12 +20,13 @@ python research/download_daily.py --geojson outputs/projects43_independent/dam_c
 ```
 
 This single-line command works in Bash, Git Bash and PowerShell. It reads all
-local projects in the GeoJSON and performs four stages automatically:
+local projects in the GeoJSON and performs five stages automatically:
 
 1. AORC download, native-grid diagnostics and daily aggregation.
 2. ERA5-Land download and daily catchment statistics.
 3. ERA5 download and daily catchment statistics.
 4. Verified values and QC exports, each with one row per project and UTC day.
+5. Consistency checks, coverage and source-comparison plots, and project time series.
 
 The same `--output` argument now produces three files:
 
@@ -41,6 +42,16 @@ fill missing values. Missing values retain their quality flags in the QC table;
 completion does not imply that every observation exists. Keep all three files.
 No separate aggregation or export command is needed.
 
+The `outputs/catchment_daily.csv.checks/` directory contains `coverage.png`,
+`source_comparison.png`, `timeseries.pdf` (one page per project), numerical
+checks and per-variable QC summaries. See the [daily data notes](data_notes.md)
+for measurement heights, signs, definitions and interpretation. To check an
+existing delivery without downloading, run:
+
+```bash
+python research/check_daily.py outputs/catchment_daily.csv
+```
+
 The required arguments are `--geojson`, `--start` and `--end`. If `--output`
 is omitted, the CSV is named `outputs/catchment_daily_START_END.csv`. For the
 full period, use a new output filename:
@@ -52,9 +63,12 @@ python research/download_daily.py --geojson outputs/projects43_independent/dam_c
 The script requires `zstd` and checks the local CDS configuration before
 starting AORC. This configuration check does not prove that the provider will
 accept the account, terms or requests. The source stages run sequentially.
-If any stage fails, the final delivery is not replaced. Repeating the same
+If a source stage fails, the final delivery is not replaced. Repeating the same
 command reuses hash-verified completed years/months and available source cache;
 an interrupted AORC year is recomputed.
+Post-export checks run on the saved delivery. If they fail, the files remain
+available, the command returns status 2, and the log gives the check-only command.
+Missing values are reported separately and are not filled automatically.
 
 Working files default to `OUTPUT.work/`, with `aorc/`, `era5-land/` and `era5/`
 source directories and a `cache/` directory. Retain this folder to resume.
@@ -413,6 +427,7 @@ mm/day and MJ/m²/day amounts in the tables above.
 | `research/download_cds.py` | Retrieve ERA5-Land/ERA5, calculate polygon statistics and write monthly daily files |
 | `research/cds_fields.py` | CDS variable definitions, soil weighting, conversions and freezing-level calculations |
 | `research/export_daily.py` | Verify source artifacts and export aligned daily values and QC tables plus their manifest |
+| `research/check_daily.py` | Check delivered values/QC, compare sources and plot coverage and project time series without downloading |
 
 For modeling, begin with AORC precipitation and temperature as meteorological
 forcing. Rain/snow partition and PET are calculated inputs with the method
