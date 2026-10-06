@@ -11,11 +11,13 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -e '.[maps]'
 hydro-map download --config configs/columbia.yaml --cache-dir data
-hydro-map build configs/columbia.yaml --cache-dir data --output outputs/catchments.geojson --csv-output outputs/polygon_grid_bbox.csv
-hydro-map plot outputs/catchments.geojson --project MICA --labels HydroBASINS --basemap terrain --output figures/mica.png
+hydro-map build configs/columbia.yaml --cache-dir data --output outputs/projects43/dam_catchments.geojson --csv-output outputs/projects43/polygon_grid_bbox.csv --table-output outputs/projects43/dam_catchments.csv
+hydro-map plot outputs/projects43/dam_catchments.geojson --project MICA --labels HydroBASINS --basemap terrain --output figures/mica.png
 ```
 
-The example selects 26 Columbia River basin projects. It is an editable selection, not a complete dam inventory. Change the YAML project list to define the upstream cutoffs for your application.
+The example selects **43 Pacific Northwest projects**, including Columbia basin projects and Ross on the Skagit. It is an editable selection, not a complete dam inventory. Change the YAML project list to define the upstream cutoffs for your application. `HUGH_KEENLEYSIDE` is the canonical ID for the project previously named `ARROW`; its tabular `project_code` remains `ARDB`.
+
+The 43 project records represent **41 distinct catchments**. Kootenay Canal/Corra Linn and Seven Mile/Waneta each share an explicitly declared outlet group because HydroBASINS level 12 does not resolve them separately. Their duplicated polygons are marked `geometry_status: shared_unit_approximation` and carry the same `forcing_group`. Count each group once when summing area or water volume. See [outlet sources and limitations](docs/project_outlets.md).
 
 ## Build options
 
@@ -27,7 +29,7 @@ hydro-map build configs/columbia.yaml --cache-dir data --output outputs/two_proj
 hydro-map build configs/columbia.yaml --source data/hybas_na_lev12_v1c/hybas_na_lev12_v1c.shp --output outputs/from_local.geojson
 ```
 
-`local` subtracts the upstream catchments of selected projects from each selected project's total upstream catchment. `total` retains the entire upstream catchment. `--projects` filters output only: every project in the YAML remains an upstream cutoff when calculating local catchments.
+`local` subtracts the upstream catchments of selected outlet groups from each group's total upstream catchment. `total` retains the entire upstream catchment. Shared projects do not subtract each other; both receive the same explicitly marked group polygon. `--projects` filters output only: every project in the YAML remains an upstream cutoff when calculating local catchments. Adding upstream projects can therefore change existing local boundaries; rebuild geometry and weather weights after changing the selection.
 
 Virtual endorheic connections (`ENDO=2`) are excluded by default. These links can connect internally draining basins for network representation; they do not necessarily represent physical surface-water drainage. `--include-virtual` enables them explicitly, and `--exclude-virtual` disables them. The YAML default is `dataset.include_virtual_connections`.
 
@@ -61,6 +63,8 @@ The example uses published Global Dam Watch river-aligned points where available
 
 The configured point must fall within its specified HydroBASINS unit. A mismatch fails validation; points are not automatically snapped to a nearby unit. Review the reference and unit together before changing either.
 
+Two projects may use the same unit only when both declare the same `outlet_group`. Group names must differ from project IDs, and a group cannot span different units. This is an explicit approximation, not a dam-wall delineation. Descriptive `kind` and `mw` values are configured inputs; they are not used to draw the polygons or independently audited as current plant capacities.
+
 Catchments contain whole HydroBASINS units, including the selected outlet unit. A unit ID identifies a dataset polygon and its downstream connection, not an exact dam outlet. This method cannot split a unit at the dam wall; exact dam delineation requires finer terrain and river data. Level 12 still has finite spatial resolution.
 
 ## GeoJSON output
@@ -69,25 +73,47 @@ Output uses the standard `FeatureCollection` → `features[]` → `Feature` stru
 
 | Property | Meaning |
 | --- | --- |
-| `id`, `name` | Configured project identifier and name |
+| `id`, `name`, `kind`, `mw` | Configured identifier, name, operational category and capacity; unknown category/capacity is null |
 | `lat`, `lon` | Configured reference-point coordinates |
-| `area` | Area of the emitted geometry, in km² |
+| `area` | Total upstream area, in km²; identical to `area_total` |
 | `area_local` | Selected-project local catchment area, in km² |
 | `area_total` | Total upstream catchment area, in km² |
+| `area_geometry` | Area of the actual emitted geometry, in km²; equals `area_local` for a local layer |
 | `up` | Direct selected upstream project IDs |
 | `above` | All selected upstream project IDs |
-| `down` | Nearest selected downstream project ID, or null |
+| `down` | Nearest selected downstream project ID when unique, otherwise null |
+| `down_candidates` | Downstream project IDs at the next outlet unit; multiple IDs identify a shared group |
 | `part` | `local` or `total` |
+| `forcing_group` | Unique catchment key for spatial aggregation and water-balance accounting |
+| `geometry_status` | `hydrobasins_delineation` or `shared_unit_approximation` |
+| `shared_outlet_projects` | IDs sharing this unit, or an empty list for an ordinary project |
 | `hybas_id`, `hybas_ids`, `unit_count` | Selected outlet unit, emitted geometry's member units, and their count |
 | `outlet_source`, `outlet_reference` | Reference-point provenance and interpretation |
 
-Areas are calculated afresh from the output polygons on the WGS84 ellipsoid. They are not copied from HydroRIVERS attributes or the source dataset's rounded area fields. Relationships describe the selected project network, not every dam or stream junction.
+Areas are calculated afresh from the corresponding total/local polygons on the WGS84 ellipsoid. They are not copied from HydroRIVERS attributes or the source dataset's rounded area fields. Relationships describe the selected outlet-unit network; they do not resolve the physical order or diversion routing inside shared groups.
+
+**Schema version 2 changes `area` to total upstream area.** Earlier versions used `area` for the emitted geometry. Use `area_geometry`, or recompute from `geometry`, for the actual layer area. Plotting and bounding-box export already recompute geometry area, so they do not depend on a stored `area` interpretation. Metadata records `schema_version: 2` and `area_property`.
 
 Collection metadata records the dataset version and URL, source-component SHA-256 hashes, virtual-connection setting, all local cutoffs, area method, and any repaired source geometries. Configured descriptive fields such as `river` and `country` are retained on features.
 
-The shared property contract is `id`, `name`, `lat`, `lon`, `area`, `area_local`, `up`, `above`, `down`, and `part`. Descriptive fields such as `owner`, `kind`, and `note` pass through when configured. `area_hydrorivers` and `divisions` require their own source data and definitions; this workflow does not substitute computed polygon area or empty objects for unknown values. Consumers should accept additional properties and collection metadata. Matching the structure does not imply identical boundaries or numeric values.
+The common property contract is `id`, `name`, `kind`, `mw`, `lat`, `lon`, `area`, `area_local`, and `part`, plus `geometry` on the same GeoJSON feature. Additional topology and provenance fields are retained. `area_hydrorivers` and `divisions` require their own source data and definitions; this workflow does not substitute computed polygon area or empty objects for unknown values. Consumers should accept additional properties and collection metadata. Matching the structure does not imply identical boundaries or numeric values.
 
 `lat` and `lon` identify the configured outlet reference point. They are distinct from the polygon centroid exported in the CSV. The feature `id` and network links retain canonical project IDs; `project_code` supplies the optional tabular identifier.
+
+All 43 geometries and attributes are in **one GeoJSON file**. An external reference file can use the same standard FeatureCollection layout. With optional GeoPandas installed, both can be inspected identically:
+
+```python
+import geopandas as gpd
+
+gdf = gpd.read_file("outputs/projects43/dam_catchments.geojson")
+print(gdf[["id", "name", "kind", "mw", "lat", "lon", "area", "area_local", "part", "geometry"]])
+print(gdf["id"].nunique())
+print(gdf.iloc[0]["geometry"])
+```
+
+The final line displays WKT such as `POLYGON ((...))`; GeoJSON itself stores coordinate arrays, not a WKT string. Coordinates are always longitude first. For an external file, verify the meaning of `area` and its CRS; map comparisons calculate areas directly from the polygons.
+
+`--table-output outputs/projects43/dam_catchments.csv` additionally writes the common attributes and WKT `geometry` in each row of a single CSV. It also includes `area_total`, `area_geometry` and shared-group fields. This is different from the bounding-box CSV below: the geometry table contains the full boundary. Read that CSV with `pandas.read_csv`, then `geopandas.GeoSeries.from_wkt(df.pop("geometry"), crs="EPSG:4326")` to construct its spatial column. Use the GeoJSON for the plotting and forcing commands.
 
 ## Bounding-box CSV
 
@@ -100,6 +126,8 @@ hydro-map build configs/columbia.yaml --output outputs/catchments.geojson --csv-
 Columns, in order: `ProjectCode`, `PolygonName`, `MinLatitude`, `MaxLatitude`, `MinLongitude`, `MaxLongitude`, `CentroidLatitude`, `CentroidLongitude`, `AreaKm2`, `BufferDegreesApplied`.
 
 Rows follow YAML order. `PolygonName` combines the project name with `local incremental catchment` or `total upstream catchment`, according to `--part`. The CSV uses the same selected-project cutoffs and virtual-connection setting as its companion GeoJSON.
+
+Shared-unit rows instead include `shared local catchment [GROUP]` or `shared total catchment [GROUP]` in `PolygonName`, retaining the same ten columns while making duplicated areas visible in the standalone table.
 
 Area is recalculated on the WGS84 ellipsoid from the unbuffered geometry and written to one decimal place. Centroids use the unbuffered polygon in the longitude/latitude plane, rounded to four decimals; these coordinates are polygon centroids, not dam reference points or geodesic centers.
 

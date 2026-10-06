@@ -5,10 +5,12 @@ catchments. They do not provide sensor-only observations or demonstrate
 hydrologic forecast skill. The requested window is **1996-01-01 through
 2025-12-31**: 10,958 Gregorian dates, including leap days.
 
-Verified on 2026-10-06: the December 29–31 demo covers all 26 catchments.
-AORC yields 910 valid daily statistics out of 936; the 26 blanks are exactly
-the unresolved December 31 precipitation totals. ERA5-Land yields 390 valid
-daily statistics out of 390. An independent comparison of Mica/Oxbow AORC
+Verified on 2026-10-06: the December 29–31 demo covers all 43 project records
+and 41 distinct forcing groups. AORC yields 1,505 valid daily statistics out of
+1,548; the 43 blanks are exactly the unresolved December 31 precipitation
+totals. ERA5-Land yields 645 valid daily statistics out of 645. Both shared
+project pairs have identical daily values in each source. An earlier,
+independent comparison of Mica/Oxbow AORC
 against native NOAA P/T/q/p on December 31 at 22Z and 23Z found zero raw-value
 or mask differences in 331,296 cell comparisons; all 16 polygon means agreed
 within CSV rounding. These tests validate retrieval and processing for the
@@ -28,8 +30,8 @@ python -m pip install -e . -r research/requirements.txt
 
 ```sh
 python research/download_aorc.py \
-  --geojson outputs/catchments.geojson \
-  --output-dir outputs/aorc_demo --cache-dir data/aorc_demo_cache \
+  --geojson outputs/projects43/dam_catchments.geojson \
+  --output-dir outputs/aorc_demo_43 --cache-dir data/aorc_demo_cache \
   --start 2025-12-29 --end 2025-12-31 \
   --projects MICA OXBOW --max-download-gb 1 --keep-chunks
 ```
@@ -41,15 +43,22 @@ fractional intersections of native cells and polygons in the equal-area
 EPSG:6933 projection. Longitude/latitude are never treated as planar area.
 The input geometry hash and exact request hashes are recorded.
 
-For all 26 projects and 30 years, run on a compute host with reliable network
+The four shared-unit approximations remain separate project rows. `run.json`
+records their `forcing_group`, `geometry_status` and shared members. Count
+each group once in an area or water-volume balance; duplicated project rows
+are not independent local catchments. Declared shared members must have
+identical geometry and catchment part. Unmarked duplicate geometries are not
+automatically assigned a shared group.
+
+For all 43 projects and 30 years, run on a compute host with reliable network
 access. Source reads are potentially TB-scale even though the output tables
 are much smaller. A 2,000 GB transfer ceiling is an upper limit, not an estimate
 of the downloaded table size:
 
 ```sh
 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 python research/download_aorc.py \
-  --geojson inputs/catchments.geojson \
-  --output-dir data/aorc_1996_2025 --cache-dir cache/aorc \
+  --geojson inputs/projects43/dam_catchments.geojson \
+  --output-dir data/aorc_1996_2025_projects43 --cache-dir cache/aorc \
   --start 1996-01-01 --end 2025-12-31 --workers 4 \
   --max-download-gb 2000
 ```
@@ -99,20 +108,22 @@ Sources: [NOAA AORC distribution](https://hydrology.nws.noaa.gov/pub/AORC/V1.1/)
 
 ```sh
 python research/download_era5_land.py \
-  --geojson outputs/catchments.geojson \
-  --output outputs/era5_land_demo \
+  --geojson outputs/projects43/dam_catchments.geojson \
+  --output outputs/era5_land_demo_43 \
   --start-date 2025-12-29 --end-date 2025-12-31
 
 python research/aggregate_daily.py \
-  --input outputs/era5_land_demo/hourly.csv \
-  --output outputs/era5_land_demo/daily.csv \
+  --input outputs/era5_land_demo_43/hourly.csv \
+  --output outputs/era5_land_demo_43/daily.csv \
   --start 2025-12-29 --end 2025-12-31
 ```
 
 This small demo downloads native temperature, precipitation and SWE from the
 public NCAR catalog, in short requests to avoid subset-service timeouts. It
 validates returned units, grid, calendar, forecast/analysis type and overlap
-consistency. It includes 2026-01-01 00Z, required for December 31 precipitation.
+consistency. The subset bounds are calculated from the input geometry, padded
+and snapped to the source grid. It includes 2026-01-01 00Z, required for
+December 31 precipitation.
 An initial 00Z precipitation record lacks its previous hour and is explicitly
 flagged; that record belongs to the day before the requested daily window.
 
@@ -195,5 +206,5 @@ row includes `units`, `temporal_kind`, `valid_area_fraction` and `qc`. Duplicate
 hours, unsupported units and changing temporal definitions fail explicitly.
 Missing days are emitted with blank values, `expected_hours=24`, actual
 `valid_hours` and a quality flag. For the eight AORC inputs, the 12 daily
-statistics produce 3,418,896 long-format rows over 26 projects and 30 years;
+statistics produce 5,654,328 long-format rows over 43 projects and 30 years;
 the row count alone does not establish that the values are complete.

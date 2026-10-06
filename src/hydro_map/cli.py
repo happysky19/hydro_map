@@ -22,6 +22,7 @@ def _parser():
     build.add_argument("--source", type=Path, help="Use an existing regional .shp file")
     build.add_argument("--output", type=Path, required=True)
     build.add_argument("--csv-output", type=Path, help="Also write a project bounding-box CSV")
+    build.add_argument("--table-output", type=Path, help="Also write project attributes and WKT geometry in one CSV")
     build.add_argument("--bbox-buffer", type=float, default=0.3, help="CSV bounding-box padding in degrees (default: 0.3)")
     build.add_argument("--part", choices=("local", "total"), default="local")
     build.add_argument("--projects", nargs="+", help="Filter outputs; all YAML projects remain upstream cutoffs")
@@ -72,14 +73,25 @@ def main(argv=None):
                 raise ValueError("Output must differ from the input files")
             if args.csv_output and args.csv_output.resolve() in inputs | {args.output.resolve()}:
                 raise ValueError("CSV output must differ from the input files and GeoJSON output")
+            if args.table_output and args.table_output.resolve() in inputs | {args.output.resolve()} | (
+                    {args.csv_output.resolve()} if args.csv_output else set()):
+                raise ValueError("Geometry table output must differ from inputs and other outputs")
             result = build_catchments(config, source, args.part, args.projects)
             args.output.parent.mkdir(parents=True, exist_ok=True)
             args.output.write_text(json.dumps(result, indent=2, ensure_ascii=False, allow_nan=False) + "\n", encoding="utf-8")
             print(f"Wrote {len(result['features'])} {args.part} catchments to {args.output}")
+            shared = result["metadata"]["shared_outlet_groups"]
+            if shared:
+                count = sum(len(members) for members in shared.values())
+                print(f"Shared-unit approximations: {count} projects in {len(shared)} groups; count each forcing_group once for area or volume.")
             if args.csv_output:
                 from .csv_export import write_bbox_csv
                 count = write_bbox_csv(result, args.csv_output, args.bbox_buffer)
                 print(f"Wrote {count} project summaries to {args.csv_output}")
+            if args.table_output:
+                from .csv_export import write_geometry_csv
+                count = write_geometry_csv(result, args.table_output)
+                print(f"Wrote {count} project rows with geometry to {args.table_output}")
             repairs = result["metadata"]["repaired_geometry_count"]
             if repairs:
                 print(f"Repaired {repairs} source geometries; unit IDs are recorded in the output metadata.")

@@ -6,6 +6,7 @@ import csv
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+from math import ceil, floor
 from pathlib import Path
 import re
 import subprocess
@@ -20,6 +21,7 @@ from pyproj import Transformer
 from hydro_map.plotting import load_features
 from probe_daymet_polygons import fractional_weights, strict_area_mean
 from probe_era5_land import FIELDS
+from plan_download import forcing_metadata
 
 HOST = 'https://tds.gdex.ucar.edu/thredds/'
 SOURCE = 'era5_land_ncar'
@@ -30,6 +32,20 @@ COLUMNS = ('source', 'project_id', 'time_utc', 'variable', 'value', 'units',
 
 def sha256(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def subset_query(features):
+    """Pad the combined geometry by one native cell and request 0–360 longitude."""
+    if not features or any(f['properties'].get('part') != 'local' for f in features):
+        raise ValueError('The demo requires explicit local catchments')
+    bounds = np.array([feature['geometry'].bounds for feature in features])
+    west, south = bounds[:, :2].min(axis=0)
+    east, north = bounds[:, 2:].max(axis=0)
+    west, east = round((floor(west*10)-1)/10 % 360, 1), round((ceil(east*10)+1)/10 % 360, 1)
+    if west >= east:
+        raise ValueError('Subset crosses the 0-degree longitude seam; split the input geometries')
+    return dict(west=west, south=max(-90, (floor(south*10)-1)/10),
+                east=east, north=min(90, (ceil(north*10)+1)/10))
 
 
 def catalog_segments(content, variable, start, end):
@@ -136,13 +152,8 @@ def main():
     ids = [f['properties'].get('id') for f in features]
     if not features or any(not isinstance(i, str) or not i.strip() or i != i.strip() for i in ids) or len(set(ids)) != len(ids):
         raise ValueError('Catchments require unique nonempty identifiers')
-    bounds = (-122.35, 40.95, -109.55, 53.05)
-    for feature in features:
-        w, s, e, n = feature['geometry'].bounds
-        if feature['properties'].get('part') != 'local':
-            raise ValueError('The demo requires explicit local catchments')
-        if not (bounds[0] <= w < e <= bounds[2] and bounds[1] <= s < n <= bounds[3]):
-            raise ValueError('Catchment exceeds the Columbia subset cell edges')
+    bounds = subset_query(features)
+    forcing = forcing_metadata(features)
     manifest_path = args.output/'requests.json'
     manifest = json.loads(manifest_path.read_text()) if manifest_path.exists() else {}
     transferred = 0
@@ -198,7 +209,7 @@ def main():
             raise ValueError(f'No observed catalog segment covers {variable}')
         parts = []
         for source_path, first, last in request_windows(segments,args.request_hours):
-            query = dict(var=variable, north=53, south=41, west=237.7, east=250.4, horizStride=1,
+            query = dict(var=variable, **bounds, horizStride=1,
                          time_start=first.strftime('%Y-%m-%dT%H:%M:%SZ'), time_end=last.strftime('%Y-%m-%dT%H:%M:%SZ'),
                          timeStride=1, accept='netcdf')
             url = HOST+'ncss/grid/'+source_path+'?'+urlencode(query)
@@ -208,7 +219,7 @@ def main():
                 field, time = ds[variable], ds['valid_time']
                 validate_metadata(field,time,variable)
                 current_lat = np.asarray(ds['latitude'][:])
-                current_lon = np.asarray(ds['longitude'][:])-360
+                current_lon = (np.asarray(ds['longitude'][:])+180) % 360-180
                 if lat is None:
                     lat, lon = current_lat, current_lon
                 elif not np.array_equal(lat, current_lat) or not np.array_equal(lon, current_lon):
@@ -258,10 +269,10 @@ def main():
     with (args.output/'hourly.csv').open('w',newline='') as stream:
         writer=csv.DictWriter(stream,fieldnames=COLUMNS);writer.writeheader();writer.writerows(rows)
     (args.output/'polygon_weights.json').write_text(json.dumps(weight_info,indent=2)+'\n')
-    result = dict(status='bounded_hourly_demo_complete', source=SOURCE, projects=sorted(ids),
+    result = dict(status='bounded_hourly_demo_complete', source=SOURCE, projects=sorted(ids), **forcing,
                   start_date=args.start_date,end_date=args.end_date,raw_hours=len(expected_times),
                   input_sha256=sha256(args.geojson),downloaded_new_bytes=transferred,cache_only=args.cache_only,
-                  request_hours=args.request_hours,
+                  request_hours=args.request_hours,subset_bounds_0_to_360=bounds,
                   script_sha256=sha256(__file__),
                   grid=dict(crs='EPSG:4326',latitude_centers=[float(lat.min()),float(lat.max())],
                             longitude_centers=[float(lon.min()),float(lon.max())],

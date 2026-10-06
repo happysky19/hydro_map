@@ -21,6 +21,32 @@ projects:
   - {id: LOWER, name: Lower, outlet: {hybas_id: 101, lon: -118, lat: 51}}
 """)
 
+    def test_shared_unit_requires_one_explicit_group_for_every_member(self):
+        result = self.load("""
+dataset: {region: na, level: 12, version: '1c'}
+projects:
+  - {id: A, name: A, outlet_group: AB, outlet: {hybas_id: 101, lon: -118, lat: 52}}
+  - {id: B, name: B, outlet_group: AB, outlet: {hybas_id: 101, lon: -118, lat: 51}}
+""")
+        self.assertEqual([p.metadata['outlet_group'] for p in result.projects], ['AB', 'AB'])
+        for second in ('', 'outlet_group: OTHER, '):
+            with self.subTest(second=second), self.assertRaisesRegex(ValueError, 'same.*unit'):
+                self.load(f"""
+dataset: {{region: na}}
+projects:
+  - {{id: A, name: A, outlet_group: AB, outlet: {{hybas_id: 101, lon: -118, lat: 52}}}}
+  - {{id: B, name: B, {second}outlet: {{hybas_id: 101, lon: -118, lat: 51}}}}
+""")
+
+    def test_group_cannot_span_different_units(self):
+        with self.assertRaisesRegex(ValueError, 'group.*different'):
+            self.load("""
+dataset: {region: na}
+projects:
+  - {id: A, name: A, outlet_group: AB, outlet: {hybas_id: 101, lon: -118, lat: 52}}
+  - {id: B, name: B, outlet_group: AB, outlet: {hybas_id: 102, lon: -118, lat: 51}}
+""")
+
     def test_string_false_cannot_enable_virtual_connections(self):
         with self.assertRaises(ValueError):
             self.load("""
