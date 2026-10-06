@@ -375,8 +375,6 @@ def run(args):
               'Output configuration differs; use a different output directory')
     else:
         atomic_json(config_path, config)
-    for warning in forcing['warnings']:
-        print(warning, flush=True)
     metas, times_by_year, reference, blocks = {}, {}, None, None
 
     def load_year(year, optional=False):
