@@ -344,7 +344,6 @@ def run_pipeline(geojson, product, output_dir, cache_dir, start, end, *, project
     if run_path.exists() and json.loads(run_path.read_text()) != run:
         raise ValueError('Output configuration differs; use a new output directory')
     atomic_json(run_path, run)
-    for warning in forcing['warnings']: print(warning, flush=True)
     manifest_path = cache_dir/'requests.manifest.json'
     manifest = json.loads(manifest_path.read_text()) if manifest_path.exists() else {}
     configuration_hash = json_hash(run)

@@ -11,6 +11,67 @@ endorheic connections. Kootenay Canal represents natural drainage at its
 tailrace return. Its turbine inflow requires a separate operational diversion
 model. See [project outlets](project_outlets.md).
 
+## One-command workflow
+
+After the one-time installation and CDS token setup below, use:
+
+```bash
+python research/download_daily.py --geojson outputs/projects43_independent/dam_catchments.geojson --start 2025-12-29 --end 2025-12-31 --output outputs/catchment_daily.csv
+```
+
+This single-line command works in Bash, Git Bash and PowerShell. It reads all
+local projects in the GeoJSON and performs four stages automatically:
+
+1. AORC download, native-grid diagnostics and daily aggregation.
+2. ERA5-Land download and daily catchment statistics.
+3. ERA5 download and daily catchment statistics.
+4. Verified combined CSV export, with one row per project and UTC day.
+
+All 45 data variables and their quality columns are included by default.
+The three-day, 43-project example produces 129 rows and 227 columns, plus
+`outputs/catchment_daily.csv.manifest.json` with units and provenance.
+Missing values retain their quality flags; completion does not imply that
+every observation exists. No separate aggregation or export command is needed.
+
+The required arguments are `--geojson`, `--start` and `--end`. If `--output`
+is omitted, the CSV is named `outputs/catchment_daily_START_END.csv`. For the
+full period, use a new output filename:
+
+```bash
+python research/download_daily.py --geojson outputs/projects43_independent/dam_catchments.geojson --start 1996-01-01 --end 2025-12-31 --output outputs/catchment_daily_1996_2025.csv --chunk-days 31
+```
+
+The script requires `zstd` and checks the local CDS configuration before
+starting AORC. This configuration check does not prove that the provider will
+accept the account, terms or requests. The source stages run sequentially.
+If any stage fails, the final delivery is not replaced. Repeating the same
+command reuses hash-verified completed years/months and available source cache;
+an interrupted AORC year is recomputed.
+
+Working files default to `OUTPUT.work/`, with `aorc/`, `era5-land/` and `era5/`
+source directories and a `cache/` directory. Retain this folder to resume.
+For a compute host, `--work-dir` and `--cache-dir` can point to large local
+storage while `--output` points to the delivery location. Existing files from
+separate manual runs are not automatically discovered or moved. Do not run
+two commands against the same working/cache directories concurrently. After
+changing dates, geometry or processing code, use a new working directory;
+the source pipelines reject incompatible run configurations.
+
+`--max-download-gb` defaults to a 2,000 GB **AORC network-read ceiling per
+invocation**, not a file-size estimate or a CDS limit. Use
+`--max-download-gb 2` to bound a small demo. The other optional controls are
+`--workers` (default 4) and `--chunk-days` (CDS batches, default 7, maximum 31).
+For Parquet, install the optional dependency below and use a `.parquet` output.
+
+Routing interpretation, including Kootenay Canal's tailrace/diversion note,
+is retained in source `run.json` files and the final manifest. These static
+notes are no longer repeated in the console. Missing-data messages and source
+errors remain visible. This changes reporting only, not the catchment or
+meteorological calculations.
+
+The source-specific commands later in this guide are available for individual
+source checks; they are not additional steps after `download_daily.py`.
+
 ## 1. Install
 
 Run commands from the repository root in an activated Python 3.10+ environment.
@@ -296,6 +357,7 @@ mm/day and MJ/m²/day amounts in the tables above.
 
 | File | Purpose |
 | --- | --- |
+| `research/download_daily.py` | One command for all three sources, daily processing, resume and final CSV/Parquet export |
 | `research/download_aorc.py` | Retrieve native AORC fields and calculate polygon series; `--derive` enables diagnostics |
 | `research/meteorology.py` | Humidity, wet bulb, rain/snow partition, wind speed and Hargreaves PET formulas |
 | `research/aggregate_daily.py` | Aggregate hourly polygon series with explicit UTC timing and coverage rules |
@@ -313,9 +375,12 @@ inputs. Missing or flagged values require a separately chosen treatment.
 
 ## Quality, interpretation and validation
 
-Validation on 2026-10-06 passed 76 core tests and 101 research tests, including
+Validation on 2026-10-06 passed 76 core tests and 106 research tests, including
 all three source-processing contracts through the final exporter across a
-December/January boundary using synthetic CDS responses. A real cached AORC
+December/January boundary using synthetic CDS responses. The unified entry
+point also tests resume without repeat retrieval, routing-note retention,
+early credential failure and preservation of a previous delivery after a
+source failure. A real cached AORC
 replay for 43 projects over 2025-12-29 through 2025-12-31 produced 2,451 daily
 records: 2,322 valid and 129 flagged precipitation/rain/snow values on the
 last date. Rain plus snow matched precipitation in all 86 complete project-days

@@ -23,6 +23,19 @@ The 43 project records represent **43 distinct local drainage domains**. Seven M
 
 ## Historical daily data
 
+Install the research dependencies, configure `~/.cdsapirc` as described below,
+and run one command for all three sources:
+
+```bash
+python -m pip install -e . -r research/requirements.txt
+python research/download_daily.py --geojson outputs/projects43_independent/dam_catchments.geojson --start 2025-12-29 --end 2025-12-31 --output outputs/catchment_daily.csv
+```
+
+This downloads AORC, ERA5-Land and ERA5, computes daily catchment statistics
+and derived variables, and exports one combined CSV with quality columns.
+Repeat the same command to resume completed source periods. AORC also needs
+the `zstd` command-line decoder on `PATH`.
+
 The [data pipeline guide](docs/data_pipeline.md) covers CDS token setup, AORC
 and ERA5/ERA5-Land downloads, derived variables, units, quality flags and final
 CSV/Parquet delivery. The research scripts preserve one source per variable
