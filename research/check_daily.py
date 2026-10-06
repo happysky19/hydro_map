@@ -59,6 +59,10 @@ def load_delivery(path):
     # QC strings are counted while streaming rather than retained for every row.
     values = np.full((len(days), len(projects), len(columns)), np.nan)
     counts, qc_errors = Counter(), []
+    freezing = {c: dict(project_days=manifest['row_count'], valid_project_days=0,
+                        valid_hours_range=None, min_valid_area_fraction_range=None, qc_counts=Counter())
+                for c in columns if manifest['columns'][c].get('source') == 'era5_cds'
+                and manifest['columns'][c].get('variable', '').startswith('freezing_level_')}
     failure_count = 0
     row_count = 0
     for i, (row, quality) in enumerate(zip_longest(
@@ -82,18 +86,29 @@ def load_delivery(path):
                                  or (qc != 'valid' and np.isnan(value))))
             except (TypeError, ValueError):
                 valid, coherent = False, False
+                hours, area = np.nan, np.nan
             if not coherent:
                 failure_count += 1
                 if len(qc_errors) < 5:
                     qc_errors.append(dict(date=key[0], project_id=key[1], column=column))
             if valid and np.isfinite(value):
                 values[d, p, j] = value
+            if column in freezing:
+                detail = freezing[column]
+                detail['valid_project_days'] += int(valid and np.isfinite(value))
+                detail['qc_counts'][str(qc)] += 1
+                for field, number in (('valid_hours_range', hours),
+                                      ('min_valid_area_fraction_range', area)):
+                    if np.isfinite(number):
+                        previous = detail[field]
+                        detail[field] = ([number, number] if previous is None
+                                         else [min(previous[0], number), max(previous[1], number)])
         row_count += 1
     if row_count != manifest['row_count']:
         raise ValueError('Missing project-day rows')
     check = dict(check='QC/value agreement', evaluated=values.size, failed=failure_count,
                  examples=qc_errors)
-    return manifest, days, projects, columns, values, counts, check
+    return manifest, days, projects, columns, values, counts, check, freezing
 
 
 def consistency_checks(manifest, days, projects, columns, values):
@@ -315,7 +330,7 @@ def plot_delivery(folder, manifest, days, projects, columns, values, lookup):
 
 def check_file(path, *, plots=True):
     path = Path(path).resolve()
-    manifest, days, projects, columns, values, counts, qc_check = load_delivery(path)
+    manifest, days, projects, columns, values, counts, qc_check, freezing = load_delivery(path)
     checks, lookup = consistency_checks(manifest, days, projects, columns, values)
     checks.insert(0, qc_check)
     comparisons = []
@@ -353,11 +368,22 @@ def check_file(path, *, plots=True):
                   row_count=manifest['row_count'], project_count=len(projects), start=str(days[0]),
                   end=str(days[-1]), failed_checks=sum(r['failed'] > 0 for r in checks),
                   missing_values=int(np.isnan(values).sum()), total_values=values.size,
-                  checks=checks, comparisons=comparisons, plots=plots,
+                  checks=checks, comparisons=comparisons, plots=plots, freezing_level=freezing,
                   scope='Delivery integrity and consistency; no independent observation validation.')
     (folder/'summary.json').write_text(json.dumps(report, indent=2, allow_nan=False)+'\n')
     print(f"Checks: {report['failed_checks']} failed; {report['missing_values']:,} missing values; {folder}",
           flush=True)
+    for column, detail in freezing.items():
+        label = 'above terrain' if 'above_terrain' in column else 'geopotential height'
+        reasons = ', '.join(f'{flag}={count}' for flag, count in sorted(detail['qc_counts'].items()))
+        print(f"ERA5 freezing level ({label}): {detail['valid_project_days']}/{detail['project_days']} "
+              f"valid project-days; QC project-day counts: {reasons}", flush=True)
+        print(f"  Full-area valid hours/day range: {detail['valid_hours_range']}; "
+              f"daily minimum valid area fraction range: {detail['min_valid_area_fraction_range']}", flush=True)
+        if not detail['valid_project_days']:
+            print('  No usable freezing-level values. Check the QC reasons; do not replace with zero. '
+                  'The daily rule requires a unique crossing at every contributing cell and all 24 hours.',
+                  flush=True)
     return report
 
 

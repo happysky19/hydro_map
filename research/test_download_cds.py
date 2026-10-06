@@ -13,12 +13,32 @@ import zipfile
 import netCDF4
 import numpy as np
 
-from cds_fields import (freezing_level, root_zone_moisture, land_daily_fields,
+from cds_fields import (freezing_level, root_zone_moisture, land_daily_fields, era_daily_fields,
                         ALL_FIELDS, PRESSURE_LEVELS)
 from download_cds import make_requests, read_response, process_day, run_pipeline, align_hours
 
 
 class FieldTests(unittest.TestCase):
+    def test_one_percent_area_without_crossing_for_one_hour_masks_both_daily_heights(self):
+        levels = np.array([1000, 900, 800])
+        profile_t = np.broadcast_to(np.array([280., 274., 268.])[None, :, None, None],
+                                    (24, 3, 1, 2)).copy()
+        profile_z = np.broadcast_to(np.array([0., 1000., 2000.])[None, :, None, None],
+                                    profile_t.shape)*9.80665
+        profile_t[0, :, 0, 1] = [270., 264., 258.]
+        surface = dict(sp=np.full((24, 1, 2), 101000.), z=np.full((24, 1, 2), -9.80665),
+                       tcc=np.full((24, 1, 2), .5))
+        fields = era_daily_fields(surface, dict(t=profile_t, z=profile_z), levels)
+        rows = process_day(fields, {'A': np.array([[.99, .01]])}, date(2025, 12, 28), 'era5_cds')
+        heights = [row for row in rows if row['variable'].startswith('freezing_level')]
+        self.assertEqual(len(heights), 2)
+        for row in heights:
+            self.assertEqual(row['value'], '')
+            self.assertEqual(row['valid_hours'], 23)
+            self.assertAlmostEqual(row['min_valid_area_fraction'], .99)
+            self.assertEqual(row['qc'], 'no_crossing')
+        self.assertEqual(next(r for r in rows if r['variable'] == 'cloud_cover_fraction')['value'], .5)
+
     def test_soil_and_snow_units(self):
         arrays = {f'swvl{i}': np.ones((24, 2, 2)) * i / 10 for i in range(1, 5)}
         self.assertAlmostEqual(root_zone_moisture(arrays)[0, 0, 0], .265)

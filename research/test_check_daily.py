@@ -96,6 +96,26 @@ class CheckDailyTests(unittest.TestCase):
             rows = list(csv.DictReader(stream))
         self.assertTrue(any(r['qc'] == 'no_crossing' and r['days'] == '3' for r in rows))
 
+    def test_freezing_diagnostics_distinguish_partial_support_from_missing_profiles(self):
+        column = 'era5_cds__freezing_level_above_terrain_m'
+        self.quality[0][column+'__valid_hours'] = 23
+        self.quality[0][column+'__min_valid_area_fraction'] = .99
+        self.quality[1][column+'__qc'] = 'missing_profile;no_crossing'
+        self.save()
+        from contextlib import redirect_stdout
+        import io
+        text = io.StringIO()
+        with redirect_stdout(text):
+            report = self.check()
+        diagnostic = report['freezing_level'][column]
+        self.assertEqual(diagnostic['valid_project_days'], 0)
+        self.assertEqual(diagnostic['project_days'], 3)
+        self.assertEqual(diagnostic['valid_hours_range'], [0, 23])
+        self.assertEqual(diagnostic['min_valid_area_fraction_range'], [0, .99])
+        self.assertEqual(diagnostic['qc_counts'], {'no_crossing': 2, 'missing_profile;no_crossing': 1})
+        self.assertIn('No usable freezing-level values', text.getvalue())
+        self.assertIn('missing_profile;no_crossing=1', text.getvalue())
+
     def test_changed_values_fail_identities_without_calling_missing_values_zero(self):
         self.rows[0]['aorc_v1_1__snowfall_mm'] = 10
         self.rows[1]['aorc_v1_1__longwave_down_energy_MJ_m2'] = 179.3*.0036
