@@ -1,6 +1,6 @@
 # hydro-map
 
-Build selected-project catchments from HydroBASINS topology and compare polygon layers on maps.
+Delineate selected-project catchments from HydroSHEDS flow directions and compare polygon layers on maps.
 
 ## Quick start
 
@@ -12,30 +12,36 @@ source .venv/bin/activate
 pip install -e '.[maps]'
 hydro-map download --config configs/columbia.yaml --cache-dir data
 hydro-map build configs/columbia.yaml --cache-dir data --output outputs/projects43/dam_catchments.geojson --csv-output outputs/projects43/polygon_grid_bbox.csv --table-output outputs/projects43/dam_catchments.csv
-hydro-map plot outputs/projects43/dam_catchments.geojson --project MICA --labels HydroBASINS --basemap terrain --output figures/mica.png
+hydro-map plot outputs/projects43/dam_catchments.geojson --project MICA --labels HydroSHEDS --basemap terrain --output figures/mica.png
 ```
 
 The example selects **43 Pacific Northwest projects**, including Columbia basin projects and Ross on the Skagit. It is an editable selection, not a complete dam inventory. Change the YAML project list to define the upstream cutoffs for your application. `HUGH_KEENLEYSIDE` is the canonical ID for the project previously named `ARROW`; its tabular `project_code` remains `ARDB`.
 
-The 43 project records represent **41 distinct catchments**. Kootenay Canal/Corra Linn and Seven Mile/Waneta each share an explicitly declared outlet group because HydroBASINS level 12 does not resolve them separately. Their duplicated polygons are marked `geometry_status: shared_unit_approximation` and carry the same `forcing_group`. Count each group once when summing area or water volume. See [outlet sources and limitations](docs/project_outlets.md).
+The example uses **HydroSHEDS 15 arc-second flow directions**, tracing every cell that drains to a documented outlet cell. HydroBASINS level 12 supplies a search envelope and location checks; its whole subbasins do not determine the final boundary. `build` downloads and caches the North America direction and accumulated-area rasters when needed.
+
+The 43 project records represent **41 distinct catchments**. The configuration retains two explicit shared approximations: Kootenay Canal/Corra Linn and Seven Mile/Waneta. Each group uses its downstream-most configured member cell as the common cutoff. Both records carry the same `forcing_group` and `geometry_status: shared_unit_approximation`. Count each group once when summing area or water volume. See [outlet sources and limitations](docs/project_outlets.md).
 
 ## Build options
 
 ```bash
 hydro-map build configs/columbia.yaml --cache-dir data --output outputs/total.geojson --part total
 hydro-map build configs/columbia.yaml --cache-dir data --output outputs/local.geojson --part local --exclude-virtual
-hydro-map build configs/columbia.yaml --cache-dir data --output outputs/with_virtual.geojson --include-virtual
 hydro-map build configs/columbia.yaml --cache-dir data --output outputs/two_projects.geojson --projects MICA REVELSTOKE
 hydro-map build configs/columbia.yaml --source data/hybas_na_lev12_v1c/hybas_na_lev12_v1c.shp --output outputs/from_local.geojson
+hydro-map build configs/columbia.yaml --cache-dir data --flow-direction data/hydrosheds/hyd_na_dir_15s/hyd_na_dir_15s.tif --flow-accumulation data/hydrosheds/hyd_na_aca_15s/hyd_na_aca_15s.tif --output outputs/from_rasters.geojson
 ```
 
 `local` subtracts the upstream catchments of selected outlet groups from each group's total upstream catchment. `total` retains the entire upstream catchment. Shared projects do not subtract each other; both receive the same explicitly marked group polygon. `--projects` filters output only: every project in the YAML remains an upstream cutoff when calculating local catchments. Adding upstream projects can therefore change existing local boundaries; rebuild geometry and weather weights after changing the selection.
 
-Virtual endorheic connections (`ENDO=2`) are excluded by default. These links can connect internally draining basins for network representation; they do not necessarily represent physical surface-water drainage. `--include-virtual` enables them explicitly, and `--exclude-virtual` disables them. The YAML default is `dataset.include_virtual_connections`.
+`--flow-direction` and `--flow-accumulation` are paired options for existing compatible DIR and ACA GeoTIFFs. Omit both to use the automatic download/cache. ACA is the HydroSHEDS accumulated-area layer in hectares, not the ACC cell-count layer.
+
+The `outlet_cell` method follows physical D8 routing and excludes virtual endorheic connections. `--include-virtual` is rejected in this mode. A terminal inland sink does not become an upstream contributing area merely because HydroBASINS provides a virtual connection.
+
+For an explicit legacy approximation, set `dataset.delineation: outlet_unit` in a separate configuration. That method combines whole HydroBASINS outlet units and their upstream network; it can include land draining below a dam. In that mode, `--include-virtual`, `--exclude-virtual`, and `dataset.include_virtual_connections` control the network policy.
 
 ## Project configuration
 
-Each project specifies a unique `id`, public `name`, `river`, country code, and an `outlet` with `hybas_id`, geographic `lon` and `lat`, a public `source`, and a description of the coordinate `reference`.
+Each project specifies a unique `id`, public `name`, `river`, country code, and an `outlet` with `hybas_id`, geographic `lon` and `lat`, a public `source`, and a description of the coordinate `reference`. The `outlet_cell` method also requires explicit `grid_lon`, `grid_lat`, and `grid_reference` fields for the selected HydroSHEDS pixel center. These distinguish the source location from the raster cutoff; the build does not search for a cell that reproduces a reported drainage area.
 
 An optional unique `project_code` supplies the CSV identifier. It is retained in GeoJSON properties; the GeoJSON `id` and network relationships keep using the canonical project ID. Without `project_code`, the CSV uses `id`.
 
@@ -45,6 +51,7 @@ dataset:
   level: 12
   version: '1c'
   include_virtual_connections: false
+  delineation: outlet_cell
 projects:
   - id: MICA
     project_code: MCDB
@@ -57,15 +64,18 @@ projects:
       lat: 52.077993
       source: https://doi.org/10.6084/m9.figshare.25988293
       reference: river-aligned dam reference point
+      grid_lon: -118.5687500000
+      grid_lat: 52.0770833333
+      grid_reference: HydroSHEDS 15s cell containing the published river-aligned dam reference
 ```
 
-The example uses published Global Dam Watch river-aligned points where available, plus government project locations and NOAA forecast or monitoring references. A reference point is not necessarily a surveyed dam-wall position. Its source and interpretation are retained in the configuration.
+The example uses published Global Dam Watch river-aligned points and documented government locations. Cabinet Gorge, Wells, Little Goose, Lower Monumental, Rocky Reach, and Chief Joseph use USACE National Inventory of Dams coordinates in place of coarse or monitoring references. Corra Linn and the shared Kootenay Canal proxy use the [BC official approximate dam centre](https://apps.gov.bc.ca/pub/bcgnws/names/51921.html); their cell follows that published location, not a reported area. A river-aligned or inventory point is not necessarily a surveyed dam-wall position. Source and interpretation are retained in the configuration. The Wells reference-to-grid distance is about 829 m and warrants particular attention when evaluating finer boundaries.
 
 The configured point must fall within its specified HydroBASINS unit. A mismatch fails validation; points are not automatically snapped to a nearby unit. Review the reference and unit together before changing either.
 
-Two projects may use the same unit only when both declare the same `outlet_group`. Group names must differ from project IDs, and a group cannot span different units. This is an explicit approximation, not a dam-wall delineation. Descriptive `kind` and `mw` values are configured inputs; they are not used to draw the polygons or independently audited as current plant capacities.
+In `outlet_cell` mode, projects can use distinct river cells within the same HydroBASINS unit and remain independent. An explicit `outlet_group` combines projects instead. Group names must differ from project IDs, and a group cannot span different units. Member outlet cells must be on one downstream path; the downstream-most cell defines their shared polygon. The legacy `outlet_unit` mode requires projects in the same unit to declare a shared group. This remains a shared approximation even if their individual cells are distinct. Descriptive `kind` and `mw` values are configured inputs; they are not used to draw the polygons or independently audited as current plant capacities.
 
-Catchments contain whole HydroBASINS units, including the selected outlet unit. A unit ID identifies a dataset polygon and its downstream connection, not an exact dam outlet. This method cannot split a unit at the dam wall; exact dam delineation requires finer terrain and river data. Level 12 still has finite spatial resolution.
+A raster outlet cut can split a HydroBASINS unit. The reverse-flow traversal also excludes any tributary that joins below the chosen cell, rather than retaining all upstream units automatically. Resolution remains 15 arc-seconds: these are derived grid catchments, not certified dam-wall surveys or a model of engineered diversions.
 
 ## GeoJSON output
 
@@ -75,26 +85,26 @@ Output uses the standard `FeatureCollection` → `features[]` → `Feature` stru
 | --- | --- |
 | `id`, `name`, `kind`, `mw` | Configured identifier, name, operational category and capacity; unknown category/capacity is null |
 | `lat`, `lon` | Configured reference-point coordinates |
-| `area` | Total upstream area, in km²; identical to `area_total` |
+| `area` | Total upstream group area, in km²; identical to `area_total` |
 | `area_local` | Selected-project local catchment area, in km² |
-| `area_total` | Total upstream catchment area, in km² |
+| `area_total` | Total upstream group catchment area, in km² |
 | `area_geometry` | Area of the actual emitted geometry, in km²; equals `area_local` for a local layer |
 | `up` | Direct selected upstream project IDs |
 | `above` | All selected upstream project IDs |
 | `down` | Nearest selected downstream project ID when unique, otherwise null |
-| `down_candidates` | Downstream project IDs at the next outlet unit; multiple IDs identify a shared group |
+| `down_candidates` | Downstream project IDs at the next selected group; multiple IDs identify a shared group |
 | `part` | `local` or `total` |
 | `forcing_group` | Unique catchment key for spatial aggregation and water-balance accounting |
-| `geometry_status` | `hydrobasins_delineation` or `shared_unit_approximation` |
+| `geometry_status` | `outlet_cell_delineation` for an ordinary raster catchment; `shared_unit_approximation` for shared groups |
 | `shared_outlet_projects` | IDs sharing this unit, or an empty list for an ordinary project |
-| `hybas_id`, `hybas_ids`, `unit_count` | Selected outlet unit, emitted geometry's member units, and their count |
+| `hybas_id` | HydroBASINS outlet-reference index; it does not identify the raster catchment boundary |
 | `outlet_source`, `outlet_reference` | Reference-point provenance and interpretation |
 
-Areas are calculated afresh from the corresponding total/local polygons on the WGS84 ellipsoid. They are not copied from HydroRIVERS attributes or the source dataset's rounded area fields. Relationships describe the selected outlet-unit network; they do not resolve the physical order or diversion routing inside shared groups.
+Areas are calculated afresh from the corresponding total/local polygons on the WGS84 ellipsoid. They are not copied from HydroRIVERS attributes or the source dataset's rounded area fields. Native HydroSHEDS ACA values are hectares accumulated with the publisher's grid-area weights; divide them by 100 for km². They are a separate diagnostic and may differ slightly from ellipsoidal polygon areas for the same cells. Keep the area method attached to any comparison. Relationships follow the selected cutoff groups; they do not represent diversion flow allocation inside a shared group.
 
-**Schema version 2 changes `area` to total upstream area.** Earlier versions used `area` for the emitted geometry. Use `area_geometry`, or recompute from `geometry`, for the actual layer area. Plotting and bounding-box export already recompute geometry area, so they do not depend on a stored `area` interpretation. Metadata records `schema_version: 2` and `area_property`.
+**Raster delineation uses schema version 3; legacy unit delineation uses version 2.** Both use `area` for total upstream group area. Versions before 2 used `area` for the emitted geometry. Use `area_geometry`, or recompute from `geometry`, for the actual layer area. Plotting and bounding-box export recompute geometry area, so they do not depend on a stored `area` interpretation. Metadata records `schema_version` and `area_property`.
 
-Collection metadata records the dataset version and URL, source-component SHA-256 hashes, virtual-connection setting, all local cutoffs, area method, and any repaired source geometries. Configured descriptive fields such as `river` and `country` are retained on features.
+Collection metadata records source datasets and hashes, the delineation method, virtual-connection policy, local cutoffs, and area method. Raster output records HydroBASINS source hashes and any repaired envelope-unit IDs under `search_envelope`; those repairs concern the search envelope rather than the raster catchments. It omits `hybas_ids` and `unit_count` because its boundary is not an aggregation of whole units. Configured descriptive fields such as `river` and `country` are retained on features.
 
 The common property contract is `id`, `name`, `kind`, `mw`, `lat`, `lon`, `area`, `area_local`, and `part`, plus `geometry` on the same GeoJSON feature. Additional topology and provenance fields are retained. `area_hydrorivers` and `divisions` require their own source data and definitions; this workflow does not substitute computed polygon area or empty objects for unknown values. Consumers should accept additional properties and collection metadata. Matching the structure does not imply identical boundaries or numeric values.
 
@@ -138,8 +148,8 @@ Only the bounding box is expanded by `--bbox-buffer` degrees on each side (defau
 ```bash
 hydro-map plot one.geojson two.geojson --project MICA --labels A B --output figures/mica.png
 hydro-map plot one.geojson two.geojson --project MICA --labels A B --basemap light --output figures/mica_map.png
-hydro-map plot outputs/projects43/dam_catchments.geojson data/reference/catchments.csv --project MICA --labels HydroBASINS Reference --basemap terrain --output figures/mica_comparison.png
-hydro-map plot outputs/projects43/dam_catchments.geojson data/reference/catchments.csv --by-project --labels HydroBASINS Reference --output-dir figures/comparison
+hydro-map plot outputs/projects43/dam_catchments.geojson data/reference/catchments.csv --project MICA --labels HydroSHEDS Reference --basemap terrain --output figures/mica_comparison.png
+hydro-map plot outputs/projects43/dam_catchments.geojson data/reference/catchments.csv --by-project --labels HydroSHEDS Reference --output-dir figures/comparison
 hydro-map plot outputs/catchments.geojson --project MICA --basemap terrain --coordinates lonlat --output figures/mica_terrain.png
 hydro-map plot outputs/catchments.geojson --project MICA --coordinates projected --output figures/mica_projected.pdf
 hydro-map plot outputs/catchments.geojson --by-project --output-dir figures
@@ -171,4 +181,6 @@ Tests use small local fixtures and do not require downloading the regional datas
 
 HydroBASINS is published through [HydroSHEDS](https://www.hydrosheds.org/products/hydrobasins). The example downloads the [North America standard level 12 version 1c archive](https://data.hydrosheds.org/file/hydrobasins/standard/hybas_na_lev12_v1c.zip). Attribute HydroBASINS and cite Lehner and Grill (2013), [Global river hydrography and network routing](https://doi.org/10.1002/hyp.9740). HydroBASINS uses the HydroSHEDS core-product license: consult the product page's linked license agreement and [publisher terms](https://www.hydrosheds.org/terms-of-use) for attribution, redistribution, and use conditions.
 
-Published dam-reference coordinates come from [Global Dam Watch dataset metadata](https://doi.org/10.6084/m9.figshare.25988293), [NOAA NWRFC station metadata](https://www.nwrfc.noaa.gov/river/site_meta_csv.cgi), and the government documents linked in the YAML. Retain those source links and follow the respective publishers' data licenses and attribution requirements when redistributing reference data or derived products.
+The raster workflow uses official [HydroSHEDS core downloads](https://www.hydrosheds.org/hydrosheds-core-downloads): [North America DIR 15s](https://data.hydrosheds.org/file/hydrosheds-v1-dir/hyd_na_dir_15s.zip) and [ACA 15s](https://data.hydrosheds.org/file/hydrosheds-v1-aca/hyd_na_aca_15s.zip). The [technical documentation](https://data.hydrosheds.org/file/technical-documentation/HydroSHEDS_TechDoc_v1_4.pdf) defines D8 encoding, area units, and the license. Cite Lehner, Verdin and Jarvis (2008), [New global hydrography derived from spaceborne elevation data](https://doi.org/10.1029/2008EO100001).
+
+Published dam-reference coordinates come from [USACE National Inventory of Dams](https://nid.sec.usace.army.mil/nid/), [Global Dam Watch dataset metadata](https://doi.org/10.6084/m9.figshare.25988293), [NOAA NWRFC station metadata](https://www.nwrfc.noaa.gov/river/site_meta_csv.cgi), and the government documents linked in the YAML. Retain those source links and follow the respective publishers' data licenses and attribution requirements when redistributing reference data or derived products.

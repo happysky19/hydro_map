@@ -1,4 +1,4 @@
-"""Download and verify official HydroBASINS standard shapefiles."""
+"""Download and verify HydroBASINS shapefiles and HydroSHEDS flow rasters."""
 
 import hashlib
 import json
@@ -100,3 +100,63 @@ def download_dataset(region: str, level: int, version: str, cache_dir: Path) -> 
         for name in [*names, "manifest.json"]:
             os.replace(staging / name, directory / name)
     return directory / components[0]
+
+
+def download_flow_dataset(region: str, cache_dir: Path) -> tuple[Path, Path]:
+    """Return verified North America 15-second direction and drainage-area rasters.
+
+    Existing ZIPs in cache_dir/hydrosheds can be adopted after archive validation.
+    Per-layer manifests record official source URLs and local integrity hashes.
+    """
+    if region != "na":
+        raise ValueError("HydroSHEDS flow downloads currently support only region na")
+    root = Path(cache_dir) / "hydrosheds"
+    if root.is_symlink():
+        raise ValueError("Flow dataset cache directory must not be a symlink")
+    root.mkdir(parents=True, exist_ok=True)
+    paths = []
+    for layer in ("dir", "aca"):
+        stem = f"hyd_{region}_{layer}_15s"
+        zip_name, raster_name = f"{stem}.zip", f"{stem}.tif"
+        names = [zip_name, raster_name]
+        source_url = f"https://data.hydrosheds.org/file/hydrosheds-v1-{layer}/{zip_name}"
+        directory = root / stem
+        if directory.is_symlink():
+            raise ValueError("Flow dataset cache directory must not be a symlink")
+        if not _cached(directory, names, source_url):
+            with tempfile.TemporaryDirectory(prefix=f".{stem}-", dir=root) as temporary:
+                staging = Path(temporary)
+                archive_path = staging / zip_name
+                existing = root / zip_name
+                if existing.is_symlink():
+                    raise ValueError("Existing HydroSHEDS archive must not be a symlink")
+                try:
+                    if existing.is_file():
+                        shutil.copyfile(existing, archive_path)
+                    else:
+                        request = Request(source_url, headers={"User-Agent": f"hydro-map/{__version__}"})
+                        with urlopen(request, timeout=60) as response, archive_path.open("wb") as output:
+                            shutil.copyfileobj(response, output, length=1024 * 1024)
+                except OSError as error:
+                    raise OSError(f"HydroSHEDS download or archive copy failed: {source_url} ({error})") from error
+                try:
+                    with zipfile.ZipFile(archive_path) as archive:
+                        matches = [member for member in archive.infolist() if member.filename == raster_name]
+                        if len(matches) != 1:
+                            raise ValueError(f"Missing or duplicate raster: {raster_name}")
+                        member = matches[0]
+                        mode = stat.S_IFMT(member.external_attr >> 16)
+                        if member.is_dir() or mode not in (0, stat.S_IFREG):
+                            raise ValueError(f"Unsafe raster: {raster_name}")
+                        with archive.open(member) as source, (staging / raster_name).open("wb") as output:
+                            shutil.copyfileobj(source, output, length=1024 * 1024)
+                except (zipfile.BadZipFile, ValueError, RuntimeError, EOFError) as error:
+                    raise ValueError(f"Invalid HydroSHEDS archive {zip_name}: {error}") from error
+                manifest = {"source_url": source_url,
+                            "sha256": {name: _sha256(staging / name) for name in names}}
+                (staging / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+                directory.mkdir(exist_ok=True)
+                for name in [*names, "manifest.json"]:
+                    os.replace(staging / name, directory / name)
+        paths.append(directory / raster_name)
+    return paths[0], paths[1]

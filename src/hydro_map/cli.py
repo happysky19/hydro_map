@@ -11,15 +11,17 @@ from .config import load_config
 
 
 def _parser():
-    parser = argparse.ArgumentParser(description="Build and compare HydroBASINS catchments.")
+    parser = argparse.ArgumentParser(description="Delineate and compare project catchments.")
     commands = parser.add_subparsers(dest="command", required=True)
-    download = commands.add_parser("download", help="Download a regional HydroBASINS dataset")
+    download = commands.add_parser("download", help="Download regional HydroBASINS and configured flow rasters")
     download.add_argument("--config", type=Path, required=True)
     download.add_argument("--cache-dir", type=Path, default=Path("data"))
-    build = commands.add_parser("build", help="Aggregate units for configured projects")
+    build = commands.add_parser("build", help="Delineate outlet cells or aggregate outlet units, as configured")
     build.add_argument("config", type=Path)
     build.add_argument("--cache-dir", type=Path, default=Path("data"))
     build.add_argument("--source", type=Path, help="Use an existing regional .shp file")
+    build.add_argument("--flow-direction", type=Path, help="Use an existing HydroSHEDS 15-second D8 raster (outlet_cell mode)")
+    build.add_argument("--flow-accumulation", type=Path, help="Use its paired HydroSHEDS upstream drainage-area raster")
     build.add_argument("--output", type=Path, required=True)
     build.add_argument("--csv-output", type=Path, help="Also write a project bounding-box CSV")
     build.add_argument("--table-output", type=Path, help="Also write project attributes and WKT geometry in one CSV")
@@ -57,18 +59,36 @@ def main(argv=None):
                 raise ValueError("Bounding-box buffer must be finite and nonnegative")
             if args.command == "build" and args.virtual is not None:
                 config = replace(config, dataset=replace(config.dataset, include_virtual_connections=args.virtual))
+            dataset = config.dataset
+            if dataset.delineation == "outlet_cell" and dataset.include_virtual_connections:
+                raise ValueError("Outlet-cell delineation follows physical flow; virtual connections are unsupported")
+            if args.command == "build":
+                if bool(args.flow_direction) != bool(args.flow_accumulation):
+                    raise ValueError("--flow-direction and --flow-accumulation must be supplied together")
+                if args.flow_direction and dataset.delineation != "outlet_cell":
+                    raise ValueError("Flow raster overrides require dataset.delineation: outlet_cell")
             if args.command == "build" and args.source:
                 source = args.source
             else:
                 from .data import download_dataset
-                dataset = config.dataset
                 source = download_dataset(dataset.region, dataset.level, dataset.version, args.cache_dir)
+            flow_options = {}
+            if dataset.delineation == "outlet_cell":
+                if args.command == "build" and args.flow_direction:
+                    direction, accumulation = args.flow_direction, args.flow_accumulation
+                else:
+                    from .data import download_flow_dataset
+                    direction, accumulation = download_flow_dataset(dataset.region, args.cache_dir)
+                flow_options = {"flow_direction": direction, "flow_accumulation": accumulation}
             if args.command == "download":
                 print(source)
+                for path in flow_options.values():
+                    print(path)
                 return 0
             from .basins import build_catchments
             inputs = {source.with_suffix(suffix).resolve() for suffix in (".shp", ".shx", ".dbf", ".prj")}
             inputs.add(args.config.resolve())
+            inputs.update(path.resolve() for path in flow_options.values())
             if args.output.resolve() in inputs:
                 raise ValueError("Output must differ from the input files")
             if args.csv_output and args.csv_output.resolve() in inputs | {args.output.resolve()}:
@@ -76,7 +96,7 @@ def main(argv=None):
             if args.table_output and args.table_output.resolve() in inputs | {args.output.resolve()} | (
                     {args.csv_output.resolve()} if args.csv_output else set()):
                 raise ValueError("Geometry table output must differ from inputs and other outputs")
-            result = build_catchments(config, source, args.part, args.projects)
+            result = build_catchments(config, source, args.part, args.projects, **flow_options)
             args.output.parent.mkdir(parents=True, exist_ok=True)
             args.output.write_text(json.dumps(result, indent=2, ensure_ascii=False, allow_nan=False) + "\n", encoding="utf-8")
             print(f"Wrote {len(result['features'])} {args.part} catchments to {args.output}")
@@ -92,7 +112,7 @@ def main(argv=None):
                 from .csv_export import write_geometry_csv
                 count = write_geometry_csv(result, args.table_output)
                 print(f"Wrote {count} project rows with geometry to {args.table_output}")
-            repairs = result["metadata"]["repaired_geometry_count"]
+            repairs = result["metadata"].get("repaired_geometry_count", 0)
             if repairs:
                 print(f"Repaired {repairs} source geometries; unit IDs are recorded in the output metadata.")
             return 0

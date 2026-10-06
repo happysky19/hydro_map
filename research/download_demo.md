@@ -5,16 +5,31 @@ catchments. They do not provide sensor-only observations or demonstrate
 hydrologic forecast skill. The requested window is **1996-01-01 through
 2025-12-31**: 10,958 Gregorian dates, including leap days.
 
-Verified on 2026-10-06: the December 29–31 demo covers all 43 project records
-and 41 distinct forcing groups. AORC yields 1,505 valid daily statistics out of
-1,548; the 43 blanks are exactly the unresolved December 31 precipitation
-totals. ERA5-Land yields 645 valid daily statistics out of 645. Both shared
-project pairs have identical daily values in each source. An earlier,
-independent comparison of Mica/Oxbow AORC
-against native NOAA P/T/q/p on December 31 at 22Z and 23Z found zero raw-value
-or mask differences in 331,296 cell comparisons; all 16 polygon means agreed
-within CSV rounding. These tests validate retrieval and processing for the
-sample, not 30 years of meteorological quality or model performance.
+Verified on 2026-10-06 using the corrected `outlet_cell` D8 boundaries for
+December 29–31:
+
+- ERA5-Land: all 43 project records, 41 forcing groups, 645 valid daily
+  statistics out of 645. Both shared pairs have identical values. This offline
+  check reused verified cached responses covering a slightly wider region;
+  request URLs and response hashes were retained and polygon weights were
+  recomputed. No new bytes were downloaded.
+- AORC: all 43 projects and all eight variables were reprocessed on the
+  compute host from verified cached chunks. Of 1,548 daily statistics, 1,505
+  are valid; the 43 blanks are December 31 precipitation totals. Both shared
+  pairs have identical values. A fresh source check confirmed the missing
+  2026 boundary archive. No source data bytes were downloaded. The separate
+  local Mica/Oxbow offline check returned 70 valid statistics out of 72.
+
+The earlier **whole-unit geometry** demo covered all 43 projects and returned
+1,505 valid AORC statistics out of 1,548, plus 645 valid ERA5-Land statistics.
+Those results remain evidence of retrieval and aggregation, but their polygon
+means are superseded by the corrected boundaries. Rebuild weights and write to a new output directory whenever geometry changes.
+
+An earlier independent comparison of Mica/Oxbow AORC against native NOAA
+P/T/q/p on December 31 at 22Z and 23Z found zero raw-value or mask differences
+in 331,296 cell comparisons; all 16 polygon means agreed within CSV rounding.
+That check used the earlier geometry. These samples test retrieval and
+processing, not 30 years of meteorological quality or model performance.
 
 ## Install
 
@@ -28,10 +43,18 @@ python -m pip install -e . -r research/requirements.txt
 
 ## AORC
 
+Build the corrected geometry first, or substitute the path of your newly
+built D8 file in the commands below:
+
+```sh
+hydro-map build configs/columbia.yaml --cache-dir data \
+  --output outputs/projects43_d8/dam_catchments.geojson
+```
+
 ```sh
 python research/download_aorc.py \
-  --geojson outputs/projects43/dam_catchments.geojson \
-  --output-dir outputs/aorc_demo_43 --cache-dir data/aorc_demo_cache \
+  --geojson outputs/projects43_d8/dam_catchments.geojson \
+  --output-dir outputs/aorc_demo_43_d8 --cache-dir data/aorc_demo_cache \
   --start 2025-12-29 --end 2025-12-31 \
   --projects MICA OXBOW --max-download-gb 1 --keep-chunks
 ```
@@ -57,8 +80,8 @@ of the downloaded table size:
 
 ```sh
 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 python research/download_aorc.py \
-  --geojson inputs/projects43/dam_catchments.geojson \
-  --output-dir data/aorc_1996_2025_projects43 --cache-dir cache/aorc \
+  --geojson inputs/projects43_d8/dam_catchments.geojson \
+  --output-dir data/aorc_1996_2025_projects43_d8 --cache-dir cache/aorc \
   --start 1996-01-01 --end 2025-12-31 --workers 4 \
   --max-download-gb 2000
 ```
@@ -108,13 +131,13 @@ Sources: [NOAA AORC distribution](https://hydrology.nws.noaa.gov/pub/AORC/V1.1/)
 
 ```sh
 python research/download_era5_land.py \
-  --geojson outputs/projects43/dam_catchments.geojson \
-  --output outputs/era5_land_demo_43 \
+  --geojson outputs/projects43_d8/dam_catchments.geojson \
+  --output outputs/era5_land_demo_43_d8 \
   --start-date 2025-12-29 --end-date 2025-12-31
 
 python research/aggregate_daily.py \
-  --input outputs/era5_land_demo_43/hourly.csv \
-  --output outputs/era5_land_demo_43/daily.csv \
+  --input outputs/era5_land_demo_43_d8/hourly.csv \
+  --output outputs/era5_land_demo_43_d8/daily.csv \
   --start 2025-12-29 --end 2025-12-31
 ```
 
