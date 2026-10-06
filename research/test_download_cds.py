@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 import zipfile
 
 import netCDF4
@@ -88,15 +89,18 @@ class FieldTests(unittest.TestCase):
                          [('2025', '12', ['30', '31']), ('2026', '01', ['01'])])
 
 
-def write_netcdf(path, variables, *, day='2025-12-31', hours=24, expver=False):
+def write_netcdf(path, variables, *, day='2025-12-31', hours=24, expver=False,
+                 latitudes=None, longitudes=None, coordinate_dtype='f8'):
+    latitudes = [49.95, 50.05] if latitudes is None else latitudes
+    longitudes = [240.05, 239.95] if longitudes is None else longitudes
     with netCDF4.Dataset(path, 'w') as ds:
-        for key, size in [('valid_time', hours), ('latitude', 2), ('longitude', 2)]:
+        for key, size in [('valid_time', hours), ('latitude', len(latitudes)), ('longitude', len(longitudes))]:
             ds.createDimension(key, size)
         time = ds.createVariable('valid_time', 'i8', ('valid_time',))
         time.units = f'hours since {day} 00:00:00'; time.calendar = 'proleptic_gregorian'
         time[:] = np.arange(hours)
-        ds.createVariable('latitude', 'f8', ('latitude',))[:] = [49.95, 50.05]
-        ds.createVariable('longitude', 'f8', ('longitude',))[:] = [240.05, 239.95]
+        ds.createVariable('latitude', coordinate_dtype, ('latitude',))[:] = latitudes
+        ds.createVariable('longitude', coordinate_dtype, ('longitude',))[:] = longitudes
         if expver:
             ds.createDimension('expver', 2)
         for name, (units, number) in variables.items():
@@ -108,6 +112,28 @@ def write_netcdf(path, variables, *, day='2025-12-31', hours=24, expver=False):
 
 
 class ResponseTests(unittest.TestCase):
+    def test_float32_regular_axis_and_duplicate_roundoff(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for name, dtype in [('a', 'f4'), ('b', 'f8')]:
+                write_netcdf(root/f'{name}.nc', {'t2m': ('K', np.arange(9).reshape(1, 3, 3)+280)},
+                             latitudes=[49.9, 50., 50.1], longitudes=[239.95, 240.05, 240.15],
+                             coordinate_dtype=dtype)
+            with zipfile.ZipFile(root/'data.zip', 'w') as archive:
+                for name in ['a', 'b']: archive.write(root/f'{name}.nc', f'{name}.nc')
+            result = read_response(root/'data.zip', ['t2m'])['t2m']
+            np.testing.assert_allclose(result['longitude'], [-120.05, -119.95, -119.85], rtol=0, atol=2e-5)
+            np.testing.assert_allclose(np.diff(result['longitude']), np.diff(result['longitude'])[0],
+                                       rtol=0, atol=1e-12)
+            np.testing.assert_array_equal(result['data'][0], np.arange(9).reshape(3, 3)[::-1]+280)
+
+    def test_irregular_axis_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)/'data.nc'
+            write_netcdf(path, {'t2m': ('K', 280)}, longitudes=[239.9, 240., 240.11])
+            with self.assertRaisesRegex(ValueError, 'regular.*longitude'):
+                read_response(path, ['t2m'])
+
     def test_axis_orientation_expver_and_units(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp)/'data.nc'
@@ -204,6 +230,115 @@ class FakeClient:
 
 
 class PipelineTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.geometry = self.root/'catchments.geojson'
+        self.geometry.write_text(json.dumps({'type': 'FeatureCollection', 'features': [{
+            'type': 'Feature', 'properties': {'id': 'A', 'name': 'A', 'part': 'local'},
+            'geometry': {'type': 'Polygon', 'coordinates': [[[-120.03, 49.97], [-119.97, 49.97],
+                          [-119.97, 50.03], [-120.03, 50.03], [-120.03, 49.97]]]}}]}))
+        self.arguments = (self.geometry, 'era5-land', self.root/'output', self.root/'cache',
+                          '2025-12-31', '2025-12-31')
+
+    def test_roundoff_between_fields_preserves_daily_values(self):
+        client = FakeClient()
+        retrieve = client.retrieve
+        def rounded_response(dataset, request, target):
+            retrieve(dataset, request, target)
+            if len(request['time']) == 1:
+                with netCDF4.Dataset(target, 'a') as ds:
+                    for axis in ['latitude', 'longitude']:
+                        ds[axis][:] = np.asarray(ds[axis][:], dtype='f4')
+        with patch.object(client, 'retrieve', side_effect=rounded_response):
+            run_pipeline(*self.arguments, client=client)
+        with gzip.open(self.root/'output/daily_2025-12.csv.gz', 'rt') as stream:
+            rows = list(csv.DictReader(stream))
+        self.assertEqual(len(rows), 23)
+        self.assertTrue(all(row['qc'] == 'valid' for row in rows))
+        self.assertEqual(next(float(r['value']) for r in rows if r['variable'] == 'precipitation_mm'), 2.)
+
+    def test_real_grid_shift_is_rejected_with_diagnostics(self):
+        client = FakeClient()
+        retrieve = client.retrieve
+        def shifted_response(dataset, request, target):
+            retrieve(dataset, request, target)
+            if len(request['time']) == 1:
+                with netCDF4.Dataset(target, 'a') as ds:
+                    ds['longitude'][:] += .001
+        with patch.object(client, 'retrieve', side_effect=shifted_response):
+            with self.assertRaisesRegex(ValueError, 'CDS grid.*accumulated/tp.*longitude'):
+                run_pipeline(*self.arguments, client=client)
+        diagnostic = json.loads((self.root/'output/grid_mismatch.json').read_text())
+        self.assertAlmostEqual(diagnostic['axes']['longitude']['max_abs_difference_degrees'], .001)
+        self.assertFalse((self.root/'output/daily_2025-12.csv.gz').exists())
+
+    def test_unfinished_processing_update_reuses_verified_downloads(self):
+        client = FakeClient()
+        with patch('download_cds.land_daily_fields', side_effect=ValueError('Interrupted processing')):
+            with self.assertRaisesRegex(ValueError, 'Interrupted processing'):
+                run_pipeline(*self.arguments, client=client)
+        run_path = self.root/'output/run.json'
+        previous = json.loads(run_path.read_text())
+        previous['code_sha256']['download_cds.py'] = 'old-processing-code'
+        previous['methods'].pop('grid_coordinates', None)
+        run_path.write_text(json.dumps(previous))
+        (self.root/'output/daily_2025-12.csv.part').write_bytes(b'incomplete output')
+        with patch.object(client, 'retrieve', side_effect=AssertionError('Redownloaded cached response')):
+            run_pipeline(*self.arguments, client=client)
+        history = list((self.root/'output/run_history').glob('*.json'))
+        self.assertEqual(len(history), 1)
+        self.assertEqual(json.loads(history[0].read_text()), previous)
+        self.assertEqual(client.calls, 2)
+        self.assertTrue((self.root/'output/month_2025-12.json').exists())
+        self.assertFalse((self.root/'output/daily_2025-12.csv.part').exists())
+
+    def test_processing_update_cannot_mix_completed_months(self):
+        run_pipeline(*self.arguments, client=FakeClient())
+        run_path = self.root/'output/run.json'
+        previous = json.loads(run_path.read_text())
+        previous['code_sha256']['download_cds.py'] = 'old-processing-code'
+        run_path.write_text(json.dumps(previous))
+        for artifact in ['month_2025-12.json', 'daily_2025-12.csv.gz']:
+            with self.subTest(remaining_artifact=artifact):
+                with self.assertRaisesRegex(ValueError, 'configuration differs'):
+                    run_pipeline(*self.arguments, cache_only=True)
+            if artifact.startswith('month'):
+                (self.root/'output'/artifact).unlink()
+
+    def test_unfinished_processing_update_cannot_change_request(self):
+        with patch('download_cds.land_daily_fields', side_effect=ValueError('Interrupted processing')):
+            with self.assertRaisesRegex(ValueError, 'Interrupted processing'):
+                run_pipeline(*self.arguments, client=FakeClient())
+        run_path = self.root/'output/run.json'
+        previous = json.loads(run_path.read_text())
+        previous['code_sha256']['download_cds.py'] = 'old-processing-code'
+        for key, value in [('geometry_sha256', 'different-geometry'), ('start', '2025-12-30'),
+                           ('projects', ['B']), ('chunk_days', 31)]:
+            with self.subTest(changed=key):
+                run_path.write_text(json.dumps(dict(previous, **{key: value})))
+                with self.assertRaisesRegex(ValueError, 'configuration differs'):
+                    run_pipeline(*self.arguments, cache_only=True)
+
+    def test_different_grid_dimensions_are_rejected(self):
+        client = FakeClient()
+        retrieve = client.retrieve
+        def different_shape(dataset, request, target):
+            retrieve(dataset, request, target)
+            if len(request['time']) == 1:
+                fields = {key: (definition[1], .001) for key, definition in ALL_FIELDS.items()
+                          if definition[0] in request['variable']}
+                write_netcdf(target, fields, day='2026-01-01', hours=1,
+                             longitudes=[239.95, 240.05, 240.15])
+        with patch.object(client, 'retrieve', side_effect=different_shape):
+            with self.assertRaisesRegex(ValueError, 'CDS grid mismatch'):
+                run_pipeline(*self.arguments, client=client)
+        axes = json.loads((self.root/'output/grid_mismatch.json').read_text())['axes']
+        self.assertEqual(axes['longitude']['reference']['count'], 2)
+        self.assertEqual(axes['longitude']['received']['count'], 3)
+        self.assertIsNone(axes['longitude']['max_abs_difference_degrees'])
+
     def test_full_synthetic_products_verified_resume_and_configuration_guard(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp); geometry = root/'catchments.geojson'

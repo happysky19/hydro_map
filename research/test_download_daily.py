@@ -12,6 +12,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+import netCDF4
 import numpy as np
 
 import download_daily
@@ -87,6 +88,43 @@ class DownloadDailyTests(unittest.TestCase):
             with self.assertRaisesRegex(OSError, 'CDS configuration'):
                 self.pipeline.run(self.geojson, self.day, self.day, self.output)
         self.assertFalse(self.output.exists())
+
+    def test_failed_grid_check_resumes_aorc_and_cached_land_after_code_update(self):
+        client = FakeClient()
+        retrieve = client.retrieve
+        def response_with_roundoff(dataset, request, target):
+            retrieve(dataset, request, target)
+            if dataset == 'reanalysis-era5-land' and len(request['time']) == 1:
+                with netCDF4.Dataset(target, 'a') as ds:
+                    ds['longitude'][:] += 1e-12
+        exact_grid = lambda reference, current: all(np.array_equal(a, b) for a, b in zip(reference, current))
+        with ExitStack() as stack, redirect_stdout(io.StringIO()):
+            self.aorc_inputs(stack)
+            with patch.object(client, 'retrieve', side_effect=response_with_roundoff), \
+                 patch('download_cds._same_grid', side_effect=exact_grid):
+                with self.assertRaisesRegex(ValueError, 'CDS grid mismatch'):
+                    self.pipeline.run(self.geojson, self.day, self.day, self.output, cds_client=client)
+            self.assertEqual(client.calls, 2)
+            self.assertFalse(self.output.exists())
+            work = Path(str(self.output)+'.work')
+            run_path = work/'era5-land/run.json'
+            previous = json.loads(run_path.read_text())
+            previous['code_sha256']['download_cds.py'] = 'old-processing-code'
+            previous['methods'].pop('grid_coordinates')
+            run_path.write_text(json.dumps(previous))
+            def no_repeated_land_download(dataset, request, target):
+                self.assertNotEqual(dataset, 'reanalysis-era5-land')
+                retrieve(dataset, request, target)
+            with patch('download_aorc.extract_native_series', side_effect=AssertionError('Re-read AORC')), \
+                 patch.object(client, 'retrieve', side_effect=no_repeated_land_download):
+                report = self.pipeline.run(self.geojson, self.day, self.day, self.output, cds_client=client)
+        self.assertEqual(client.calls, 4)
+        self.assertEqual(report['row_count'], 1)
+        self.assertFalse((work/'era5-land/grid_mismatch.json').exists())
+        with self.output.open() as stream:
+            row = next(csv.DictReader(stream))
+        self.assertEqual(float(row['era5_land_cds__precipitation_mm']), 2.)
+        self.assertEqual(float(row['era5_cds__cloud_cover_fraction']), .5)
 
     def test_cli_needs_only_geometry_and_dates(self):
         with ExitStack() as stack, redirect_stdout(io.StringIO()):
