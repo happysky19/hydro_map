@@ -119,6 +119,11 @@ method does not extrapolate outside an above-ground bracket or choose among
 multiple crossings. A fully subfreezing profile has no such crossing; that is
 not equivalent to a valid freezing height of zero metres.
 
+Both height columns use the same crossing and therefore normally have the
+same missing-value mask. They are calculated diagnostics, not two separately
+downloaded freezing-height observations. The geopotential-height reference
+uses `z/9.80665`; see the [ECMWF height definitions](https://confluence.ecmwf.int/pages/viewpage.action?pageId=158636068).
+
 ## Time, spatial support and missing values
 
 For AORC, state/flux samples use 00–23 UTC. Hour-ending precipitation uses
@@ -146,6 +151,28 @@ undefined contributing cell/hour can invalidate the basin day. Consult
 reason flags identify conditions encountered, not the number of grid cells
 having each condition. Never replace these blanks with zero without a separate,
 documented modeling decision.
+
+The check command prints freezing-height QC counts and coverage ranges, also
+stored under `freezing_level` in `summary.json`. For example, a single hour
+with no crossing over just 1% of the catchment gives `valid_hours=23` and
+`min_valid_area_fraction=0.99`; **both daily heights are still missing**.
+Conversely, `valid_hours=0` means no hour had full-area support; it does not
+mean that every grid cell was missing for all 24 hours.
+
+| QC reason | What to investigate |
+| --- | --- |
+| `no_crossing` | No above-ground warm-to-cold bracket in the sampled levels. Possible causes include a fully cold profile or a crossing below the lowest usable level; this flag alone cannot distinguish them. |
+| `multiple_crossings` | Temperature inversions give more than one crossing. The current method deliberately leaves these undefined. |
+| `missing_profile` | Missing temperature/geopotential on required above-ground pressure levels; inspect raw profiles and time alignment. |
+| `missing_surface` | Missing surface pressure or surface geopotential; inspect the surface response and time alignment. |
+| `invalid_profile` | Non-increasing heights or a discontinuous above-ground level sequence. Inspect coordinates, units and terrain masking. |
+
+Semicolon-separated reasons can coexist within one project-day. They count
+affected project-days, not individual cells or hours. Do not infer that an
+entire basin is below freezing from `no_crossing`, or from its mean 2 m
+temperature. A conditional mean over valid cells would be a different quantity
+and would need its own area/time coverage definition; the current checker does
+not silently substitute that calculation.
 
 ## Interpret the checks
 
