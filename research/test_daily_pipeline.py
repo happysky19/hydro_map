@@ -95,11 +95,16 @@ class DailyPipelineIntegrationTests(unittest.TestCase):
             report = export_daily(geometry, folders, start, end, output)
             with output.open(newline='') as stream:
                 rows = list(csv.DictReader(stream))
+            with (root/'delivery_qc.csv').open(newline='') as stream:
+                quality = list(csv.DictReader(stream))
             self.assertEqual([(row['date'], row['project_id']) for row in rows],
                              [(str(day), project) for day in (start, end) for project in ('A', 'B')])
             self.assertEqual(report['row_count'], 4)
-            self.assertEqual(len(rows[0]), 2 + (19 + 23 + 3) * 5)
-            for row in rows:
+            self.assertEqual(len(rows[0]), 47)
+            self.assertEqual(len(quality[0]), 182)
+            self.assertEqual(len(rows), len(quality))
+            for row, qc in zip(rows, quality):
+                self.assertEqual((row['date'], row['project_id']), (qc['date'], qc['project_id']))
                 multiplier = (1 if row['project_id'] == 'A' else 2) * (1 if row['date'] == str(start) else 2)
                 precipitation = float(row['aorc_v1_1__precipitation_mm'])
                 rain, snow = (float(row['aorc_v1_1__' + name]) for name in ('rainfall_mm', 'snowfall_mm'))
@@ -108,19 +113,19 @@ class DailyPipelineIntegrationTests(unittest.TestCase):
                 self.assertAlmostEqual(snow, 24. * multiplier)
                 self.assertAlmostEqual(rain + snow, precipitation)
                 self.assertAlmostEqual(float(row['era5_land_cds__precipitation_mm']), 2.)
-                self.assertEqual(row['era5_land_cds__precipitation_mm__valid_hours'], '24')
-                self.assertAlmostEqual(float(row['aorc_v1_1__tmean_c']), .5)
-                self.assertAlmostEqual(float(row['era5_land_cds__tmean_c']), 6.85)
-                self.assertAlmostEqual(float(row['aorc_v1_1__wind_speed_ms']), 5.)
+                self.assertEqual(qc['era5_land_cds__precipitation_mm__valid_hours'], '24')
+                self.assertAlmostEqual(float(row['aorc_v1_1__tmean_degC']), .5)
+                self.assertAlmostEqual(float(row['era5_land_cds__tmean_degC']), 6.85)
+                self.assertAlmostEqual(float(row['aorc_v1_1__wind_speed_m_s']), 5.)
                 self.assertAlmostEqual(float(row['era5_cds__cloud_cover_fraction']), .5)
                 self.assertAlmostEqual(float(row['era5_cds__freezing_level_geopotential_height_m']),
                                        (280 - 273.15) / .006)
-                self.assertTrue(all(value == 'valid' for key, value in row.items() if key.endswith('__qc')))
+                self.assertTrue(all(value == 'valid' for key, value in qc.items() if key.endswith('__qc')))
             manifest = json.loads(Path(str(output) + '.manifest.json').read_text())
             self.assertEqual(manifest['output_sha256'], digest(output))
             self.assertEqual(manifest['geometry_sha256'], digest(geometry))
-            self.assertEqual(manifest['columns']['aorc_v1_1__pet_hargreaves_mm']['units'], 'mm/day')
-            self.assertEqual(manifest['columns']['aorc_v1_1__tmin_c']['statistic'],
+            self.assertEqual(manifest['columns']['aorc_v1_1__pet_hargreaves_mm_day']['units'], 'mm/day')
+            self.assertEqual(manifest['columns']['aorc_v1_1__tmin_degC']['statistic'],
                              'minimum_of_hourly_catchment_means')
             self.assertEqual(manifest['columns']['era5_land_cds__precipitation_mm']['units'], 'mm')
             self.assertEqual(manifest['columns']['era5_cds__cloud_cover_fraction']['units'], '1')

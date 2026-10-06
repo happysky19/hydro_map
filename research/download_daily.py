@@ -1,4 +1,4 @@
-"""Download AORC, ERA5-Land and ERA5 and export one row per project/UTC day."""
+"""Download AORC, ERA5-Land and ERA5 and export aligned daily values and QC tables."""
 
 import argparse
 from datetime import date
@@ -62,9 +62,10 @@ def run(geojson, start, end, output=None, *, work_dir=None, cache_dir=None,
         print(f'[{index+1}/4] {product}: download and daily catchment statistics', flush=True)
         download_cds.run_pipeline(geojson, product, folders[index], cache_dir / 'cds',
                                   start, end, chunk_days=chunk_days, client=cds_client)
-    print('[4/4] Verify source manifests and export the combined daily table', flush=True)
+    print('[4/4] Verify source manifests and export daily values and QC tables', flush=True)
     report = export_daily(geojson, folders, start, end, output)
-    print(f"Saved {report['row_count']:,} project-day rows to {output}", flush=True)
+    print(f"Saved {report['row_count']:,} project-day rows of values to {output}", flush=True)
+    print(f"Quality fields: {output.with_name(report['qc_file'])}", flush=True)
     print(f'Units, quality definitions and routing notes: {output}.manifest.json', flush=True)
     return report
 
@@ -75,7 +76,8 @@ def main():
     parser.add_argument('--start', required=True, type=date.fromisoformat)
     parser.add_argument('--end', required=True, type=date.fromisoformat)
     parser.add_argument('--output', type=Path,
-                        help='Default: outputs/catchment_daily_START_END.csv')
+                        help='Values table; also writes a sibling _qc table and manifest. '
+                             'Default: outputs/catchment_daily_START_END.csv')
     parser.add_argument('--work-dir', type=Path,
                         help='Intermediate source files; default: OUTPUT.work')
     parser.add_argument('--cache-dir', type=Path,

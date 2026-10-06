@@ -32,7 +32,11 @@ python research/download_daily.py --geojson outputs/projects43_independent/dam_c
 ```
 
 This downloads AORC, ERA5-Land and ERA5, computes daily catchment statistics
-and derived variables, and exports one combined CSV with quality columns.
+and derived variables, and exports `catchment_daily.csv` with 47 columns
+(date, project ID and 45 values), `catchment_daily_qc.csv` with 182 columns
+(the same keys and per-variable quality fields), and
+`catchment_daily.csv.manifest.json` with units and provenance. Both tables
+have the same 129 project-day rows in this example. Keep all three files.
 Repeat the same command to resume completed source periods. AORC also needs
 the `zstd` command-line decoder on `PATH`.
 

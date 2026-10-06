@@ -25,13 +25,21 @@ local projects in the GeoJSON and performs four stages automatically:
 1. AORC download, native-grid diagnostics and daily aggregation.
 2. ERA5-Land download and daily catchment statistics.
 3. ERA5 download and daily catchment statistics.
-4. Verified combined CSV export, with one row per project and UTC day.
+4. Verified values and QC exports, each with one row per project and UTC day.
 
-All 45 data variables and their quality columns are included by default.
-The three-day, 43-project example produces 129 rows and 227 columns, plus
-`outputs/catchment_daily.csv.manifest.json` with units and provenance.
-Missing values retain their quality flags; completion does not imply that
-every observation exists. No separate aggregation or export command is needed.
+The same `--output` argument now produces three files:
+
+- `outputs/catchment_daily.csv`: 47 columns (`date`, `project_id` and 45 values).
+- `outputs/catchment_daily_qc.csv`: 182 columns (the same two keys and four
+  quality fields per variable).
+- `outputs/catchment_daily.csv.manifest.json`: units, column definitions and
+  provenance for both tables.
+
+The three-day, 43-project example has 129 rows in each table, in the same order.
+All 45 variables remain included; the split does not select model features or
+fill missing values. Missing values retain their quality flags in the QC table;
+completion does not imply that every observation exists. Keep all three files.
+No separate aggregation or export command is needed.
 
 The required arguments are `--geojson`, `--start` and `--end`. If `--output`
 is omitted, the CSV is named `outputs/catchment_daily_START_END.csv`. For the
@@ -240,22 +248,46 @@ python research/export_daily.py \
 ```
 
 Use `.csv.gz` for compressed CSV or `.parquet` for optional Parquet output.
-The same command can export a short test period from the three demo directories.
+The QC table uses the same format: `example.csv.gz` produces
+`example_qc.csv.gz`, and `example.parquet` produces `example_qc.parquet`.
+The same command can export a short test period from the three demo directories
+or re-export existing completed source periods without downloading again. For
+the one-command example above, use these source directories:
+
+```bash
+python research/export_daily.py --geojson outputs/projects43_independent/dam_catchments.geojson --input-dir outputs/catchment_daily.csv.work/aorc outputs/catchment_daily.csv.work/era5-land outputs/catchment_daily.csv.work/era5 --start 2025-12-29 --end 2025-12-31 --output outputs/catchment_daily.csv
+```
+
+Let an existing download finish before updating its checkout or re-exporting
+its source files. This delivery-format change does not change the downloader
+configuration or require source data to be downloaded again.
+
 The exporter requires completed, hash-verified source periods. It rejects
 duplicate observations, conflicting units, different GeoJSON hashes and
 mismatched project sets. Missing source periods are an error; a missing value
 inside a completed period remains a flagged blank.
 
-The unique key is `(date, project_id)`. Source-qualified columns prevent
+Both tables share the unique key `(date, project_id)` and the same row order.
+Source-qualified columns prevent
 overwrites, for example `aorc_v1_1__precipitation_mm` and
-`era5_land_cds__precipitation_mm`. Each variable retains its own QC, valid
-hours, expected hours and minimum valid-area fraction. The companion
-`<output filename>.manifest.json` records the column dictionary, units,
-aggregation definitions, input hashes and project metadata. Deliver it with
-the data file. An internal destination is supplied through `--output`, not
-hard-coded into the repository.
+`era5_land_cds__precipitation_mm`. Each value's QC fields appear in the QC
+table with the suffixes `__qc`, `__valid_hours`, `__expected_hours` and
+`__min_valid_area_fraction`. For example, `aorc_v1_1__tmean_degC__qc`
+describes `aorc_v1_1__tmean_degC` in the values table.
+
+The companion `<output filename>.manifest.json` uses `schema_version: 2`.
+Its `columns` and `qc_columns` dictionaries describe the two tables;
+`output_sha256`, `qc_output_sha256` and `qc_file` identify the paired outputs.
+It also retains original source-variable names, units, aggregation definitions,
+input hashes and project metadata. Deliver both tables and the manifest.
+The destination is supplied through `--output`.
 
 ## Variables and calculations
+
+The names below are exported value-column names without their source prefixes.
+Unit suffixes are explicit, such as `degC`, `m_s`, `kg_kg`, `Pa`, `kPa`,
+`W_m2`, `MJ_m2`, `kg_m3` and `m3_m3`. Source daily files retain their
+original variable identifiers; the manifest maps them to the exported names.
 
 ### AORC: weather inputs and derived diagnostics
 
@@ -271,19 +303,19 @@ NWRFC calibration, routing or reservoir operations.
 | Requested quantity | Output or calculation | Daily units and meaning |
 | --- | --- | --- |
 | Total precipitation | `precipitation_mm` | mm accumulated over the UTC day |
-| 2 m air temperature | `tmean_c` | Mean of 24 hourly catchment means, °C |
-| Daily minimum/maximum temperature | `tmin_c`, `tmax_c` | Extrema of hourly catchment-mean temperature, °C; not averages of cellwise extrema |
-| Specific humidity | `specific_humidity_kgkg` | Daily mean, kg/kg |
-| Surface pressure | `surface_pressure_pa` | Daily mean, Pa |
-| Shortwave radiation | `shortwave_down_mean_wm2`, `shortwave_down_energy_mjm2` | Incoming flux, W/m²; hourly integration estimate, MJ/m²/day |
-| Longwave radiation | `longwave_down_mean_wm2`, `longwave_down_energy_mjm2` | Incoming flux, W/m²; hourly integration estimate, MJ/m²/day |
-| U/V wind | `u_wind_ms`, `v_wind_ms` | Mean eastward/northward 10 m components, m/s |
-| Wind speed | `wind_speed_ms` | Mean of native hourly `sqrt(u²+v²)`, m/s |
+| 2 m air temperature | `tmean_degC` | Mean of 24 hourly catchment means, °C |
+| Daily minimum/maximum temperature | `tmin_degC`, `tmax_degC` | Extrema of hourly catchment-mean temperature, °C; not averages of cellwise extrema |
+| Specific humidity | `specific_humidity_kg_kg` | Daily mean, kg/kg |
+| Surface pressure | `surface_pressure_Pa` | Daily mean, Pa |
+| Shortwave radiation | `shortwave_down_mean_W_m2`, `shortwave_down_energy_MJ_m2` | Incoming flux, W/m²; hourly integration estimate, MJ/m²/day |
+| Longwave radiation | `longwave_down_mean_W_m2`, `longwave_down_energy_MJ_m2` | Incoming flux, W/m²; hourly integration estimate, MJ/m²/day |
+| U/V wind | `u_wind_m_s`, `v_wind_m_s` | Mean eastward/northward 10 m components, m/s |
+| Wind speed | `wind_speed_m_s` | Mean of native hourly `sqrt(u²+v²)`, m/s |
 | Relative humidity | `relative_humidity_pct` | Native T/q/pressure calculation followed by averaging, % |
-| Vapor pressure deficit | `vapor_pressure_deficit_kpa` | Native T/q/pressure calculation followed by averaging, kPa |
-| Wet-bulb temperature | `wet_bulb_temperature_c` | Pressure-aware psychrometric calculation, °C |
+| Vapor pressure deficit | `vapor_pressure_deficit_kPa` | Native T/q/pressure calculation followed by averaging, kPa |
+| Wet-bulb temperature | `wet_bulb_temperature_degC` | Pressure-aware psychrometric calculation, °C |
 | Rainfall and snowfall | `rainfall_mm`, `snowfall_mm` | Water-equivalent phase amounts, mm/day; sum to total precipitation when all inputs are valid |
-| Potential evapotranspiration | `pet_hargreaves_mm` | Hargreaves-Samani estimate, mm/day |
+| Potential evapotranspiration | `pet_hargreaves_mm_day` | Hargreaves-Samani estimate, mm/day |
 
 `--derive` enables the additional diagnostics and PET. Without it, the
 downloader retains the original eight-input workflow. Existing hourly
@@ -322,16 +354,16 @@ variable list or the entire requested period.
 | --- | --- | --- |
 | Snow water equivalent | `snow_water_equivalent_mm` from `sd` | Daily mean water equivalent, mm |
 | Physical snow depth | `snow_depth_m` from the separately identified `sde` field | Daily mean physical depth, m; never relabel `sd` as physical depth |
-| Snow density and cover | `snow_density_kgm3`, `snow_cover_pct` | Supporting snow diagnostics, kg/m³ and % |
+| Snow density and cover | `snow_density_kg_m3`, `snow_cover_pct` | Supporting snow diagnostics, kg/m³ and % |
 | Snowmelt | `snowmelt_mm` | Modeled water-equivalent melt, mm/day |
-| Surface soil moisture | `soil_moisture_layer1_m3m3` | Volumetric water content, 0-7 cm, m³/m³ |
-| Root-zone soil moisture | `root_zone_soil_moisture_0_100cm_m3m3` | Defined here as the 0-100 cm thickness-weighted mean |
-| Deep soil moisture | `soil_moisture_layer4_m3m3` | Volumetric water content, 100-289 cm, m³/m³ |
-| Soil temperature | `soil_temperature_layer1_c` through `soil_temperature_layer4_c` | Separate daily means for the four layers, °C |
+| Surface soil moisture | `soil_moisture_layer1_m3_m3` | Volumetric water content, 0-7 cm, m³/m³ |
+| Root-zone soil moisture | `root_zone_soil_moisture_0_100cm_m3_m3` | Defined here as the 0-100 cm thickness-weighted mean |
+| Deep soil moisture | `soil_moisture_layer4_m3_m3` | Volumetric water content, 100-289 cm, m³/m³ |
+| Soil temperature | `soil_temperature_layer1_degC` through `soil_temperature_layer4_degC` | Separate daily means for the four layers, °C |
 | Actual evapotranspiration | `actual_evapotranspiration_mm` from total evaporation | mm/day, positive upward water loss; negative values represent net deposition/condensation |
-| Net shortwave/longwave radiation | `net_shortwave_energy_mjm2`, `net_longwave_energy_mjm2` | Accumulated net energy, MJ/m²/day |
-| Total net radiation | `net_radiation_energy_mjm2`, `net_radiation_mean_wm2` | Net solar plus net thermal energy, MJ/m²/day, and equivalent mean flux, W/m² |
-| Temperature and precipitation | `tmean_c`, `tmin_c`, `tmax_c`, `precipitation_mm` | Source-qualified comparison fields; same temperature-statistic definitions; precipitation in mm/day |
+| Net shortwave/longwave radiation | `net_shortwave_energy_MJ_m2`, `net_longwave_energy_MJ_m2` | Accumulated net energy, MJ/m²/day |
+| Total net radiation | `net_radiation_energy_MJ_m2`, `net_radiation_mean_W_m2` | Net solar plus net thermal energy, MJ/m²/day, and equivalent mean flux, W/m² |
+| Temperature and precipitation | `tmean_degC`, `tmin_degC`, `tmax_degC`, `precipitation_mm` | Source-qualified comparison fields; same temperature-statistic definitions; precipitation in mm/day |
 
 All four soil-water layers are retained. Layer boundaries are 0-7, 7-28,
 28-100 and 100-289 cm. The defined root-zone mean is
@@ -362,9 +394,10 @@ flagged rather than extrapolated. The output retains both
 "0°C isotherm elevation" is this same diagnostic with the vertical reference
 made explicit; it is not a second independent measurement.
 
-The combined output contains **45 data variables**: 19 from AORC with
-`--derive`, 23 from ERA5-Land and 3 from ERA5. Each has four companion quality
-columns. Together with `date` and `project_id`, the full table has 227 columns.
+The values table contains **45 data variables**: 19 from AORC with
+`--derive`, 23 from ERA5-Land and 3 from ERA5. Together with `date` and
+`project_id`, it has 47 columns. Each variable has four fields in the separate
+QC table, which has 182 columns including the same two keys.
 Daily accumulated quantities use `mm` or `MJ/m2` in the machine-readable unit
 dictionary; the daily interval makes them numerically equivalent to the
 mm/day and MJ/m²/day amounts in the tables above.
@@ -379,19 +412,21 @@ mm/day and MJ/m²/day amounts in the tables above.
 | `research/aggregate_daily.py` | Aggregate hourly polygon series with explicit UTC timing and coverage rules |
 | `research/download_cds.py` | Retrieve ERA5-Land/ERA5, calculate polygon statistics and write monthly daily files |
 | `research/cds_fields.py` | CDS variable definitions, soil weighting, conversions and freezing-level calculations |
-| `research/export_daily.py` | Verify source artifacts and export the final daily CSV or Parquet table |
+| `research/export_daily.py` | Verify source artifacts and export aligned daily values and QC tables plus their manifest |
 
 For modeling, begin with AORC precipitation and temperature as meteorological
 forcing. Rain/snow partition and PET are calculated inputs with the method
 defined here. Use the ERA5-Land states and fluxes only where your model needs
 external states, predictors or evaluation data; do not count externally
 supplied snowmelt/ET a second time if the hydrological model already computes
-those processes. Preserve the source and QC columns when preparing model
-inputs. Missing or flagged values require a separately chosen treatment.
+those processes. Preserve source prefixes and keep the QC table linked by
+`(date, project_id)` when preparing model inputs. The split preserves all
+variables and quality checks; it does not choose features or impute values.
+Missing or flagged values require a separately chosen treatment.
 
 ## Quality, interpretation and validation
 
-Validation on 2026-10-06 passed 76 core tests and 115 research tests, including
+Validation on 2026-10-06 passed 76 core tests and 120 research tests, including
 all three source-processing contracts through the final exporter across a
 December/January boundary using synthetic CDS responses. The unified entry
 point also tests resume without repeat retrieval, routing-note retention,
@@ -403,7 +438,12 @@ A real cached AORC
 replay for 43 projects over 2025-12-29 through 2025-12-31 produced 2,451 daily
 records: 2,322 valid and 129 flagged precipitation/rain/snow values on the
 last date. Rain plus snow matched precipitation in all 86 complete project-days
-within 1.1e-13 mm. CSV and Parquet exports both contained 129 rows. The CDS
+within 1.1e-13 mm. CSV and Parquet exports both contained 129 rows. Re-exporting
+this AORC sample into the split format preserved all 2,451 numeric/missing
+values and their QC records exactly. The values table had 21 columns and the
+QC table 78 columns for these 19 AORC variables. Three-source integration
+tests verify 47 value columns and 182 QC columns, including typed Parquet
+nulls and rollback if either output or its manifest cannot be published. The CDS
 request previews cover all 43 projects. Local CDS tests use synthetic
 responses; authenticated end-to-end CDS output has not been validated here.
 
