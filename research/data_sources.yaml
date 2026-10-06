@@ -1,0 +1,34 @@
+# Candidate settings; source approval and full-period coverage are pending.
+period:
+  start: '1996-01-01'
+  end: '2025-12-31'
+  daily_time_zone: UTC
+  alternative_complete_year_window: ['1995-01-01', '2024-12-31']
+pilot_projects:
+  - MICA
+  - ARROW
+  - ALBENI_FALLS
+  - BROWNLEE
+  - LOWER_GRANITE
+  - THE_DALLES
+sources:
+  aorc:
+    role: primary_forcing_candidate
+    version: '1.1'
+    url: https://noaa-nws-aorc-v1-1-1km.s3.amazonaws.com/
+    variables: [APCP_surface, TMP_2maboveground, SPFH_2maboveground, PRES_surface, DSWRF_surface, DLWRF_surface, UGRD_10maboveground, VGRD_10maboveground]
+    status: sample_values_verified_full_coverage_pending
+  daymet:
+    role: independent_method_comparison
+    version: V4R1
+    collection_concept_id: C2532426483-ORNL_CLOUD
+    variables: [prcp, tmin, tmax, vp, srad, dayl, swe]
+    status: authenticated_precipitation_samples_verified_polygon_coverage_pending
+  era5_land:
+    role: optional_land_state_and_forcing_comparison
+    dataset: reanalysis-era5-land
+    status: documentation_verified_authenticated_access_pending
+  era5:
+    role: optional_atmospheric_fields
+    datasets: [reanalysis-era5-single-levels, reanalysis-era5-pressure-levels]
+    status: documentation_verified_authenticated_access_pending
