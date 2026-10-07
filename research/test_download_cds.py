@@ -499,6 +499,20 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(len(rejected), 3)
         self.assertEqual(len(manifest), 1)
 
+    def test_latest_year_is_processed_before_older_years_download(self):
+        client = FakeClient()
+        retrieve = client.retrieve
+        def older_unavailable(dataset, request, target):
+            if request['year'] == ['2025']:
+                raise RuntimeError('Request is invalid')
+            retrieve(dataset, request, target)
+        with patch.object(client, 'retrieve', side_effect=older_unavailable), redirect_stdout(io.StringIO()):
+            with self.assertRaisesRegex(RuntimeError, 'invalid'):
+                run_pipeline(self.geometry, 'era5', self.root/'output', self.root/'cache', '2025-12-30',
+                             '2026-01-02', client=client, newest_first=True)
+        self.assertTrue((self.root/'output/month_2026-01.json').exists())
+        self.assertFalse((self.root/'output/month_2025-12.json').exists())
+
     def test_request_errors_are_not_retried(self):
         client = FakeClient()
         specs = make_requests('era5', date(2025, 12, 31), [50.1, -120.1, 49.9, -119.9])
