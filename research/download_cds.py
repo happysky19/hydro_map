@@ -6,7 +6,7 @@ Neither API keys nor internal delivery paths belong in this script or its output
 
 import argparse
 from calendar import monthrange
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 import csv
 from datetime import date, datetime, timedelta, timezone
@@ -15,6 +15,7 @@ import hashlib
 import json
 from math import ceil, floor
 from pathlib import Path, PurePosixPath
+import queue
 import tempfile
 import threading
 import time
@@ -103,23 +104,29 @@ def make_requests(product, start, area, end=None):
     return [dict(kind=kind, dataset=dataset, request=request, fields=list(fields))]
 
 
-def accumulated_requests(start, end, area):
+def accumulated_requests(start, end, area, from_cds=()):
     """ERA5-Land 24-hour endpoints at 00 UTC of each following day, one request per year.
 
     Each request is the product of its months and days: a few unneeded dates are cheap,
     and the CDS skips impossible ones. Endpoints are small, so a year stays far below the
-    size limit while avoiding dozens of queued requests.
+    size limit while avoiding dozens of queued requests. Fields in from_cds get their own
+    request, marked for the CDS, when another provider answers the rest.
     """
     needed = list(dates(start+timedelta(days=1), end+timedelta(days=1)))
+    groups = [([name for name in LAND_ACCUMULATED if name not in from_cds], None),
+              ([name for name in LAND_ACCUMULATED if name in from_cds], 'cds')]
     result = []
     for year in sorted({day.year for day in needed}):
         within = [day for day in needed if day.year == year]
-        request = dict(variable=[v[0] for v in LAND_ACCUMULATED.values()], year=f'{year:04d}',
-                       month=sorted({f'{day.month:02d}' for day in within}),
-                       day=sorted({f'{day.day:02d}' for day in within}), time=['00:00'],
-                       area=area, data_format='netcdf', download_format='unarchived')
-        result.append(dict(kind='accumulated', dataset='reanalysis-era5-land', request=request,
-                           fields=list(LAND_ACCUMULATED)))
+        for fields, provider in groups:
+            if not fields:
+                continue
+            request = dict(variable=[LAND_ACCUMULATED[name][0] for name in fields], year=f'{year:04d}',
+                           month=sorted({f'{day.month:02d}' for day in within}),
+                           day=sorted({f'{day.day:02d}' for day in within}), time=['00:00'],
+                           area=area, data_format='netcdf', download_format='unarchived')
+            spec = dict(kind='accumulated', dataset='reanalysis-era5-land', request=request, fields=fields)
+            result.append(dict(spec, provider=provider) if provider else spec)
     return result
 
 
@@ -406,43 +413,48 @@ def fetch_response(spec, cache_dir, manifest, client, cache_only=False, lock=Non
     return path
 
 
-def prefetch(specs, cache_dir, manifest, client, workers=2, attempts=30, retry_seconds=120,
-             queue_hours=12):
-    """Queue uncached requests concurrently; processing later reads only verified cache files.
+def fetch_retrying(spec, cache_dir, manifest, client, lock, attempts=30, retry_seconds=120, queue_hours=12):
+    """fetch_response, retrying transient failures.
 
     A queue-limit rejection is the provider's flow control: it is retried for up to
-    queue_hours without using up the attempts allowed for other transient errors. A
-    request that still fails does not stop the others; the first failure is raised
-    once every other request has finished, so a rerun only needs the failed ones.
+    queue_hours without using up the attempts allowed for other transient errors.
     """
-    lock = threading.Lock()
+    failures, waited = 0, 0.
+    while True:
+        try:
+            path = fetch_response(spec, cache_dir, manifest, client, lock=lock)
+            break
+        except Exception as error:
+            queued = 'temporarily limited' in str(error)
+            failures += not queued
+            waited += queued*retry_seconds
+            if (not transient(error) or failures >= attempts
+                    or (queued and waited > queue_hours*3600)):
+                raise
+            reason = 'queue full' if queued else str(error).splitlines()[0]
+            print(f"CDS {reason} for {spec['dataset']}; retrying in {retry_seconds/60:g} min", flush=True)
+            time.sleep(retry_seconds)
+    request = spec['request']
+    first = lambda value: value[0] if isinstance(value, list) else value
+    print(f"Cached {spec['dataset']} {first(request['year'])}-{first(request['month'])} "
+          f"days {request['day'][0]}-{request['day'][-1]}", flush=True)
+    return path
+
+
+def prefetch(specs, cache_dir, manifest, client, workers=2, attempts=30, retry_seconds=120,
+             queue_hours=12, lock=None):
+    """Queue uncached requests concurrently; processing later reads only verified cache files.
+
+    A request that still fails after its retries does not stop the others; the first
+    failure is raised once every other request has finished, so a rerun only needs the
+    failed ones. Callers sharing a manifest with other threads pass their lock.
+    """
+    lock = lock or threading.Lock()
     Path(cache_dir).mkdir(parents=True, exist_ok=True)
-
-    def fetch(spec):
-        failures, waited = 0, 0.
-        while True:
-            try:
-                path = fetch_response(spec, cache_dir, manifest, client, lock=lock)
-                break
-            except Exception as error:
-                queued = 'temporarily limited' in str(error)
-                failures += not queued
-                waited += queued*retry_seconds
-                if (not transient(error) or failures >= attempts
-                        or (queued and waited > queue_hours*3600)):
-                    raise
-                reason = 'queue full' if queued else str(error).splitlines()[0]
-                print(f"CDS {reason} for {spec['dataset']}; retrying in {retry_seconds/60:g} min", flush=True)
-                time.sleep(retry_seconds)
-        request = spec['request']
-        first = lambda value: value[0] if isinstance(value, list) else value
-        print(f"Cached {spec['dataset']} {first(request['year'])}-{first(request['month'])} "
-              f"days {request['day'][0]}-{request['day'][-1]}", flush=True)
-        return path
-
     errors = []
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        for future in as_completed([pool.submit(fetch, spec) for spec in specs]):
+        for future in as_completed([pool.submit(fetch_retrying, spec, cache_dir, manifest, client, lock,
+                                                attempts, retry_seconds, queue_hours) for spec in specs]):
             if future.exception() is not None:
                 errors.append(future.exception())
                 print(f'CDS request failed: {future.exception()}', flush=True)
@@ -451,10 +463,42 @@ def prefetch(specs, cache_dir, manifest, client, workers=2, attempts=30, retry_s
         raise errors[0]
 
 
+def fetch_in_background(specs, cache_dir, manifest, client, workers, lock):
+    """Fetch requests in the given order on daemon threads; returns a future per request hash.
+
+    Daemon threads let the process exit while requests still wait in a provider's queue.
+    """
+    keyed = {json_hash({key: spec[key] for key in ['dataset', 'request']}): spec for spec in specs}
+    futures = {key: Future() for key in keyed}
+    waiting = queue.SimpleQueue()
+    for item in keyed.items():
+        waiting.put(item)
+
+    def work():
+        while True:
+            try:
+                key, spec = waiting.get_nowait()
+            except queue.Empty:
+                return
+            try:
+                futures[key].set_result(fetch_retrying(spec, cache_dir, manifest, client, lock))
+            except BaseException as error:
+                print(f'CDS request failed: {error}', flush=True)
+                futures[key].set_exception(error)
+
+    for _ in range(min(workers, len(keyed))):
+        threading.Thread(target=work, daemon=True).start()
+    return futures
+
+
 def run_pipeline(geojson, product, output_dir, cache_dir, start, end, *, projects=None,
                  chunk_days=14, dry_run=False, cache_only=False, client=None, workers=3,
-                 newest_first=False, era5_source='arco', land_source='cds'):
-    """Return run metadata. Existing completed months require verified file hashes."""
+                 newest_first=False, era5_source='arco', land_source='cds', cds_client=None):
+    """Return run metadata. Existing completed months require verified file hashes.
+
+    With land_source='edh', fields the Earth Data Hub copy lacks are requested from
+    the CDS through cds_client (default: a cdsapi client).
+    """
     geojson, output_dir, cache_dir = map(Path, [geojson, output_dir, cache_dir])
     if isinstance(start, str): start = date.fromisoformat(start)
     if isinstance(end, str): end = date.fromisoformat(end)
@@ -478,6 +522,9 @@ def run_pipeline(geojson, product, output_dir, cache_dir, start, end, *, project
     area = padded_area(features, .1 if product == 'era5-land' else .25)
     # Only ERA5-Land approaches the CDS size limit; three ERA5 single-level fields fit a month.
     batch_days = chunk_days if product == 'era5-land' else 31
+    from_cds = ()
+    if product == 'era5-land' and land_source == 'edh':
+        from edh_era5_land import FROM_CDS as from_cds
     source = 'era5_land_cds' if product == 'era5-land' else 'era5_cds'
     dependencies = [Path(__file__), Path(__file__).with_name('cds_fields.py'),
                     Path(__file__).with_name('area_weights.py'), Path(__file__).with_name('meteorology.py'),
@@ -487,7 +534,8 @@ def run_pipeline(geojson, product, output_dir, cache_dir, start, end, *, project
                **forcing, area_north_west_south_east=area, chunk_days=chunk_days,
                daily_schema=daily_schema(product), code_sha256={p.name: sha256(p) for p in dependencies},
                methods=dict(provider=('Google ARCO-ERA5, a copy of the CDS dataset' if product == 'era5' and era5_source == 'arco'
-                                      else 'DestinE Earth Data Hub copy of the CDS dataset'
+                                      else 'DestinE Earth Data Hub copy of the CDS dataset; '
+                                           f'{", ".join(from_cds)} from the Copernicus Climate Data Store'
                                       if product == 'era5-land' and land_source == 'edh'
                                       else 'Copernicus Climate Data Store'),
                             spatial='WGS84 geodesic polygon/native-grid intersections; full-area coverage required',
@@ -499,8 +547,9 @@ def run_pipeline(geojson, product, output_dir, cache_dir, start, end, *, project
                             humidity='Cell-hour vapour pressure from 2 m dewpoint (FAO56 liquid-water Tetens, as for AORC); q=0.622e/(p-0.378e); RH, VPD and wet bulb as for AORC',
                             wind='Cell-hour hypot(u10, v10) before spatial averaging',
                             precipitation_phase='ERA5-Land snowfall; rainfall = total precipitation - snowfall',
-                            freezing_level='ECMWF zero_degree_level (deg0l): model-level 0 degC height above ground, zero when the whole column is below 0 degC; above sea level adds surface geopotential/9.80665'))
-    endpoint_specs = accumulated_requests(start, end, area) if product == 'era5-land' else []
+                            freezing_level='ECMWF zero_degree_level (deg0l): model-level 0 degC height above ground, zero when the whole column is below 0 degC; above sea level adds surface geopotential/9.80665',
+                            **({'fields_from_cds': list(from_cds)} if from_cds else {})))
+    endpoint_specs = accumulated_requests(start, end, area, from_cds) if product == 'era5-land' else []
     unique = {}
     for first, last in date_chunks(start, end, batch_days):
         for spec in batch_requests(product, first, last, area, endpoint_specs):
@@ -541,6 +590,11 @@ def run_pipeline(geojson, product, output_dir, cache_dir, start, end, *, project
         else:
             import cdsapi
             client = cdsapi.Client(progress=False)
+    if from_cds and cds_client is None and not cache_only:
+        import cdsapi
+        cds_client = cdsapi.Client(progress=False)
+    provider_client = lambda spec: cds_client if spec.get('provider') == 'cds' else client
+    lock = threading.Lock()
     weights, grid = None, None
     identity = Transformer.from_crs(4326, 4326, always_xy=True)
     months = list(date_chunks(start, end, 31))
@@ -563,9 +617,25 @@ def run_pipeline(geojson, product, output_dir, cache_dir, start, end, *, project
                 for first, last in date_chunks(month_start, month_end, batch_days):
                     for spec in batch_requests(product, first, last, area, endpoint_specs):
                         specs.setdefault(json_hash({key: spec[key] for key in ['dataset', 'request']}), spec)
-        prefetch(list(specs.values()), cache_dir, manifest, client, workers)
+        prefetch([spec for spec in specs.values() if spec.get('provider') != 'cds'],
+                 cache_dir, manifest, client, workers, lock=lock)
         # Providers that keep raw chunks while answering a year's requests release them here.
         getattr(client, 'release', lambda: None)()
+        for key in specs:
+            if key in background:
+                background[key].result()
+
+    # Fields split off for the CDS wait in its queue; all years queue at the start, in order.
+    background = {}
+    if from_cds and not cache_only:
+        split = {}
+        for month_start, month_end in months:
+            if not complete(month_start):
+                for first, last in date_chunks(month_start, month_end, batch_days):
+                    for spec in batch_requests(product, first, last, area, endpoint_specs):
+                        if spec.get('provider') == 'cds':
+                            split.setdefault(json_hash({key: spec[key] for key in ['dataset', 'request']}), spec)
+        background = fetch_in_background(list(split.values()), cache_dir, manifest, cds_client, workers, lock)
 
     prefetched = set()
     for month_start, month_end in months:
@@ -583,7 +653,8 @@ def run_pipeline(geojson, product, output_dir, cache_dir, start, end, *, project
                 writer = csv.DictWriter(stream, fieldnames=DAILY_FIELDS); writer.writeheader()
                 for first, last in date_chunks(month_start, month_end, batch_days):
                     specs = batch_requests(product, first, last, area, endpoint_specs)
-                    responses = [(spec, fetch_response(spec, cache_dir, manifest, client, cache_only)) for spec in specs]
+                    responses = [(spec, fetch_response(spec, cache_dir, manifest, provider_client(spec), cache_only, lock))
+                                 for spec in specs]
                     source_hashes.update({path.name: sha256(path) for _, path in responses})
                     # Each response is decoded once per batch; days then select their hours by timestamp.
                     loaded = [(spec, read_response(path, spec['fields'])) for spec, path in responses]
@@ -592,7 +663,7 @@ def run_pipeline(geojson, product, output_dir, cache_dir, start, end, *, project
                         for spec, fields in loaded:
                             target_day = day+timedelta(days=1) if spec['kind'] == 'accumulated' else day
                             if covers(spec['request'], target_day):
-                                records[spec['kind']] = fields
+                                records.setdefault(spec['kind'], {}).update(fields)
                         for kind, fields in records.items():
                             for name, record in fields.items():
                                 current = (record['latitude'], record['longitude'])

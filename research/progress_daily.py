@@ -40,7 +40,8 @@ def cds_progress(folder, cache):
     product, area = run['product'], run['area_north_west_south_east']
     start, end = date.fromisoformat(run['start']), date.fromisoformat(run['end'])
     batch_days = run['chunk_days'] if product == 'era5-land' else 31
-    endpoints = accumulated_requests(start, end, area) if product == 'era5-land' else []
+    from_cds = run.get('methods', {}).get('fields_from_cds', ())
+    endpoints = accumulated_requests(start, end, area, from_cds) if product == 'era5-land' else []
     hashes = {json_hash({key: spec[key] for key in ['dataset', 'request']})
               for first, last in date_chunks(start, end, batch_days)
               for spec in batch_requests(product, first, last, area, endpoints)}
