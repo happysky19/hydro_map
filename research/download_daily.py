@@ -31,7 +31,7 @@ class DeliveryCheckError(RuntimeError):
 
 def run(geojson, start, end, output=None, *, work_dir=None, cache_dir=None,
         max_download_gb=2000, workers=16, chunk_days=14, cds_client=None, newest_first=True,
-        cds_workers=3, keep_chunks=False, era5_source='arco'):
+        cds_workers=3, keep_chunks=False, era5_source='arco', land_source='cds'):
     """Run the three sources concurrently, then export, check and deliver.
 
     A failed source does not stop the others; repeating the command resumes every
@@ -65,6 +65,9 @@ def run(geojson, start, end, output=None, *, work_dir=None, cache_dir=None,
         elif product == 'era5' and era5_source == 'arco':
             from arco_era5 import ArcoClient
             clients[product] = ArcoClient()
+        elif product == 'era5-land' and land_source == 'edh':
+            import edh_era5_land
+            edh_era5_land.token()
         else:
             import cdsapi
             clients[product] = cdsapi.Client(progress=False)
@@ -72,6 +75,9 @@ def run(geojson, start, end, output=None, *, work_dir=None, cache_dir=None,
     cache_dir = Path(cache_dir or work_dir / 'cache').resolve()
     work_dir.mkdir(parents=True, exist_ok=True)
     cache_dir.mkdir(parents=True, exist_ok=True)
+    if 'era5-land' not in clients:
+        from edh_era5_land import EdhClient
+        clients['era5-land'] = EdhClient(cache_dir / 'cds' / 'edh_chunks')
     folders = [work_dir / name for name in ('aorc', 'era5-land', 'era5')]
     order = 'newest first' if newest_first else 'oldest first'
     print(f'{len(polygons)} projects; {(end-start).days+1} UTC days, {order}; working files: {work_dir}', flush=True)
@@ -85,7 +91,7 @@ def run(geojson, start, end, output=None, *, work_dir=None, cache_dir=None,
         **{label: (lambda product=product, folder=folder: download_cds.run_pipeline(
                geojson, product, folder, cache_dir / 'cds', start, end, chunk_days=chunk_days,
                client=clients[product], workers=cds_workers, newest_first=newest_first,
-               era5_source=era5_source))
+               era5_source=era5_source, land_source=land_source))
            for label, product, folder in [('ERA5-Land', 'era5-land', folders[1]), ('ERA5', 'era5', folders[2])]},
     }
     with ThreadPoolExecutor(max_workers=len(sources)) as pool:
@@ -138,6 +144,8 @@ def main():
                         help='Requests kept in the CDS queue per product (1–8; default: 3)')
     parser.add_argument('--era5-source', choices=['arco', 'cds'], default='arco',
                         help='ERA5 provider: the public ARCO-ERA5 copy on Google Cloud (default; no queue) or the CDS')
+    parser.add_argument('--land-source', choices=['cds', 'edh'], default='cds',
+                        help='ERA5-Land provider: the CDS queue (default) or the Earth Data Hub copy (needs a DestinE token)')
     parser.add_argument('--keep-chunks', action='store_true',
                         help='Keep raw AORC chunks in the cache to reprocess later without downloading')
     parser.add_argument('--oldest-first', dest='newest_first', action='store_false',

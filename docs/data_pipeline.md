@@ -104,8 +104,13 @@ each month takes three requests. In October 2026 a request waited 5-35 minutes
 in the queue, so with three in flight ERA5-Land takes several days. The CDS
 rejects further submissions once a user has a few requests queued for a
 dataset (five was too many), so raising `--cds-workers` above 3 mostly adds
-rejected submissions. Every source works through the period year by year,
-latest first, and writes each finished year (AORC) or month (CDS) as it goes.
+rejected submissions. `--land-source edh` reads ERA5-Land instead from the
+[DestinE Earth Data Hub](https://earthdatahub.destine.eu/) copy, which has no
+queue; for the 43 catchments this is about 1,200 chunk reads per year, within
+the free allowance of 500,000 a month. Check the store against the CDS with
+`python research/check_edh.py --compare-cds` before a long run. Every source
+works through the period year by year, latest first, and writes each finished
+year (AORC) or month (CDS) as it goes.
 
 Before starting, on the host that will run the download:
 
@@ -114,6 +119,9 @@ Before starting, on the host that will run the download:
    `zstd --version`.
 2. Put `~/.cdsapirc` there (section 2) and accept the ERA5-Land licence once
    on the CDS website (the ERA5 single-level licence too if `--era5-source cds`).
+   For `--land-source edh`, also add the DestinE personal access token to
+   `~/.netrc` as `machine data.earthdatahub.destine.eu password <token>` and
+   run `chmod 600 ~/.netrc`.
 3. Copy the catchment file to `outputs/projects43_independent/dam_catchments.geojson`
    (the `outputs/` folder is not in Git), or rebuild it with `hydro-map build`
    (section 3). Every run of a project must use the same file.
@@ -155,7 +163,9 @@ same working directory at once.
 Put `--work-dir` on large local or scratch storage. Raw AORC chunks are
 discarded after use unless `--keep-chunks` is given (about 30 GB per year,
 useful to reprocess without downloading); CDS responses are always kept (about
-5 GB per year of ERA5-Land). While the sources download, completed years and
+5 GB per year of ERA5-Land). With `--land-source edh`, the raw Earth Data Hub
+chunks of the current year are kept in `cache/cds/edh_chunks` and deleted once
+its requests are answered. While the sources download, completed years and
 months can already be plotted (see [Plots](#plots)). When all three finish, the
 command exports, checks and writes the delivery files listed above.
 
@@ -502,7 +512,13 @@ evaporation and not a calibrated crop-specific water demand.
 The complete archive comes from the
 [CDS hourly product](https://cds.climate.copernicus.eu/datasets/reanalysis-era5-land).
 It provides model estimates on a 0.1° distribution grid (native resolution
-about 9 km).
+about 9 km). With `--land-source edh` the same hourly fields are read from the
+Earth Data Hub ERA5-Land store,
+a Zarr copy in chunks of 60 days by 5° × 10°, stored with 13 mantissa bits
+(relative precision about 1e-4). `research/edh_era5_land.py` answers the CDS
+requests from it and writes the same NetCDF layout, so caching and daily
+processing are unchanged; the store's units and accumulation type are checked
+like a CDS response.
 
 | Requested quantity | Output or calculation | Daily units and meaning |
 | --- | --- | --- |
@@ -579,7 +595,8 @@ equivalent to the mm/day and MJ/m²/day amounts in the tables above.
 | `research/download_cds.py` | Retrieve ERA5-Land/ERA5, calculate polygon statistics and write monthly daily files |
 | `research/cds_fields.py` | CDS variable definitions, soil weighting, humidity, wind and freezing-level conversions |
 | `research/arco_era5.py` | Serves ERA5 single-level requests from the public ARCO-ERA5 copy in the CDS response layout |
-| `research/check_edh.py` | Checks access to the Earth Data Hub ERA5-Land store and prints its layout |
+| `research/edh_era5_land.py` | Serves ERA5-Land requests from the Earth Data Hub copy in the CDS response layout |
+| `research/check_edh.py` | Checks the Earth Data Hub store: units, accumulation convention and, with `--compare-cds`, values against the CDS |
 | `research/export_daily.py` | Verify source artifacts and export aligned daily values and QC tables plus their manifest |
 | `research/check_daily.py` | Check delivered values/QC, physical plausibility and AORC/ERA5-Land agreement; plot coverage and project time series |
 | `research/deliver_daily.py` | Write the requested-variable table and README from a checked full delivery |
