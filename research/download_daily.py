@@ -31,7 +31,7 @@ class DeliveryCheckError(RuntimeError):
 
 def run(geojson, start, end, output=None, *, work_dir=None, cache_dir=None,
         max_download_gb=2000, workers=16, chunk_days=14, cds_client=None, newest_first=True,
-        cds_workers=3, keep_chunks=False):
+        cds_workers=3, keep_chunks=False, era5_source='arco'):
     """Run the three sources concurrently, then export, check and deliver.
 
     A failed source does not stop the others; repeating the command resumes every
@@ -60,11 +60,14 @@ def run(geojson, start, end, output=None, *, work_dir=None, cache_dir=None,
     # Fail on missing credentials before starting the potentially large AORC read.
     clients = {}
     for product in ('era5-land', 'era5'):
-        if cds_client is None:
+        if cds_client is not None:
+            clients[product] = cds_client
+        elif product == 'era5' and era5_source == 'arco':
+            from arco_era5 import ArcoClient
+            clients[product] = ArcoClient()
+        else:
             import cdsapi
             clients[product] = cdsapi.Client(progress=False)
-        else:
-            clients[product] = cds_client
     work_dir = Path(work_dir or str(output) + '.work').resolve()
     cache_dir = Path(cache_dir or work_dir / 'cache').resolve()
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -81,7 +84,8 @@ def run(geojson, start, end, output=None, *, work_dir=None, cache_dir=None,
             refresh_incomplete=False, keep_chunks=keep_chunks, newest_first=newest_first)),
         **{label: (lambda product=product, folder=folder: download_cds.run_pipeline(
                geojson, product, folder, cache_dir / 'cds', start, end, chunk_days=chunk_days,
-               client=clients[product], workers=cds_workers, newest_first=newest_first))
+               client=clients[product], workers=cds_workers, newest_first=newest_first,
+               era5_source=era5_source))
            for label, product, folder in [('ERA5-Land', 'era5-land', folders[1]), ('ERA5', 'era5', folders[2])]},
     }
     with ThreadPoolExecutor(max_workers=len(sources)) as pool:
@@ -132,6 +136,8 @@ def main():
     parser.add_argument('--workers', type=int, default=16, help='Concurrent AORC reads (1–32; default: 16)')
     parser.add_argument('--cds-workers', type=int, default=3,
                         help='Requests kept in the CDS queue per product (1–8; default: 3)')
+    parser.add_argument('--era5-source', choices=['arco', 'cds'], default='arco',
+                        help='ERA5 provider: the public ARCO-ERA5 copy on Google Cloud (default; no queue) or the CDS')
     parser.add_argument('--keep-chunks', action='store_true',
                         help='Keep raw AORC chunks in the cache to reprocess later without downloading')
     parser.add_argument('--oldest-first', dest='newest_first', action='store_false',
