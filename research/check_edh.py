@@ -2,14 +2,16 @@
 
     python research/check_edh.py                 # layout, units and hourly values at one point
     python research/check_edh.py --compare-cds   # also compare one small request with the CDS
+    python research/check_edh.py --compare-cds --geojson outputs/projects43_independent/dam_catchments.geojson
 
 Reads the personal access token from ~/.netrc
 (machine data.earthdatahub.destine.eu password <token>); the token is never
 printed. The daily pipeline expects accumulated fields as totals since 00 UTC,
 so that the 00 UTC value is the previous day's 24-hour total, as in the CDS; the
 hourly values at one point show whether the store follows that convention.
---compare-cds requests the same day and area from both providers (one small
-CDS request) and compares every value through the pipeline's own reader.
+--compare-cds requests the same day and area from both providers and compares
+every value through the pipeline's own reader; with --geojson the area is the
+one a run over those catchments requests.
 """
 
 import argparse
@@ -22,8 +24,9 @@ import time
 import numpy as np
 
 from cds_fields import LAND_ACCUMULATED, LAND_STATES
-from download_cds import _units_match, accumulated_requests, make_requests, read_response
+from download_cds import _units_match, accumulated_requests, make_requests, padded_area, read_response
 from edh_era5_land import EPOCH, EdhClient
+from hydro_map.plotting import load_features
 
 
 POINT = (47.5, -123.5)        # Olympic Mountains: rain and a clear daily solar cycle
@@ -90,9 +93,25 @@ def point_series(client):
     return problems
 
 
-def compare_cds(client, folder):
+def catchment_cells(features, latitude, longitude):
+    """Grid cells of 0.1 degree that touch any catchment."""
+    import shapely
+    union = shapely.union_all([feature['geometry'] for feature in features])
+    shapely.prepare(union)
+    xx, yy = np.meshgrid(longitude, latitude)
+    return shapely.intersects(union, shapely.box(xx - .05, yy - .05, xx + .05, yy + .05))
+
+
+def compare_cds(client, folder, geojson=None):
+    """Compare one day from both providers, over a small box or the catchments' own area.
+
+    Values are compared where both are defined; cells blank in only one source are
+    listed, and with catchments they fail the check only when they touch one.
+    """
     import cdsapi
-    area = [POINT[0] + .3, POINT[1] - .3, POINT[0] - .3, POINT[1] + .3]
+    features = load_features(geojson) if geojson else None
+    area = (padded_area(features, .1) if features else
+            [POINT[0] + .3, POINT[1] - .3, POINT[0] - .3, POINT[1] + .3])
     specs = make_requests('era5-land', DAY, area, DAY) + accumulated_requests(DAY, DAY, area)
     providers = {'CDS': cdsapi.Client(progress=False), 'EDH': client}
     problems = []
@@ -103,19 +122,32 @@ def compare_cds(client, folder):
             provider.retrieve(spec['dataset'], spec['request'], str(path))
             responses[name] = read_response(path, spec['fields'])
             print(f"\n{spec['kind']}: {name} answered in {time.monotonic() - started:.0f} s")
-        print('field  hours  cells  same grid  same blanks  largest |value|  max |difference| / largest')
+        print('field  hours  cells    blank only in EDH / CDS  largest |value|  max |difference| / largest')
         for short in spec['fields']:
             cds, edh = responses['CDS'][short], responses['EDH'][short]
-            grid = (cds['data'].shape == edh['data'].shape and np.array_equal(cds['times'], edh['times'])
-                    and all(np.allclose(cds[a], edh[a], atol=2e-5) for a in ('latitude', 'longitude')))
-            blanks = grid and np.array_equal(np.isnan(cds['data']), np.isnan(edh['data']))
-            scale = float(np.nanmax(np.abs(cds['data']))) if np.isfinite(cds['data']).any() else 0.
-            difference = float(np.nanmax(np.abs(cds['data'] - edh['data']))) / (scale or 1) if blanks else np.nan
-            if not (blanks and difference <= TOLERANCE):
+            if not (cds['data'].shape == edh['data'].shape and np.array_equal(cds['times'], edh['times'])
+                    and all(np.allclose(cds[a], edh[a], atol=2e-5) for a in ('latitude', 'longitude'))):
+                problems.append(f'{spec["kind"]} {short} grids differ'); print(f'{short:6} grids differ'); continue
+            a, b = cds['data'], edh['data']
+            only_edh, only_cds = np.isnan(b) & ~np.isnan(a), np.isnan(a) & ~np.isnan(b)
+            both = ~np.isnan(a) & ~np.isnan(b)
+            scale = float(np.abs(a[both]).max()) if both.any() else 0.
+            difference = float(np.abs(a - b)[both].max()) / (scale or 1) if both.any() else 0.
+            inside = (catchment_cells(features, cds['latitude'], cds['longitude']) if features
+                      else np.ones(a.shape[1:], bool))
+            relevant = (only_edh | only_cds) & inside
+            if difference > TOLERANCE or relevant.any():
                 problems.append(f'{spec["kind"]} {short} differs')
-            hours, *cells = cds['data'].shape
-            print(f'{short:6} {hours:5} {cells[0]}x{cells[1]:<4} {str(grid):10} {str(blanks):12} '
+            hours, rows, columns = a.shape
+            print(f'{short:6} {hours:5} {rows:3}x{columns:<4} {only_edh.sum():12} / {only_cds.sum():<10} '
                   f'{scale:15.4g} {difference:12.2e}')
+            for t, r, c in np.argwhere(only_edh | only_cds)[:4]:
+                stamp = datetime.fromtimestamp(int(cds['times'][t]), timezone.utc)
+                print(f'         {stamp:%Y-%m-%d %H} UTC at {cds["latitude"][r]:.1f}, {cds["longitude"][c]:.1f}: '
+                      f'CDS {a[t, r, c]:.4g}, EDH {b[t, r, c]:.4g}'
+                      + (', touches a catchment' if features and inside[r, c] else ''))
+    if client.absent:
+        print('chunks missing from the store:', ', '.join(sorted(client.absent)[:10]))
     return problems
 
 
@@ -123,12 +155,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--compare-cds', action='store_true',
                         help='Also compare one small request with the CDS (needs ~/.cdsapirc)')
+    parser.add_argument('--geojson', type=Path,
+                        help='Compare over the area of these catchments instead of a small box')
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix='edh-check-') as folder:
         client = EdhClient(Path(folder) / 'chunks')
         problems = layout(client) + point_series(client)
         if args.compare_cds:
-            problems += compare_cds(client, Path(folder))
+            problems += compare_cds(client, Path(folder), args.geojson)
     print('\nRESULT:', 'all checks passed' if not problems else '; '.join(problems))
     sys.exit(1 if problems else 0)
 
