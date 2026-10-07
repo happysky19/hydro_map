@@ -479,6 +479,26 @@ class PipelineTests(unittest.TestCase):
             fetch_response(spec, self.root/'cache', {}, client)
         self.assertEqual(client.calls, 1)
 
+    def test_queue_limits_do_not_use_up_attempts_and_failures_do_not_stop_others(self):
+        client = FakeClient()
+        retrieve, rejected = client.retrieve, []
+        def busy(dataset, request, target):
+            if dataset == 'reanalysis-era5-land' and len(request['time']) == 24 and len(rejected) < 3:
+                rejected.append(1)
+                raise RuntimeError('Number queued requests for this dataset is temporarily limited')
+            if dataset == 'reanalysis-era5-land' and len(request['time']) == 1:
+                raise RuntimeError('Request is invalid')
+            retrieve(dataset, request, target)
+        area = [50.1, -120.1, 49.9, -119.9]
+        specs = make_requests('era5-land', date(2025, 12, 31), area) + accumulated_requests(
+            date(2025, 12, 31), date(2025, 12, 31), area)
+        manifest = {}
+        with patch.object(client, 'retrieve', side_effect=busy), redirect_stdout(io.StringIO()):
+            with self.assertRaisesRegex(RuntimeError, 'invalid'):
+                prefetch(specs, self.root/'cache', manifest, client, workers=1, attempts=2, retry_seconds=0)
+        self.assertEqual(len(rejected), 3)
+        self.assertEqual(len(manifest), 1)
+
     def test_request_errors_are_not_retried(self):
         client = FakeClient()
         specs = make_requests('era5', date(2025, 12, 31), [50.1, -120.1, 49.9, -119.9])
