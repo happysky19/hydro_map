@@ -16,6 +16,7 @@ import netCDF4
 import numpy as np
 
 import download_daily
+from delivery_variables import REQUESTED
 from download_aorc import FIELDS, requested_hours
 from meteorology import DERIVED_FIELDS
 from test_download_cds import FakeClient
@@ -35,13 +36,15 @@ class DownloadDailyTests(unittest.TestCase):
                     [-120.03, 49.97], [-119.97, 49.97], [-119.97, 50.03],
                     [-120.03, 50.03], [-120.03, 49.97]]]))])))
         self.output = self.root / 'daily.csv'
+        self.full = self.root / 'daily_full.csv'
         self.day = date(2025, 12, 31)
 
     def native_inputs(self, store, metas, times, blocks, variables, start, end, *unused):
         definitions = {name: (units, kind) for name, units, kind in FIELDS.values()}
         definitions.update(DERIVED_FIELDS)
         values = dict(temperature_c=5., precipitation_mm=1., rainfall_mm=.75, snowfall_mm=.25,
-                      wind_speed_ms=5., relative_humidity_pct=80.)
+                      wind_speed_ms=5., relative_humidity_pct=80., specific_humidity_kgkg=.004,
+                      surface_pressure_pa=90000., shortwave_down_wm2=100., longwave_down_wm2=300.)
         result = {}
         for name, (units, kind) in definitions.items():
             stamps = requested_hours(start, end, kind == 'hour_ending_amount')
@@ -68,23 +71,32 @@ class DownloadDailyTests(unittest.TestCase):
             with patch('download_aorc.extract_native_series', side_effect=AssertionError('Re-read AORC')), \
                  patch.object(client, 'retrieve', side_effect=AssertionError('Re-read CDS')):
                 self.pipeline.run(self.geojson, self.day, self.day, self.output, cds_client=client)
-        with self.output.open() as handle:
+        with self.full.open() as handle:
             rows = list(csv.DictReader(handle))
         self.assertEqual(len(rows), 1)
-        self.assertEqual(len(rows[0]), 47)
-        with self.output.with_name('daily_qc.csv').open() as handle:
+        self.assertEqual(len(rows[0]), 64)
+        with self.full.with_name('daily_full_qc.csv').open() as handle:
             quality = list(csv.DictReader(handle))
         self.assertEqual(len(quality), len(rows))
-        self.assertEqual(len(quality[0]), 182)
+        self.assertEqual(len(quality[0]), 250)
         self.assertEqual(quality[0]['aorc_v1_1__precipitation_mm__qc'], 'valid')
         self.assertFalse(any(name.endswith('__qc') for name in rows[0]))
         self.assertEqual(float(rows[0]['aorc_v1_1__precipitation_mm']), 24.)
         self.assertEqual(float(rows[0]['era5_land_cds__precipitation_mm']), 2.)
         self.assertEqual(float(rows[0]['era5_cds__cloud_cover_fraction']), .5)
+        with self.output.open() as handle:
+            requested = list(csv.DictReader(handle))
+        self.assertEqual(len(requested[0]), 3 + len(REQUESTED))
+        self.assertEqual(requested[0]['precipitation_mm'], rows[0]['aorc_v1_1__precipitation_mm'])
+        self.assertEqual(requested[0]['freezing_level_above_sea_level_m'],
+                         rows[0]['era5_cds__freezing_level_above_sea_level_m'])
+        readme = self.root / 'daily_README.md'
+        self.assertIn('`snow_water_equivalent_mm`', readme.read_text())
+        self.assertIn('HGT:0C isotherm', readme.read_text())
         self.assertEqual(report['project_count'], 1)
         self.assertEqual(report['columns']['aorc_v1_1__wind_speed_m_s']['reference_height_m'], 10)
         self.assertEqual(report['columns']['era5_land_cds__tmean_degC']['reference_height_m'], 2)
-        checks = Path(str(self.output)+'.checks')
+        checks = Path(str(self.full)+'.checks')
         self.assertTrue((checks/'timeseries.pdf').is_file())
         self.assertEqual(json.loads((checks/'summary.json').read_text())['failed_checks'], 0)
         self.assertNotIn('Turbine inflow', stream.getvalue())
@@ -131,7 +143,8 @@ class DownloadDailyTests(unittest.TestCase):
                  patch('download_cds._same_grid', side_effect=exact_grid):
                 with self.assertRaisesRegex(ValueError, 'CDS grid mismatch'):
                     self.pipeline.run(self.geojson, self.day, self.day, self.output, cds_client=client)
-            self.assertEqual(client.calls, 2)
+            # ERA5 runs alongside the failing ERA5-Land and completes its single request.
+            self.assertEqual(client.calls, 3)
             self.assertFalse(self.output.exists())
             work = Path(str(self.output)+'.work')
             run_path = work/'era5-land/run.json'
@@ -145,13 +158,15 @@ class DownloadDailyTests(unittest.TestCase):
             with patch('download_aorc.extract_native_series', side_effect=AssertionError('Re-read AORC')), \
                  patch.object(client, 'retrieve', side_effect=no_repeated_land_download):
                 report = self.pipeline.run(self.geojson, self.day, self.day, self.output, cds_client=client)
-        self.assertEqual(client.calls, 4)
+        self.assertEqual(client.calls, 3)
         self.assertEqual(report['row_count'], 1)
         self.assertFalse((work/'era5-land/grid_mismatch.json').exists())
         with self.output.open() as stream:
             row = next(csv.DictReader(stream))
+        self.assertEqual(float(row['cloud_cover_fraction']), .5)
+        with self.full.open() as stream:
+            row = next(csv.DictReader(stream))
         self.assertEqual(float(row['era5_land_cds__precipitation_mm']), 2.)
-        self.assertEqual(float(row['era5_cds__cloud_cover_fraction']), .5)
 
     def test_cli_needs_only_geometry_and_dates(self):
         with ExitStack() as stack, redirect_stdout(io.StringIO()):
@@ -167,13 +182,14 @@ class DownloadDailyTests(unittest.TestCase):
         with path.open() as stream:
             row = next(csv.DictReader(stream))
         self.assertEqual(row['project_id'], 'A')
-        self.assertEqual(len(row), 47)
+        self.assertEqual(len(row), 3 + len(REQUESTED))
+        self.assertTrue(path.with_name('catchment_daily_2025-12-31_2025-12-31_full.csv').is_file())
 
     def test_source_failure_preserves_previous_delivery(self):
         self.output.write_text('previous delivery\n')
-        quality = self.output.with_name('daily_qc.csv')
+        quality = self.output.with_name('daily_full_qc.csv')
         quality.write_text('previous quality\n')
-        companion = Path(str(self.output) + '.manifest.json')
+        companion = Path(str(self.full) + '.manifest.json')
         companion.write_text('previous manifest\n')
         with ExitStack() as stack:
             self.aorc_inputs(stack)

@@ -6,6 +6,7 @@ Neither API keys nor internal delivery paths belong in this script or its output
 
 import argparse
 from calendar import monthrange
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 import csv
 from datetime import date, datetime, timedelta, timezone
@@ -15,6 +16,8 @@ import json
 from math import ceil, floor
 from pathlib import Path, PurePosixPath
 import tempfile
+import threading
+import time
 import zipfile
 
 import netCDF4
@@ -22,15 +25,28 @@ import numpy as np
 from pyproj import Transformer
 
 from cds_fields import (ALIASES, ALL_FIELDS, LAND_STATES, LAND_ACCUMULATED, ERA_SURFACE,
-                        ERA_PROFILE, PRESSURE_LEVELS, daily_schema, land_daily_fields, era_daily_fields)
+                        daily_schema, land_daily_fields, era_daily_fields)
 from hydro_map.plotting import load_features
-from plan_download import forcing_metadata
-from probe_daymet_polygons import fractional_weights, strict_area_mean
+from area_weights import fractional_weights, strict_area_mean
+from routing_metadata import forcing_metadata
 
 DAILY_FIELDS = ['date', 'source', 'project_id', 'variable', 'value', 'units',
                 'expected_hours', 'valid_hours', 'min_valid_area_fraction', 'qc']
 # Covers float32 coordinate rounding up to 360 degrees; never use relative tolerance.
 GRID_ATOL = 2e-5
+# CDS 'size' cost of an ERA5-Land request is variables x timesteps x 2 (checked 2026-10-06).
+LAND_REQUEST_LIMIT = 12000
+# Full status phrases: bare codes also occur inside CDS job identifiers in the message.
+PERMANENT_ERRORS = ('403 Client Error', 'cost limits exceeded', 'too large')
+TRANSIENT_ERRORS = ('temporarily limited', '429 Client Error', '500 Server Error', '502 Server Error',
+                    '503 Server Error', '504 Server Error')
+
+
+def transient(error):
+    """Queue limits, server errors and network failures are retried; request errors are not."""
+    text = str(error)
+    return (not any(item in text for item in PERMANENT_ERRORS)
+            and (isinstance(error, OSError) or any(item in text for item in TRANSIENT_ERRORS)))
 
 
 def sha256(path):
@@ -68,32 +84,57 @@ def date_chunks(start, end, days=7):
 
 
 def make_requests(product, start, area, end=None):
-    """Each request uses one calendar month; accumulated dates refer to endpoints."""
+    """Hourly state (ERA5-Land) or surface (ERA5) fields for one batch within a calendar month."""
     end = end or start
     if start > end or (start.year, start.month) != (end.year, end.month):
         raise ValueError('A request batch must lie within one calendar month')
-    groups = [('states', 'reanalysis-era5-land', LAND_STATES, start, end, 24),
-              ('accumulated', 'reanalysis-era5-land', LAND_ACCUMULATED,
-               start+timedelta(days=1), end+timedelta(days=1), 1)] if product == 'era5-land' else [
-              ('surface', 'reanalysis-era5-single-levels', ERA_SURFACE, start, end, 24),
-              ('profiles', 'reanalysis-era5-pressure-levels', ERA_PROFILE, start, end, 24)]
+    kind, dataset, fields = (('states', 'reanalysis-era5-land', LAND_STATES) if product == 'era5-land' else
+                             ('surface', 'reanalysis-era5-single-levels', ERA_SURFACE))
+    request = dict(product_type=['reanalysis'], variable=[v[0] for v in fields.values()],
+                   year=f'{start.year:04d}', month=f'{start.month:02d}',
+                   day=[f'{d.day:02d}' for d in dates(start, end)],
+                   time=[f'{hour:02d}:00' for hour in range(24)],
+                   area=area, data_format='netcdf', download_format='unarchived')
+    if product == 'era5-land':
+        request.pop('product_type')
+    else:
+        request['year'] = [request['year']]
+        request['month'] = [request['month']]
+    return [dict(kind=kind, dataset=dataset, request=request, fields=list(fields))]
+
+
+def accumulated_requests(start, end, area):
+    """ERA5-Land 24-hour endpoints at 00 UTC of each following day, one request per year.
+
+    Each request is the product of its months and days: a few unneeded dates are cheap,
+    and the CDS skips impossible ones. Endpoints are small, so a year stays far below the
+    size limit while avoiding dozens of queued requests.
+    """
+    needed = list(dates(start+timedelta(days=1), end+timedelta(days=1)))
     result = []
-    for kind, dataset, fields, first, last, hours in groups:
-        for a, b in date_chunks(first, last, 31):
-            request = dict(product_type=['reanalysis'], variable=[v[0] for v in fields.values()],
-                           year=f'{a.year:04d}', month=f'{a.month:02d}',
-                           day=[f'{d.day:02d}' for d in dates(a, b)],
-                           time=[f'{hour:02d}:00' for hour in range(hours)],
-                           area=area, data_format='netcdf', download_format='unarchived')
-            if product == 'era5-land':
-                request.pop('product_type')
-            else:
-                request['year'] = [request['year']]
-                request['month'] = [request['month']]
-            if kind == 'profiles':
-                request['pressure_level'] = [str(p) for p in PRESSURE_LEVELS]
-            result.append(dict(kind=kind, dataset=dataset, request=request, fields=list(fields)))
+    for year in sorted({day.year for day in needed}):
+        within = [day for day in needed if day.year == year]
+        request = dict(variable=[v[0] for v in LAND_ACCUMULATED.values()], year=f'{year:04d}',
+                       month=sorted({f'{day.month:02d}' for day in within}),
+                       day=sorted({f'{day.day:02d}' for day in within}), time=['00:00'],
+                       area=area, data_format='netcdf', download_format='unarchived')
+        result.append(dict(kind='accumulated', dataset='reanalysis-era5-land', request=request,
+                           fields=list(LAND_ACCUMULATED)))
     return result
+
+
+def covers(request, day):
+    """Whether a request's year x month x day product includes this date."""
+    listed = lambda value: value if isinstance(value, list) else [value]
+    return (f'{day.year:04d}' in listed(request['year']) and f'{day.month:02d}' in listed(request['month'])
+            and f'{day.day:02d}' in listed(request['day']))
+
+
+def batch_requests(product, first, last, area, accumulated):
+    """Requests whose responses supply every day of one batch."""
+    return make_requests(product, first, area, last) + [
+        spec for spec in accumulated
+        if any(covers(spec['request'], day+timedelta(days=1)) for day in dates(first, last))]
 
 
 @contextmanager
@@ -262,16 +303,26 @@ def align_hours(record, day, count=24):
 
 
 def process_day(fields, weights, day, source):
+    """Strict catchment means; a field's optional mask removes cells outside its definition.
+
+    Excluded cells (for example perennial-snow cells for seasonal snow states) are
+    not missing data: the mean covers the remaining area. Any missing value on the
+    remaining area still invalidates that hour.
+    """
     rows = []
     for project, weight in sorted(weights.items()):
-        for name, (data, units, statistic, flags) in sorted(fields.items()):
+        for name, (data, units, statistic, excluded) in sorted(fields.items()):
             endpoint = statistic == '24h_endpoint'
             arrays = data[None, ...] if endpoint else data
+            masks = None if excluded is None else (excluded[None, ...] if endpoint else excluded)
             values, fractions, reasons = [], [], set()
             for hour, field in enumerate(arrays):
-                value, fraction, valid = strict_area_mean(field, weight)
-                if flags is not None:
-                    reasons.update(str(flag) for flag in np.unique(flags[hour][weight > 0]) if flag != 'valid')
+                support = weight if masks is None else np.where(masks[hour], 0., weight)
+                if support.sum() > 0:
+                    value, fraction, valid = strict_area_mean(field, support)
+                else:
+                    value, fraction, valid = np.nan, 0., False
+                    reasons.add('no_defined_area')
                 values.append(value if valid else np.nan); fractions.append(fraction)
             count = sum(np.isfinite(values))
             valid_hours = count*24 if endpoint else count
@@ -298,12 +349,36 @@ def padded_area(features, spacing):
             min(180., (ceil(east/spacing)+1)*spacing)]
 
 
-def fetch_response(spec, cache_dir, manifest, client, cache_only=False):
+@contextmanager
+def _manifest_lock(cache_dir):
+    """Serialize manifest updates across processes sharing one cache (POSIX advisory lock)."""
+    try:
+        import fcntl
+    except ImportError:
+        yield; return
+    with (Path(cache_dir)/'requests.manifest.lock').open('w') as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+
+
+def fetch_response(spec, cache_dir, manifest, client, cache_only=False, lock=None):
     identity = {key: spec[key] for key in ['dataset', 'request']}
     request_hash = json_hash(identity)
     path = cache_dir/(request_hash+'.nc')
-    cached = manifest.get(request_hash, {})
+    lock = lock or threading.Lock()
+    with lock:
+        cached = dict(manifest.get(request_hash, {}))
+        manifest_path = cache_dir/'requests.manifest.json'
+        if not cached and path.exists() and manifest_path.exists():
+            # Another process sharing this cache may have completed the request.
+            with _manifest_lock(cache_dir):
+                cached = dict(json.loads(manifest_path.read_text()).get(request_hash, {}))
     if path.exists() and cached.get('request') == identity and cached.get('sha256') == sha256(path):
+        with lock:
+            manifest.setdefault(request_hash, cached)
         return path
     if cache_only:
         raise ValueError(f'Missing or invalid cached CDS response: {request_hash}')
@@ -317,21 +392,61 @@ def fetch_response(spec, cache_dir, manifest, client, cache_only=False):
         temporary.replace(path)
     finally:
         temporary.unlink(missing_ok=True)
-    manifest[request_hash] = dict(request=identity, request_sha256=request_hash, sha256=sha256(path),
-                                  bytes=path.stat().st_size,
-                                  retrieved_utc=datetime.now(timezone.utc).isoformat())
-    atomic_json(cache_dir/'requests.manifest.json', manifest)
+    record = dict(request=identity, request_sha256=request_hash, sha256=sha256(path),
+                  bytes=path.stat().st_size, retrieved_utc=datetime.now(timezone.utc).isoformat())
+    manifest_path = cache_dir/'requests.manifest.json'
+    with lock, _manifest_lock(cache_dir):
+        # Another product's process may have added entries since this run loaded the manifest.
+        if manifest_path.exists():
+            for key, value in json.loads(manifest_path.read_text()).items():
+                manifest.setdefault(key, value)
+        manifest[request_hash] = record
+        atomic_json(manifest_path, manifest)
     return path
 
 
+def prefetch(specs, cache_dir, manifest, client, workers=2, attempts=30, retry_seconds=120):
+    """Queue uncached requests concurrently; processing later reads only verified cache files."""
+    lock = threading.Lock()
+    Path(cache_dir).mkdir(parents=True, exist_ok=True)
+
+    def fetch(spec):
+        for attempt in range(attempts):
+            try:
+                path = fetch_response(spec, cache_dir, manifest, client, lock=lock)
+                break
+            except Exception as error:
+                if attempt == attempts-1 or not transient(error):
+                    raise
+                print(f"Retrying {spec['dataset']} after: {error}", flush=True)
+                time.sleep(retry_seconds)
+        request = spec['request']
+        first = lambda value: value[0] if isinstance(value, list) else value
+        print(f"Cached {spec['dataset']} {first(request['year'])}-{first(request['month'])} "
+              f"days {request['day'][0]}-{request['day'][-1]}", flush=True)
+        return path
+
+    pool = ThreadPoolExecutor(max_workers=workers)
+    try:
+        for future in as_completed([pool.submit(fetch, spec) for spec in specs]):
+            future.result()
+    finally:
+        pool.shutdown(wait=True, cancel_futures=True)
+
+
 def run_pipeline(geojson, product, output_dir, cache_dir, start, end, *, projects=None,
-                 chunk_days=7, dry_run=False, cache_only=False, client=None):
+                 chunk_days=14, dry_run=False, cache_only=False, client=None, workers=2,
+                 newest_first=False):
     """Return run metadata. Existing completed months require verified file hashes."""
     geojson, output_dir, cache_dir = map(Path, [geojson, output_dir, cache_dir])
     if isinstance(start, str): start = date.fromisoformat(start)
     if isinstance(end, str): end = date.fromisoformat(end)
-    if start > end or not 1 <= chunk_days <= 31 or product not in {'era5-land', 'era5'}:
-        raise ValueError('Invalid product, period or chunk-days (1–31)')
+    if (start > end or not 1 <= chunk_days <= 31 or product not in {'era5-land', 'era5'}
+            or not 1 <= workers <= 8):
+        raise ValueError('Invalid product, period, chunk-days (1–31) or workers (1–8)')
+    if product == 'era5-land' and len(LAND_STATES)*24*chunk_days*2 > LAND_REQUEST_LIMIT:
+        raise ValueError(f'ERA5-Land batches exceed the CDS request limit; use --chunk-days '
+                         f'{LAND_REQUEST_LIMIT//(len(LAND_STATES)*48)} or fewer')
     features = load_features(geojson)
     identifiers = [f['properties'].get('id') for f in features]
     if (not features or len(set(identifiers)) != len(identifiers)
@@ -344,10 +459,12 @@ def run_pipeline(geojson, product, output_dir, cache_dir, start, end, *, project
     forcing = forcing_metadata(features, selected)
     features = [f for f in features if f['properties']['id'] in selected]
     area = padded_area(features, .1 if product == 'era5-land' else .25)
+    # Only ERA5-Land approaches the CDS size limit; three ERA5 single-level fields fit a month.
+    batch_days = chunk_days if product == 'era5-land' else 31
     source = 'era5_land_cds' if product == 'era5-land' else 'era5_cds'
     dependencies = [Path(__file__), Path(__file__).with_name('cds_fields.py'),
-                    Path(__file__).with_name('probe_daymet_polygons.py'),
-                    Path(__file__).with_name('plan_download.py'), Path(__file__).with_name('routing_metadata.py')]
+                    Path(__file__).with_name('area_weights.py'), Path(__file__).with_name('meteorology.py'),
+                    Path(__file__).with_name('routing_metadata.py')]
     run = dict(source=source, source_id=source, product=product, geometry_sha256=sha256(geojson),
                start=start.isoformat(), end=end.isoformat(), day='UTC', projects=selected,
                **forcing, area_north_west_south_east=area, chunk_days=chunk_days,
@@ -357,12 +474,21 @@ def run_pipeline(geojson, product, output_dir, cache_dir, start, end, *, project
                             states='24 instantaneous hours 00–23 UTC; extremes of hourly catchment means',
                             accumulations='ERA5-Land D+1 00 UTC endpoint represents the complete previous 24 hours; valid_hours=24 for a valid endpoint',
                             evapotranspiration='Negative ECMWF evaporation multiplied by -1000; negative values retain condensation',
-                            root_zone='Thickness weighting over 0–100 cm: .07*L1+.21*L2+.72*L3; L4 is100–289 cm',
-                            freezing_level='One above-ground warm-to-cold 0C crossing in1000–300 hPa profile; geopotential metres; no/multiple crossings remain missing'))
+                            root_zone='Thickness weighting over 0–100 cm: .07*L1+.21*L2+.72*L3; L4 is 100–289 cm',
+                            humidity='Cell-hour vapour pressure from 2 m dewpoint (FAO56 liquid-water Tetens, as for AORC); q=0.622e/(p-0.378e); RH, VPD and wet bulb as for AORC',
+                            wind='Cell-hour hypot(u10, v10) before spatial averaging',
+                            precipitation_phase='ERA5-Land snowfall; rainfall = total precipitation - snowfall',
+                            freezing_level='ECMWF zero_degree_level (deg0l): model-level 0 degC height above ground, zero when the whole column is below 0 degC; above sea level adds surface geopotential/9.80665'))
+    endpoint_specs = accumulated_requests(start, end, area) if product == 'era5-land' else []
+    unique = {}
+    for first, last in date_chunks(start, end, batch_days):
+        for spec in batch_requests(product, first, last, area, endpoint_specs):
+            unique.setdefault(json_hash({key: spec[key] for key in ['dataset', 'request']}), spec)
     if dry_run:
         output_dir.mkdir(parents=True, exist_ok=True)
-        plan = dict(run, status='dry_run_no_download', request_count=sum(len(make_requests(product, a, area, b)) for a, b in date_chunks(start, end, chunk_days)),
-                    first_requests=make_requests(product, start, area, min(end, next(date_chunks(start, end, chunk_days))[1])))
+        first_batch = next(date_chunks(start, end, batch_days))
+        plan = dict(run, status='dry_run_no_download', request_count=len(unique),
+                    first_requests=batch_requests(product, *first_batch, area, endpoint_specs))
         atomic_json(output_dir/'request_plan.json', plan)
         return plan
     output_dir.mkdir(parents=True, exist_ok=True); cache_dir.mkdir(parents=True, exist_ok=True)
@@ -387,9 +513,13 @@ def run_pipeline(geojson, product, output_dir, cache_dir, start, end, *, project
     if client is None and not cache_only:
         import cdsapi
         client = cdsapi.Client()
+    if not cache_only:
+        specs = list(unique.values())
+        prefetch(specs[::-1] if newest_first else specs, cache_dir, manifest, client, workers)
     weights, grid = None, None
     identity = Transformer.from_crs(4326, 4326, always_xy=True)
-    for month_start, month_end in date_chunks(start, end, 31):
+    months = list(date_chunks(start, end, 31))
+    for month_start, month_end in (months[::-1] if newest_first else months):
         month = month_start.strftime('%Y-%m')
         daily_path, status_path = output_dir/f'daily_{month}.csv.gz', output_dir/f'month_{month}.json'
         if status_path.exists():
@@ -402,22 +532,18 @@ def run_pipeline(geojson, product, output_dir, cache_dir, start, end, *, project
         try:
             with gzip.open(temporary, 'wt', newline='') as stream:
                 writer = csv.DictWriter(stream, fieldnames=DAILY_FIELDS); writer.writeheader()
-                for first, last in date_chunks(month_start, month_end, chunk_days):
-                    specs = make_requests(product, first, area, last)
+                for first, last in date_chunks(month_start, month_end, batch_days):
+                    specs = batch_requests(product, first, last, area, endpoint_specs)
                     responses = [(spec, fetch_response(spec, cache_dir, manifest, client, cache_only)) for spec in specs]
                     source_hashes.update({path.name: sha256(path) for _, path in responses})
+                    # Each response is decoded once per batch; days then select their hours by timestamp.
+                    loaded = [(spec, read_response(path, spec['fields'])) for spec, path in responses]
                     for day in dates(first, last):
                         records = {}
-                        for spec, path in responses:
+                        for spec, fields in loaded:
                             target_day = day+timedelta(days=1) if spec['kind'] == 'accumulated' else day
-                            request_days = spec['request']['day']
-                            request_days = [request_days] if isinstance(request_days, str) else request_days
-                            request_year = spec['request']['year']; request_month = spec['request']['month']
-                            if isinstance(request_year, list): request_year = request_year[0]
-                            if isinstance(request_month, list): request_month = request_month[0]
-                            if (f'{target_day.year:04d}' != request_year or f'{target_day.month:02d}' != request_month
-                                    or f'{target_day.day:02d}' not in request_days): continue
-                            records[spec['kind']] = read_response(path, spec['fields'], target_day)
+                            if covers(spec['request'], target_day):
+                                records[spec['kind']] = fields
                         for kind, fields in records.items():
                             for name, record in fields.items():
                                 current = (record['latitude'], record['longitude'])
@@ -446,12 +572,7 @@ def run_pipeline(geojson, product, output_dir, cache_dir, start, end, *, project
                             fields = land_daily_fields(states, accumulated)
                         else:
                             surface = {key: align_hours(record, day) for key, record in records['surface'].items()}
-                            profiles = {key: align_hours(record, day) for key, record in records['profiles'].items()}
-                            levels = records['profiles']['t']['levels']
-                            if (not np.array_equal(levels, PRESSURE_LEVELS)
-                                    or not np.array_equal(levels, records['profiles']['z']['levels'])):
-                                raise ValueError('Missing or unexpected pressure levels')
-                            fields = era_daily_fields(surface, profiles, levels)
+                            fields = era_daily_fields(surface)
                         rows = process_day(fields, weights, day, source)
                         writer.writerows(rows); count += len(rows)
             temporary.replace(daily_path)
@@ -472,7 +593,9 @@ def main():
     parser.add_argument('--product', choices=['era5-land', 'era5'], required=True)
     parser.add_argument('--start', required=True); parser.add_argument('--end', required=True)
     parser.add_argument('--projects', nargs='+')
-    parser.add_argument('--chunk-days', type=int, default=7)
+    parser.add_argument('--chunk-days', type=int, default=14)
+    parser.add_argument('--workers', type=int, default=2, help='Concurrent CDS requests (1–8)')
+    parser.add_argument('--newest-first', action='store_true', help='Request and process the latest months first')
     parser.add_argument('--dry-run', action='store_true'); parser.add_argument('--cache-only', action='store_true')
     args = parser.parse_args()
     run_pipeline(**vars(args))
