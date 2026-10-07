@@ -93,8 +93,12 @@ interrupted AORC year is recomputed.
 ### Long runs on a compute host
 
 The CDS queue sets the duration of a 30-year run. At October 2026 rates an AORC
-year takes roughly 30-40 minutes (under a day for 30 years), ERA5 needs 360
-monthly requests (about a day), and ERA5-Land needs about 1,100 requests: its
+year takes about 20 minutes of processing (roughly 10 hours for 30 years,
+overlapping with its S3 download). ERA5 is read by default from Google's public
+ARCO-ERA5 copy, which has no queue: about 35 seconds and 3.7 GB per month,
+roughly 4 hours and 1.3 TB for 30 years (`--era5-source cds` uses the CDS
+instead; both give the same values to GRIB packing precision). ERA5-Land needs
+about 1,100 CDS requests: its
 17 hourly fields cost more than twice the per-request limit for a month, so
 each month takes three requests. In October 2026 a request waited 5-35 minutes
 in the queue, so with three in flight ERA5-Land takes several days. The CDS
@@ -108,12 +112,13 @@ Before starting, on the host that will run the download:
 1. Clone or update the repository, create a Python 3.10+ environment and run
    `python -m pip install -e . -r research/requirements.txt`; check
    `zstd --version`.
-2. Put `~/.cdsapirc` there (section 2) and accept the ERA5-Land and ERA5
-   single-level licences once on the CDS website.
+2. Put `~/.cdsapirc` there (section 2) and accept the ERA5-Land licence once
+   on the CDS website (the ERA5 single-level licence too if `--era5-source cds`).
 3. Copy the catchment file to `outputs/projects43_independent/dam_catchments.geojson`
    (the `outputs/` folder is not in Git), or rebuild it with `hydro-map build`
    (section 3). Every run of a project must use the same file.
-4. Use a node that can reach the internet (AWS S3 and the CDS). Many clusters
+4. Use a node that can reach the internet (AWS S3, Google Cloud Storage and the
+   CDS). Many clusters
    block it on compute nodes; use a login, data-transfer or interactive node
    that allows long-running processes, following the site's rules.
 
@@ -533,7 +538,13 @@ steps. For those fields, one complete endpoint represents 24 hours:
 
 The [single-level product](https://cds.climate.copernicus.eu/datasets/reanalysis-era5-single-levels)
 supplies total cloud cover, the 0°C level and surface geopotential. No
-pressure-level data are needed.
+pressure-level data are needed. By default these fields are read from
+[ARCO-ERA5](https://cloud.google.com/storage/docs/public-datasets/era5), Google's
+public copy of the same 0.25° hourly data, which answers each monthly request in
+under a minute instead of waiting in the CDS queue. For 2024 test months the
+ARCO and CDS responses had identical grids and times and differed by at most
+8e-6 in cloud fraction, 0.05 m in 0°C level and 0.45 m²/s² in geopotential,
+the precision of GRIB packing.
 
 `cloud_cover_fraction` is a daily mean fraction, 0-1.
 `freezing_level_above_ground_m` is the native ECMWF `zero_degree_level`
@@ -567,6 +578,8 @@ equivalent to the mm/day and MJ/m²/day amounts in the tables above.
 | `research/aggregate_daily.py` | Aggregate hourly polygon series with explicit UTC timing and coverage rules |
 | `research/download_cds.py` | Retrieve ERA5-Land/ERA5, calculate polygon statistics and write monthly daily files |
 | `research/cds_fields.py` | CDS variable definitions, soil weighting, humidity, wind and freezing-level conversions |
+| `research/arco_era5.py` | Serves ERA5 single-level requests from the public ARCO-ERA5 copy in the CDS response layout |
+| `research/check_edh.py` | Checks access to the Earth Data Hub ERA5-Land store and prints its layout |
 | `research/export_daily.py` | Verify source artifacts and export aligned daily values and QC tables plus their manifest |
 | `research/check_daily.py` | Check delivered values/QC, physical plausibility and AORC/ERA5-Land agreement; plot coverage and project time series |
 | `research/deliver_daily.py` | Write the requested-variable table and README from a checked full delivery |

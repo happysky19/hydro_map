@@ -393,6 +393,7 @@ def fetch_response(spec, cache_dir, manifest, client, cache_only=False, lock=Non
     finally:
         temporary.unlink(missing_ok=True)
     record = dict(request=identity, request_sha256=request_hash, sha256=sha256(path),
+                  provider=getattr(client, 'provider', 'Copernicus Climate Data Store'),
                   bytes=path.stat().st_size, retrieved_utc=datetime.now(timezone.utc).isoformat())
     manifest_path = cache_dir/'requests.manifest.json'
     with lock, _manifest_lock(cache_dir):
@@ -452,7 +453,7 @@ def prefetch(specs, cache_dir, manifest, client, workers=2, attempts=30, retry_s
 
 def run_pipeline(geojson, product, output_dir, cache_dir, start, end, *, projects=None,
                  chunk_days=14, dry_run=False, cache_only=False, client=None, workers=3,
-                 newest_first=False):
+                 newest_first=False, era5_source='arco'):
     """Return run metadata. Existing completed months require verified file hashes."""
     geojson, output_dir, cache_dir = map(Path, [geojson, output_dir, cache_dir])
     if isinstance(start, str): start = date.fromisoformat(start)
@@ -485,7 +486,9 @@ def run_pipeline(geojson, product, output_dir, cache_dir, start, end, *, project
                start=start.isoformat(), end=end.isoformat(), day='UTC', projects=selected,
                **forcing, area_north_west_south_east=area, chunk_days=chunk_days,
                daily_schema=daily_schema(product), code_sha256={p.name: sha256(p) for p in dependencies},
-               methods=dict(spatial='WGS84 geodesic polygon/native-grid intersections; full-area coverage required',
+               methods=dict(provider=('Google ARCO-ERA5, a copy of the CDS dataset' if product == 'era5' and era5_source == 'arco'
+                                      else 'Copernicus Climate Data Store'),
+                            spatial='WGS84 geodesic polygon/native-grid intersections; full-area coverage required',
                             grid_coordinates='Regular axes reconstructed between endpoints; maximum coordinate residual and cross-field difference 0.00002 degrees; no data interpolation',
                             states='24 instantaneous hours 00–23 UTC; extremes of hourly catchment means',
                             accumulations='ERA5-Land D+1 00 UTC endpoint represents the complete previous 24 hours; valid_hours=24 for a valid endpoint',
@@ -527,8 +530,12 @@ def run_pipeline(geojson, product, output_dir, cache_dir, start, end, *, project
     manifest = json.loads(manifest_path.read_text()) if manifest_path.exists() else {}
     configuration_hash = json_hash(run)
     if client is None and not cache_only:
-        import cdsapi
-        client = cdsapi.Client(progress=False)
+        if product == 'era5' and era5_source == 'arco':
+            from arco_era5 import ArcoClient
+            client = ArcoClient()
+        else:
+            import cdsapi
+            client = cdsapi.Client(progress=False)
     weights, grid = None, None
     identity = Transformer.from_crs(4326, 4326, always_xy=True)
     months = list(date_chunks(start, end, 31))
@@ -631,6 +638,8 @@ def main():
     parser.add_argument('--chunk-days', type=int, default=14)
     parser.add_argument('--workers', type=int, default=3, help='Concurrent CDS requests (1–8)')
     parser.add_argument('--newest-first', action='store_true', help='Request and process the latest months first')
+    parser.add_argument('--era5-source', choices=['arco', 'cds'], default='arco',
+                        help='ERA5 provider: the public ARCO-ERA5 copy (no queue) or the CDS')
     parser.add_argument('--dry-run', action='store_true'); parser.add_argument('--cache-only', action='store_true')
     args = parser.parse_args()
     run_pipeline(**vars(args))
