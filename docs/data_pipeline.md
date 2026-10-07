@@ -604,7 +604,7 @@ equivalent to the mm/day and MJ/m²/day amounts in the tables above.
 | `research/cds_fields.py` | CDS variable definitions, soil weighting, humidity, wind and freezing-level conversions |
 | `research/arco_era5.py` | Serves ERA5 single-level requests from the public ARCO-ERA5 copy in the CDS response layout |
 | `research/edh_era5_land.py` | Serves ERA5-Land requests from the Earth Data Hub copy in the CDS response layout |
-| `research/check_edh.py` | Checks the Earth Data Hub store: units, accumulation convention, gaps (`--scan`) and values against the CDS (`--compare-cds`) |
+| `research/check_edh.py` | Checks the Earth Data Hub store: units, accumulation convention, gaps (`--scan`, `--field`) and values against the CDS (`--compare-cds`) |
 | `research/export_daily.py` | Verify source artifacts and export aligned daily values and QC tables plus their manifest |
 | `research/check_daily.py` | Check delivered values/QC, physical plausibility and AORC/ERA5-Land agreement; plot coverage and project time series |
 | `research/deliver_daily.py` | Write the requested-variable table and README from a checked full delivery |

@@ -4,6 +4,7 @@
     python research/check_edh.py --compare-cds   # also compare one small request with the CDS
     python research/check_edh.py --compare-cds --geojson outputs/projects43_independent/dam_catchments.geojson
     python research/check_edh.py --scan          # blanks in one land chunk per year since 1996
+    python research/check_edh.py --field str     # when and where one field is blank on land
 
 Reads the personal access token from ~/.netrc
 (machine data.earthdatahub.destine.eu password <token>); the token is never
@@ -18,6 +19,7 @@ store over the period of a long run.
 """
 
 import argparse
+import json
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, date, timedelta, timezone
 from pathlib import Path
@@ -36,6 +38,10 @@ from hydro_map.plotting import load_features
 POINT = (47.5, -123.5)        # Olympic Mountains: rain and a clear daily solar cycle
 DAY = date(2024, 11, 19)
 SCAN_POINT = (48.0, -117.0)   # inside the 43 catchments' area; its 5 x 10 degree chunk is land
+GAP_TIME = datetime(2024, 11, 20, tzinfo=timezone.utc)   # str blank over the catchments, CDS has it
+REGIONS = {'catchments': SCAN_POINT, 'US Midwest': (40.0, -90.0), 'Canada': (55.0, -105.0),
+           'Europe': (50.0, 10.0), 'Russia': (55.0, 40.0), 'India': (25.0, 80.0), 'China': (45.0, 115.0),
+           'Amazon': (-10.0, -60.0), 'Africa': (0.0, 20.0), 'Australia': (-25.0, 135.0)}
 TOLERANCE = 2e-3              # of each field's largest magnitude; both copies are packed differently
 LAND = {**LAND_STATES, **LAND_ACCUMULATED}
 
@@ -207,6 +213,77 @@ def scan(client, first_year=1996):
     return problems
 
 
+def inspect(client, short):
+    """When and where one field is blank on land: its whole record at the catchments' chunk,
+    and ten regions at GAP_TIME. Land is where 2 m temperature is defined."""
+    latitude, longitude = client.coordinates['latitude'], client.coordinates['longitude']
+    valid_time = client.coordinates['valid_time']
+    chunk_t, chunk_y, chunk_x = client.arrays[short]['chunk_grid']['configuration']['chunk_shape']
+
+    def index(point, position):
+        row = int(np.argmin(np.abs(latitude - point[0])))
+        column = int(np.argmin(np.abs((longitude + 180) % 360 - 180 - point[1])))
+        return int(position // chunk_t), row // chunk_y, column // chunk_x
+
+    def blocks(items):
+        """Decoded chunks for (field, chunk index) pairs, downloaded in parallel."""
+        with ThreadPoolExecutor(client.workers) as pool:
+            paths = list(pool.map(lambda item: client._fetch(*item), items))
+        for (name, _), path in zip(items, paths):
+            yield client._decode(client.arrays[name], path.read_bytes() or None)
+
+    client.verbose = False   # absent chunks are counted below instead
+    for name in (short, 'ssr'):
+        meta = client.arrays[name]
+        print(name, json.dumps({key: meta.get(key) for key in ('data_type', 'fill_value', 'attributes')})[:300])
+        print('   ', json.dumps(meta['codecs'])[:300])
+
+    position = int(client._positions([GAP_TIME])[0])
+    hour = position % chunk_t
+    print(f'\n{short} blank on land at {GAP_TIME:%Y-%m-%d %H} UTC, and hours mostly blank in its 60-day chunk')
+    for region, point in REGIONS.items():
+        temperature, values = blocks([('t2m', index(point, position)), (short, index(point, position))])
+        land = ~np.isnan(temperature[hour])
+        if not land.any():
+            print(f'{region:11} no land in this chunk'); continue
+        shares = np.isnan(values)[:, land].mean(axis=1)
+        blank = np.flatnonzero(shares > .5)
+        start = EPOCH + timedelta(hours=int(valid_time[position - hour]))
+        print(f'{region:11} {shares[hour]:4.0%} of {land.sum():4} land cells; {len(blank):4} of {chunk_t} hours '
+              f'mostly blank' + (f', {start + timedelta(hours=int(blank[0])):%Y-%m-%d %H} to '
+                                 f'{start + timedelta(hours=int(blank[-1])):%Y-%m-%d %H}' if len(blank) else ''))
+    client.release()
+
+    temperature, = blocks([('t2m', index(SCAN_POINT, position))])
+    land = ~np.isnan(temperature).any(axis=0)
+    _, y, x = index(SCAN_POINT, position)
+    items = [(short, (t, y, x)) for t in range(-(-len(valid_time) // chunk_t))]
+    started, shares = time.monotonic(), []
+    for first in range(0, len(items), 50):
+        shares += [np.isnan(block)[:, land].mean(axis=1) for block in blocks(items[first:first + 50])]
+        client.release()
+    shares = np.concatenate(shares)[:len(valid_time)]
+    stamps = np.datetime64('1950-01-01T00', 'h') + valid_time.astype('timedelta64[h]')
+    label = lambda i: str(stamps[i])[:13].replace('T', ' ')
+    gap = shares > 0
+    print(f'\n{short} over its whole record at the catchments ({land.sum()} land cells), '
+          f'{len(items)} chunks in {(time.monotonic() - started) / 60:.0f} min')
+    absent = sum(key.startswith(f'{short}/') for key in client.absent)
+    print(f'{gap.sum()} of {len(gap)} hours have blank land cells, {(shares > .99).sum()} are blank everywhere; '
+          f'{absent} chunks absent from the store')
+    if gap.any():
+        hours_of_day = np.bincount(valid_time[gap] % 24, minlength=24)
+        print('by UTC hour:', ' '.join(f'{h:02d}:{n}' for h, n in enumerate(hours_of_day) if n))
+        years = np.bincount(stamps[gap].astype('datetime64[Y]').astype(int) + 1970)
+        print('by year:', ' '.join(f'{year}:{n}' for year, n in enumerate(years) if n)[:400])
+        edges = np.flatnonzero(np.diff(np.r_[0, gap.astype(int), 0]))
+        runs = sorted(zip(edges[::2], edges[1::2]), key=lambda run: run[0] - run[1])
+        print(f'{len(runs)} blank stretches; longest:')
+        for begin, end in runs[:5]:
+            print(f'   {label(begin)} to {label(end - 1)} UTC, {end - begin} h, '
+                  f'{shares[begin:end].mean():.0%} of land cells')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--compare-cds', action='store_true',
@@ -215,9 +292,15 @@ def main():
                         help='Compare over the area of these catchments instead of a small box')
     parser.add_argument('--scan', action='store_true',
                         help='Look for gaps in one land chunk per year since 1996 (about 2.5 GB)')
+    parser.add_argument('--field', choices=sorted(LAND),
+                        help='Only show when and where this field is blank on land (about 1.5 GB)')
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix='edh-check-') as folder:
         client = EdhClient(Path(folder) / 'chunks')
+        if args.field:
+            client._load_metadata()
+            inspect(client, args.field)
+            return
         problems = layout(client) + point_series(client)
         if args.scan:
             problems += scan(client)
