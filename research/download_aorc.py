@@ -9,6 +9,7 @@ With --derive, RH/VPD, liquid-water wet bulb, rain/snow water equivalent and
 Daily Hargreaves PET uses the mean/min/max of hourly catchment temperatures.
 """
 import argparse
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 import csv
 import datetime as dt
@@ -25,7 +26,7 @@ import requests
 from shapely.geometry import shape
 
 from aggregate_daily import HOURLY_FIELDS, aggregate_daily, daily_schema
-from audit_aorc_cache import BASE, VARIABLES, axis, check, decode, metadata, weights
+from aorc_zarr import BASE, VARIABLES, axis, check, decode, metadata, weights
 from routing_metadata import routing_metadata, routing_warning
 from meteorology import DERIVED_FIELDS, DERIVED_METHODS, derive_native
 
@@ -270,13 +271,26 @@ def extract_series(store, metas, times_by_year, blocks, variable, target, zstd, 
     return sums, coverage
 
 
+def read_chunk(store, url, zstd):
+    """Fetch and decode one Zarr chunk in a worker thread; None if the object is absent."""
+    try:
+        payload, _ = store.read(url)
+    except FileNotFoundError:
+        return None
+    raw, _ = decode(payload, '<i2', zstd)
+    check(raw.size == 144 * 128 * 256, f'Unexpected chunk shape: {url}')
+    return raw.reshape(144, 128, 256)
+
+
 def extract_native_series(store, metas, times_by_year, blocks, variables,
                           start, end, zstd, workers, keep):
     """Read each synchronized source chunk once, then aggregate native diagnostics.
 
-    Memory holds one spatial/time chunk per source field and at most 24 selected
-    hours of decoded cells per polygon, plus annual catchment series. Raw files
-    are discarded only after all polygons and diagnostics consumed the block.
+    Worker threads fetch and decode the next few spatial blocks while the main
+    thread aggregates the current one, so network transfer, decompression and
+    area averaging overlap. Memory holds the decoded fields of those blocks and at
+    most 24 selected hours of cells per polygon, plus annual catchment series.
+    Raw files are discarded only after all polygons and diagnostics consumed them.
     """
     variables = sorted(set(variables))
     check(DERIVED_INPUTS <= set(variables), 'Derived fields require precipitation, temperature, q, p, u and v')
@@ -289,6 +303,8 @@ def extract_native_series(store, metas, times_by_year, blocks, variables,
     sums = {name: {p: np.zeros(len(target)) for p in projects} for name in definitions}
     coverage = {name: {p: np.zeros(len(target)) for p in projects} for name in definitions}
     target_years = np.array([dt.datetime.fromtimestamp(int(t), dt.timezone.utc).year for t in target])
+    # Enough blocks in flight to keep every worker busy while one block is aggregated.
+    window = max(1, workers // len(variables)) + 1
     with ThreadPoolExecutor(max_workers=workers) as pool:
         for year in sorted(set(target_years)):
             if year not in metas:
@@ -301,19 +317,24 @@ def extract_native_series(store, metas, times_by_year, blocks, variables,
             for chunk_t in np.unique(indexes // 144):
                 selected = indexes // 144 == chunk_t
                 dest_rows, local_time = dest[selected], indexes[selected] % 144
-                for (by, bx), block in sorted(blocks.items()):
+                items = sorted(blocks.items())
+                pending = deque()
+
+                def submit(position):
+                    (by, bx), block = items[position]
                     urls = {v: BASE + f'{year}.zarr/{v}/{chunk_t}.{by}.{bx}' for v in variables}
-                    futures = {v: pool.submit(store.read, url) for v, url in urls.items()}
-                    raw_fields, consumed_urls = {}, []
-                    for variable in variables:
-                        try:
-                            payload, _ = futures.pop(variable).result()
-                        except FileNotFoundError:
-                            continue
-                        raw, _ = decode(payload, '<i2', zstd)
-                        check(raw.size == 144 * 128 * 256, f'Unexpected chunk shape: {urls[variable]}')
-                        raw_fields[variable] = raw.reshape(144, 128, 256)
-                        consumed_urls.append(urls[variable])
+                    pending.append((block, urls, {v: pool.submit(read_chunk, store, url, zstd)
+                                                  for v, url in urls.items()}))
+
+                ahead = 0
+                for position in range(len(items)):
+                    while ahead < len(items) and ahead <= position + window:
+                        submit(ahead)
+                        ahead += 1
+                    block, urls, futures = pending.popleft()
+                    raw_fields = {v: future.result() for v, future in futures.items()}
+                    raw_fields = {v: raw for v, raw in raw_fields.items() if raw is not None}
+                    consumed_urls = [urls[v] for v in raw_fields]
                     for project, (yy, xx, area) in block.items():
                         for offset in range(0, len(local_time), 24):
                             times = local_time[offset:offset + 24]
@@ -347,7 +368,7 @@ def extract_native_series(store, metas, times_by_year, blocks, variables,
 def run(args):
     check(args.start <= args.end, 'Start must not follow end')
     check(not (args.cache_only and args.refresh_incomplete), 'Refreshing requires online source access')
-    check(1 <= args.workers <= 8 and args.max_download_gb > 0, 'Invalid workers or download limit')
+    check(1 <= args.workers <= 32 and args.max_download_gb > 0, 'Invalid workers or download limit')
     zstd = shutil.which('zstd')
     check(zstd is not None, 'Install the zstd command-line decoder')
     features, forcing = load_polygons(args.geojson, args.projects, include_metadata=True)
@@ -366,7 +387,7 @@ def run(args):
                   pet_centroid_latitudes=pet_latitudes,
                   daily_schema=daily_schema(output_fields, include_pet=derive),
                   code_sha256={name: digest(Path(__file__).with_name(name)) for name in
-                           ('download_aorc.py', 'aggregate_daily.py', 'audit_aorc_cache.py',
+                           ('download_aorc.py', 'aggregate_daily.py', 'aorc_zarr.py',
                             'routing_metadata.py', 'meteorology.py')})
     config_hash = hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()
     config_path = args.output_dir / 'run.json'
@@ -402,7 +423,8 @@ def run(args):
             check(all(np.array_equal(a, b) for a, b in zip(reference, coords)), 'Grid changed between years')
         metas[year], times_by_year[year] = m, times
 
-    for year in range(args.start.year, args.end.year + 1):
+    years = range(args.start.year, args.end.year + 1)
+    for year in (reversed(years) if getattr(args, 'newest_first', False) else years):
         hourly = args.output_dir / f'hourly_{year}.csv.gz'
         daily = args.output_dir / f'daily_{year}.csv.gz'
         manifest = args.output_dir / f'year_{year}.json'
@@ -478,12 +500,13 @@ def main():
     parser.add_argument('--end', type=dt.date.fromisoformat, default=dt.date(2025, 12, 31))
     parser.add_argument('--projects', nargs='+')
     parser.add_argument('--variables', choices=VARIABLES, nargs='+', default=VARIABLES)
-    parser.add_argument('--workers', type=int, default=4)
+    parser.add_argument('--workers', type=int, default=16, help='Concurrent AORC reads and decodes (1–32)')
     parser.add_argument('--max-download-gb', type=float, default=1.)
     parser.add_argument('--cache-only', action='store_true')
     parser.add_argument('--refresh-incomplete', action='store_true',
                         help='Re-fetch and recompute years containing invalid hours; bypass their cached objects')
     parser.add_argument('--keep-chunks', action='store_true')
+    parser.add_argument('--newest-first', action='store_true', help='Process the most recent year first')
     parser.add_argument('--derive', action='store_true',
                         help='Add native-cell RH/VPD, wet bulb, rain/snow, wind speed and daily Hargreaves PET; '
                              'automatically include their source inputs')

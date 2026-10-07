@@ -11,6 +11,8 @@ import numpy as np
 
 from aggregate_daily import HOURLY_FIELDS, aggregate_daily, daily_schema
 from download_aorc import BASE, FIELDS, accumulate, atomic_json, digest, load_polygons
+from deliver_daily import write_delivery
+from delivery_variables import REQUESTED
 from download_cds import json_hash, run_pipeline
 from export_daily import export_daily
 from meteorology import DERIVED_FIELDS, DERIVED_METHODS, derive_native, saturation_vapor_pressure_kpa
@@ -100,8 +102,8 @@ class DailyPipelineIntegrationTests(unittest.TestCase):
             self.assertEqual([(row['date'], row['project_id']) for row in rows],
                              [(str(day), project) for day in (start, end) for project in ('A', 'B')])
             self.assertEqual(report['row_count'], 4)
-            self.assertEqual(len(rows[0]), 47)
-            self.assertEqual(len(quality[0]), 182)
+            self.assertEqual(len(rows[0]), 64)
+            self.assertEqual(len(quality[0]), 250)
             self.assertEqual(len(rows), len(quality))
             for row, qc in zip(rows, quality):
                 self.assertEqual((row['date'], row['project_id']), (qc['date'], qc['project_id']))
@@ -118,8 +120,9 @@ class DailyPipelineIntegrationTests(unittest.TestCase):
                 self.assertAlmostEqual(float(row['era5_land_cds__tmean_degC']), 6.85)
                 self.assertAlmostEqual(float(row['aorc_v1_1__wind_speed_m_s']), 5.)
                 self.assertAlmostEqual(float(row['era5_cds__cloud_cover_fraction']), .5)
-                self.assertAlmostEqual(float(row['era5_cds__freezing_level_geopotential_height_m']),
-                                       (280 - 273.15) / .006)
+                self.assertAlmostEqual(float(row['era5_cds__freezing_level_above_ground_m']), 1500.)
+                self.assertAlmostEqual(float(row['era5_cds__freezing_level_above_sea_level_m']), 1600.)
+                self.assertAlmostEqual(float(row['era5_land_cds__wind_speed_m_s']), 5.)
                 self.assertTrue(all(value == 'valid' for key, value in qc.items() if key.endswith('__qc')))
             manifest = json.loads(Path(str(output) + '.manifest.json').read_text())
             self.assertEqual(manifest['output_sha256'], digest(output))
@@ -133,6 +136,17 @@ class DailyPipelineIntegrationTests(unittest.TestCase):
                              {'aorc_v1.1', 'era5_land_cds', 'era5_cds'})
             self.assertTrue(all(len(entry['periods']) == 2 for entry in manifest['inputs']))
             self.assertEqual(manifest['inputs'][0]['metadata']['derived_methods'], DERIVED_METHODS)
+
+            summary = write_delivery(output, root / 'requested.csv', root / 'README.md')
+            self.assertEqual(summary['columns'], len(REQUESTED))
+            with (root / 'requested.csv').open(newline='') as stream:
+                requested = list(csv.DictReader(stream))
+            self.assertEqual(len(requested), len(rows))
+            for full_row, row in zip(rows, requested):
+                for item in REQUESTED:
+                    column = next(c for c, info in manifest['columns'].items()
+                                  if (info.get('source'), info.get('variable')) == (item['source'], item['variable']))
+                    self.assertEqual(row[column.split('__', 1)[1]], full_row[column])
 
 
 if __name__ == '__main__':

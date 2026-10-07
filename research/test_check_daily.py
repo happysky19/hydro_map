@@ -40,7 +40,7 @@ class CheckDailyTests(unittest.TestCase):
                 'soil_moisture_layer2_m3m3': ('m3/m3', .3),
                 'soil_moisture_layer3_m3m3': ('m3/m3', .4),
                 'root_zone_soil_moisture_0_100cm_m3m3': ('m3/m3', .365)},
-            'era5_cds': {'freezing_level_above_terrain_m': ('m', None)},
+            'era5_cds': {'freezing_level_above_ground_m': ('m', None)},
         }.items():
             for variable, (units, value) in fields.items():
                 column = _value_column(source, variable, units)
@@ -51,7 +51,7 @@ class CheckDailyTests(unittest.TestCase):
             self.rows.append(dict(date=day, project_id='A', **self.values))
             qc = dict(date=day, project_id='A')
             for column, value in self.values.items():
-                qc.update({column+'__qc': 'no_crossing' if value is None else 'valid',
+                qc.update({column+'__qc': 'source_unavailable' if value is None else 'valid',
                            column+'__valid_hours': 0 if value is None else 24,
                            column+'__expected_hours': 24,
                            column+'__min_valid_area_fraction': 0 if value is None else 1})
@@ -77,7 +77,7 @@ class CheckDailyTests(unittest.TestCase):
         from check_daily import check_file
         return check_file(self.path, plots=plots)
 
-    def test_valid_physics_missing_freezing_and_cross_source_statistics(self):
+    def test_valid_physics_missing_column_and_cross_source_statistics(self):
         report = self.check(plots=True)
         self.assertEqual(report['failed_checks'], 0)
         self.assertEqual(report['missing_values'], 3)
@@ -85,7 +85,14 @@ class CheckDailyTests(unittest.TestCase):
         precip = next(row for row in comparisons
                       if row['project_id'] == 'A' and row['variable'] == 'precipitation_mm')
         self.assertAlmostEqual(precip['bias_land_minus_aorc'], -2.6)
+        self.assertAlmostEqual(precip['ratio_land_to_aorc'], .4/3)
         self.assertAlmostEqual(precip['rmse'], 2.6)
+        temperature = next(row for row in comparisons
+                           if row['project_id'] == 'ALL' and row['variable'] == 'tmean_c')
+        self.assertAlmostEqual(temperature['bias_land_minus_aorc'], 1)
+        self.assertIsNone(temperature['ratio_land_to_aorc'])
+        self.assertEqual(report['missing_by_column'],
+                         {'era5_cds__freezing_level_above_ground_m': dict(missing=3, qc={'source_unavailable': 3})})
         self.assertIsNone(precip['correlation'])
         self.assertEqual(precip['paired_days'], 3)
         folder = Path(str(self.path)+'.checks')
@@ -94,27 +101,16 @@ class CheckDailyTests(unittest.TestCase):
             self.assertTrue((folder/name).is_file(), name)
         with (folder/'qc_summary.csv').open() as stream:
             rows = list(csv.DictReader(stream))
-        self.assertTrue(any(r['qc'] == 'no_crossing' and r['days'] == '3' for r in rows))
+        self.assertTrue(any(r['qc'] == 'source_unavailable' and r['days'] == '3' for r in rows))
 
-    def test_freezing_diagnostics_distinguish_partial_support_from_missing_profiles(self):
-        column = 'era5_cds__freezing_level_above_terrain_m'
-        self.quality[0][column+'__valid_hours'] = 23
-        self.quality[0][column+'__min_valid_area_fraction'] = .99
-        self.quality[1][column+'__qc'] = 'missing_profile;no_crossing'
+    def test_implausible_values_fail_range_checks(self):
+        self.rows[0]['aorc_v1_1__tmean_degC'] = 70
+        self.rows[1]['era5_land_cds__soil_moisture_layer1_m3_m3'] = 1.2
         self.save()
-        from contextlib import redirect_stdout
-        import io
-        text = io.StringIO()
-        with redirect_stdout(text):
-            report = self.check()
-        diagnostic = report['freezing_level'][column]
-        self.assertEqual(diagnostic['valid_project_days'], 0)
-        self.assertEqual(diagnostic['project_days'], 3)
-        self.assertEqual(diagnostic['valid_hours_range'], [0, 23])
-        self.assertEqual(diagnostic['min_valid_area_fraction_range'], [0, .99])
-        self.assertEqual(diagnostic['qc_counts'], {'no_crossing': 2, 'missing_profile;no_crossing': 1})
-        self.assertIn('No usable freezing-level values', text.getvalue())
-        self.assertIn('missing_profile;no_crossing=1', text.getvalue())
+        report = self.check()
+        failed = {row['check'] for row in report['checks'] if row['failed']}
+        self.assertIn('aorc_v1.1: tmean_c upper bound', failed)
+        self.assertIn('era5_land_cds: soil_moisture_layer1_m3m3 upper bound', failed)
 
     def test_changed_values_fail_identities_without_calling_missing_values_zero(self):
         self.rows[0]['aorc_v1_1__snowfall_mm'] = 10
@@ -139,7 +135,7 @@ class CheckDailyTests(unittest.TestCase):
             self.check()
 
     def test_qc_value_disagreement_is_reported(self):
-        column = 'era5_cds__freezing_level_above_terrain_m'
+        column = 'era5_cds__freezing_level_above_ground_m'
         self.rows[0][column] = 0
         self.quality[1]['aorc_v1_1__precipitation_mm__valid_hours'] = 23
         self.save()
@@ -175,6 +171,25 @@ class CheckDailyTests(unittest.TestCase):
                 result = check_file(path, plots=False)
                 self.assertEqual(result['checks'], baseline['checks'])
                 self.assertEqual(result['comparisons'], baseline['comparisons'])
+
+    def test_year_round_snow_is_reported(self):
+        column = _value_column('era5_land_cds', 'snow_water_equivalent_mm', 'mm')
+        self.columns[column] = dict(source='era5_land_cds', variable='snow_water_equivalent_mm', units='mm')
+        start = date(2024, 1, 1)
+        row, qc = self.rows[0], self.quality[0]
+        self.rows = [dict(row, date=str(start+timedelta(days=i)), **{column: 400 + 100*(i % 2)})
+                     for i in range(366)]
+        self.quality = [dict(qc, date=r['date'], **{column+'__qc': 'valid', column+'__valid_hours': 24,
+                             column+'__expected_hours': 24, column+'__min_valid_area_fraction': 1})
+                        for r in self.rows]
+        self.save()
+        path = Path(str(self.path)+'.manifest.json')
+        metadata = json.loads(path.read_text())
+        metadata.update(start=str(start), end=self.rows[-1]['date'], row_count=366)
+        path.write_text(json.dumps(metadata))
+        report = self.check()
+        self.assertEqual(report['persistent_snow'], [dict(source='era5_land_cds', project_id='A',
+                                                          minimum_swe_mm=400., mean_swe_mm=450.)])
 
     def test_long_window_plots_handle_all_missing_series(self):
         start = date(2024, 1, 1)

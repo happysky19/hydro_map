@@ -383,8 +383,8 @@ class ExportDailyTests(unittest.TestCase):
         export_daily(self.geojson, folders, stamp, stamp, self.output)
         rows = self.read()
         self.assertEqual(len(rows), 1)
-        self.assertEqual(len(rows[0]), 28)
-        self.assertEqual(len(self.read(self.qc_output)[0]), 106)
+        self.assertEqual(len(rows[0]), 45)
+        self.assertEqual(len(self.read(self.qc_output)[0]), 174)
         self.assertAlmostEqual(float(rows[0]['era5_land_cds__snow_water_equivalent_mm']), 200)
         self.assertAlmostEqual(float(rows[0]['era5_cds__cloud_cover_fraction']), .5)
 

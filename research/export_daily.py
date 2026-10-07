@@ -268,7 +268,7 @@ def _rows(db, projects, bases, start, end, *, quality=False):
         stamp += timedelta(days=1)
 
 
-def _write(path, output, columns, rows, *, quality=False):
+def _write(path, output, columns, rows, *, quality=False, text_columns=()):
     if output.suffix == '.parquet':
         try:
             import pyarrow as pa
@@ -279,7 +279,7 @@ def _write(path, output, columns, rows, *, quality=False):
         if quality:
             types.extend([pa.string(), pa.int16(), pa.int16(), pa.float64()] * ((len(columns)-2)//4))
         else:
-            types.extend([pa.float64()] * (len(columns)-2))
+            types.extend(pa.string() if name in text_columns else pa.float64() for name in columns[2:])
         schema = pa.schema(zip(columns, types))
         with pq.ParquetWriter(path, schema, compression='snappy') as writer:
             batch = []

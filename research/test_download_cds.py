@@ -1,11 +1,14 @@
-"""Checks for CDS units, UTC endpoints, profile crossings and verified resumes."""
+"""Checks for CDS units, UTC endpoints, native freezing level and verified resumes."""
 
+from contextlib import redirect_stdout
 import csv
-from datetime import date
+from datetime import date, datetime, timedelta
 import gzip
+import io
 import json
 from pathlib import Path
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 import zipfile
@@ -13,100 +16,114 @@ import zipfile
 import netCDF4
 import numpy as np
 
-from cds_fields import (freezing_level, root_zone_moisture, land_daily_fields, era_daily_fields,
-                        ALL_FIELDS, PRESSURE_LEVELS)
-from download_cds import make_requests, read_response, process_day, run_pipeline, align_hours
+from cds_fields import (root_zone_moisture, land_daily_fields, era_daily_fields, dewpoint_humidity,
+                        ALL_FIELDS, LAND_STATES, LAND_ACCUMULATED)
+from download_cds import (make_requests, accumulated_requests, read_response, process_day, run_pipeline,
+                          align_hours, prefetch)
+from meteorology import humidity
 
 
 class FieldTests(unittest.TestCase):
-    def test_one_percent_area_without_crossing_for_one_hour_masks_both_daily_heights(self):
-        levels = np.array([1000, 900, 800])
-        profile_t = np.broadcast_to(np.array([280., 274., 268.])[None, :, None, None],
-                                    (24, 3, 1, 2)).copy()
-        profile_z = np.broadcast_to(np.array([0., 1000., 2000.])[None, :, None, None],
-                                    profile_t.shape)*9.80665
-        profile_t[0, :, 0, 1] = [270., 264., 258.]
-        surface = dict(sp=np.full((24, 1, 2), 101000.), z=np.full((24, 1, 2), -9.80665),
+    def test_native_freezing_level_stays_defined_when_column_is_below_freezing(self):
+        surface = dict(deg0l=np.full((24, 1, 2), 1200.), z=np.full((24, 1, 2), 500*9.80665),
                        tcc=np.full((24, 1, 2), .5))
-        fields = era_daily_fields(surface, dict(t=profile_t, z=profile_z), levels)
-        rows = process_day(fields, {'A': np.array([[.99, .01]])}, date(2025, 12, 28), 'era5_cds')
-        heights = [row for row in rows if row['variable'].startswith('freezing_level')]
-        self.assertEqual(len(heights), 2)
-        for row in heights:
-            self.assertEqual(row['value'], '')
-            self.assertEqual(row['valid_hours'], 23)
-            self.assertAlmostEqual(row['min_valid_area_fraction'], .99)
-            self.assertEqual(row['qc'], 'no_crossing')
-        self.assertEqual(next(r for r in rows if r['variable'] == 'cloud_cover_fraction')['value'], .5)
+        surface['deg0l'][0, 0, 1] = 0.
+        rows = process_day(era_daily_fields(surface), {'A': np.array([[.99, .01]])},
+                           date(2025, 12, 28), 'era5_cds')
+        values = {row['variable']: row for row in rows}
+        self.assertTrue(all(row['qc'] == 'valid' and row['valid_hours'] == 24 for row in rows))
+        self.assertAlmostEqual(values['freezing_level_above_ground_m']['value'], 1200 - 12/24)
+        self.assertAlmostEqual(values['freezing_level_above_sea_level_m']['value'], 1700 - 12/24)
+        self.assertEqual(values['cloud_cover_fraction']['value'], .5)
+
+    def test_perennial_snow_cells_are_excluded_from_snow_states_only(self):
+        states = {key: np.full((24, 1, 2), 280.) for key in LAND_STATES}
+        states.update(sp=np.full((24, 1, 2), 90000.), sd=np.array([.2, 8.])[None, None, :].repeat(24, 0),
+                      sde=np.array([.8, 20.])[None, None, :].repeat(24, 0))
+        accumulated = {key: np.full((1, 2), .001) for key in LAND_ACCUMULATED}
+        rows = process_day(land_daily_fields(states, accumulated), {'A': np.array([[.75, .25]])},
+                           date(2025, 12, 31), 'era5_land_cds')
+        values = {row['variable']: row for row in rows}
+        self.assertAlmostEqual(values['snow_water_equivalent_mm']['value'], 200)
+        self.assertAlmostEqual(values['snow_depth_m']['value'], .8)
+        self.assertAlmostEqual(values['perennial_snow_area_pct']['value'], 25)
+        self.assertAlmostEqual(values['precipitation_mm']['value'], 1)
+        self.assertTrue(all(row['qc'] == 'valid' for row in rows))
+        states['sd'][:] = 8.
+        rows = process_day(land_daily_fields(states, accumulated), {'A': np.array([[.75, .25]])},
+                           date(2025, 12, 31), 'era5_land_cds')
+        swe = next(row for row in rows if row['variable'] == 'snow_water_equivalent_mm')
+        self.assertEqual((swe['value'], swe['qc']), ('', 'no_defined_area'))
+
+    def test_snow_density_uses_snow_covered_cells_only(self):
+        states = {key: np.full((24, 1, 2), 280.) for key in LAND_STATES}
+        states.update(sp=np.full((24, 1, 2), 90000.), sd=np.array([.2, -1e-24])[None, None, :].repeat(24, 0),
+                      rsn=np.array([300., 100.])[None, None, :].repeat(24, 0))
+        accumulated = {key: np.full((1, 2), .001) for key in LAND_ACCUMULATED}
+        fields = land_daily_fields(states, accumulated)
+        rows = {row['variable']: row for row in
+                process_day(fields, {'A': np.array([[.5, .5]])}, date(2025, 7, 15), 'era5_land_cds')}
+        self.assertAlmostEqual(rows['snow_density_kgm3']['value'], 300)
+        self.assertAlmostEqual(rows['snow_water_equivalent_mm']['value'], 100)
+        states['sd'][:] = 0.
+        rows = {row['variable']: row for row in process_day(land_daily_fields(states, accumulated),
+                {'A': np.array([[.5, .5]])}, date(2025, 7, 15), 'era5_land_cds')}
+        self.assertEqual((rows['snow_density_kgm3']['value'], rows['snow_density_kgm3']['qc']), ('', 'no_defined_area'))
+        self.assertEqual(rows['snow_water_equivalent_mm']['value'], 0)
+
+    def test_dewpoint_humidity_matches_aorc_conventions(self):
+        temperature, pressure = np.array([283.15, 263.15]), np.array([90000., 70000.])
+        specific, rh, vpd = dewpoint_humidity(temperature, temperature, pressure)
+        np.testing.assert_allclose(rh, 100)
+        np.testing.assert_allclose(vpd, 0, atol=1e-12)
+        np.testing.assert_allclose(humidity(temperature-273.15, specific, pressure)[0], 100)
+        drier = dewpoint_humidity(temperature, temperature-5, pressure)
+        self.assertTrue(np.all(drier[1] < 100) and np.all(drier[2] > 0) and np.all(drier[0] < specific))
 
     def test_soil_and_snow_units(self):
         arrays = {f'swvl{i}': np.ones((24, 2, 2)) * i / 10 for i in range(1, 5)}
         self.assertAlmostEqual(root_zone_moisture(arrays)[0, 0, 0], .265)
-        arrays.update(t2m=np.ones((24, 2, 2))*273.15, sd=np.ones((24, 2, 2))*.2,
+        arrays.update(t2m=np.ones((24, 2, 2))*273.15, d2m=np.ones((24, 2, 2))*270.,
+                      sp=np.ones((24, 2, 2))*90000., u10=np.ones((24, 2, 2))*3., v10=np.ones((24, 2, 2))*4.,
+                      sd=np.ones((24, 2, 2))*.2,
                       sde=np.ones((24, 2, 2))*.8, rsn=np.ones((24, 2, 2))*250,
                       snowc=np.ones((24, 2, 2))*100)
         arrays.update({f'stl{i}': np.ones((24, 2, 2))*280 for i in range(1, 5)})
-        accum = {key: np.ones((2, 2)) for key in ['tp', 'smlt', 'e', 'ssr', 'str']}
+        accum = {key: np.ones((2, 2)) for key in LAND_ACCUMULATED}
+        accum.update(tp=np.full((2, 2), .004), sf=np.full((2, 2), .001), ssrd=np.full((2, 2), 8.64e6))
         fields = land_daily_fields(arrays, accum)
         self.assertEqual(fields['snow_water_equivalent_mm'][0][0, 0, 0], 200)
         self.assertEqual(fields['snow_depth_m'][0][0, 0, 0], .8)
         self.assertEqual(fields['actual_evapotranspiration_mm'][0][0, 0], -1000)
         self.assertEqual(fields['net_radiation_energy_mjm2'][0][0, 0], 2e-6)
+        self.assertAlmostEqual(fields['snowfall_mm'][0][0, 0], 1)
+        self.assertAlmostEqual(fields['rainfall_mm'][0][0, 0], 3)
+        self.assertAlmostEqual(fields['shortwave_down_mean_wm2'][0][0, 0], 100)
+        self.assertAlmostEqual(fields['shortwave_down_energy_mjm2'][0][0, 0], 8.64)
+        self.assertEqual(fields['wind_speed_ms'][0][0, 0, 0], 5)
+        self.assertLess(fields['wet_bulb_temperature_c'][0][0, 0, 0], 0)
 
-    def test_freezing_crossing_above_terrain_and_multiple(self):
-        pressure = np.array([1000, 900, 800, 700, 600])
-        heights = np.array([0, 1000, 2000, 3000, 4000.])[:, None, None]
-        temperatures = np.array([285, 279, 273, 267, 261.])[:, None, None]
-        height, agl, flags = freezing_level(temperatures, heights*9.80665,
-                                            pressure, np.array([[95000]]), np.array([[500*9.80665]]))
-        self.assertAlmostEqual(height[0, 0], 1975.)
-        self.assertAlmostEqual(agl[0, 0], 1475.)
-        self.assertEqual(flags[0, 0], 'valid')
-        temperatures[:, 0, 0] = [280, 270, 280, 270, 260]
-        height, _, flags = freezing_level(temperatures, heights*9.80665,
-                                            pressure, np.array([[101000]]), np.array([[-10*9.80665]]))
-        self.assertTrue(np.isnan(height[0, 0]))
-        self.assertEqual(flags[0, 0], 'multiple_crossings')
-
-    def test_no_extrapolation_and_below_ground(self):
-        levels = np.array([1000, 900, 800])
-        temp = np.array([280, 270, 260.])[:, None, None]
-        z = np.array([0, 1000, 2000.])[:, None, None]*9.80665
-        result = freezing_level(temp, z, levels, np.array([[85000]]), np.array([[1500*9.80665]]))
-        self.assertTrue(np.isnan(result[0][0, 0]))
-        self.assertEqual(result[2][0, 0], 'no_crossing')
-
-    def test_inversion_and_missing_profile_are_not_bridged(self):
-        levels = np.array([1000, 900, 800])
-        temp = np.array([280, 270, 280.])[:, None, None]
-        z = np.array([0, 1000, 2000.])[:, None, None]*9.80665
-        args = (levels, np.array([[101000]]), np.array([[-10*9.80665]]))
-        result = freezing_level(temp, z, *args)
-        self.assertTrue(np.isnan(result[0][0, 0]))
-        self.assertEqual(result[2][0, 0], 'multiple_crossings')
-        temp[1] = np.nan
-        self.assertEqual(freezing_level(temp, z, *args)[2][0, 0], 'missing_profile')
-
-    def test_zero_plateau_uses_first_zero_height(self):
-        levels = np.array([1000, 900, 800, 700])
-        temp = np.array([280, 273.15, 273.15, 270.])[:, None, None]
-        z = np.array([0, 1000, 2000, 3000.])[:, None, None]*9.80665
-        result = freezing_level(temp, z, levels, np.array([[101000]]), np.array([[-10*9.80665]]))
-        self.assertEqual(result[0][0, 0], 1000)
+    def test_era5_requests_only_single_level_fields(self):
+        requests = make_requests('era5', date(2025, 12, 29), [51, -121, 49, -119], date(2025, 12, 31))
+        self.assertEqual([r['dataset'] for r in requests], ['reanalysis-era5-single-levels'])
+        self.assertIn('zero_degree_level', requests[0]['request']['variable'])
+        self.assertNotIn('pressure_level', requests[0]['request'])
 
     def test_december_endpoint_request(self):
-        requests = make_requests('era5-land', date(2025, 12, 31), [51, -121, 49, -119])
-        endpoint = next(r for r in requests if r['kind'] == 'accumulated')
-        self.assertEqual(endpoint['request']['year'], '2026')
-        self.assertEqual(endpoint['request']['month'], '01')
-        self.assertEqual(endpoint['request']['day'], ['01'])
-        self.assertEqual(endpoint['request']['time'], ['00:00'])
+        requests = accumulated_requests(date(2025, 12, 31), date(2025, 12, 31), [51, -121, 49, -119])
+        self.assertEqual(len(requests), 1)
+        endpoint = requests[0]['request']
+        self.assertEqual((endpoint['year'], endpoint['month'], endpoint['day'], endpoint['time']),
+                         ('2026', ['01'], ['01'], ['00:00']))
+        self.assertEqual([r['kind'] for r in make_requests('era5-land', date(2025, 12, 31), [51, -121, 49, -119])],
+                         ['states'])
 
-    def test_batched_endpoint_dates_do_not_form_cartesian_year_months(self):
-        requests = make_requests('era5-land', date(2025, 12, 29), [51, -121, 49, -119], date(2025, 12, 31))
-        endpoints = [r['request'] for r in requests if r['kind'] == 'accumulated']
-        self.assertEqual([(r['year'], r['month'], r['day']) for r in endpoints],
-                         [('2025', '12', ['30', '31']), ('2026', '01', ['01'])])
+    def test_endpoints_are_one_request_per_year(self):
+        requests = accumulated_requests(date(2024, 1, 1), date(2025, 12, 31), [51, -121, 49, -119])
+        self.assertEqual([(r['request']['year'], len(r['request']['month']), len(r['request']['day']))
+                          for r in requests], [('2024', 12, 31), ('2025', 12, 31), ('2026', 1, 1)])
+        cost = max(len(r['fields'])*len(r['request']['month'])*len(r['request']['day'])*2 for r in requests)
+        self.assertLess(cost, 12000)
 
 
 def write_netcdf(path, variables, *, day='2025-12-31', hours=24, expver=False,
@@ -215,38 +232,40 @@ class ResponseTests(unittest.TestCase):
 
 
 class FakeClient:
+    # Prefetch threads call retrieve concurrently; the HDF5 library is not thread-safe.
+    lock = threading.Lock()
+
     def __init__(self):
         self.calls = 0
 
     def retrieve(self, dataset, request, target):
+        with self.lock:
+            self._write(dataset, request, target)
+
+    def _write(self, dataset, request, target):
         self.calls += 1
-        first = lambda value: value[0] if isinstance(value, list) else value
-        day = f'{first(request["year"])}-{first(request["month"])}-{request["day"][0]}'
-        hours = len(request['time'])*len(request['day'])
+        listed = lambda value: value if isinstance(value, list) else [value]
+        stamps = []
+        for year in listed(request['year']):
+            for month in listed(request['month']):
+                for day in listed(request['day']):
+                    try:
+                        stamp = datetime(int(year), int(month), int(day))
+                    except ValueError:
+                        continue
+                    stamps += [stamp + timedelta(hours=int(hour[:2])) for hour in request['time']]
+        origin = min(stamps)
+        day, hours = origin.date().isoformat(), len(stamps)
         lookup = {value[0]: (key, value[1]) for key, value in ALL_FIELDS.items()}
-        values = {'t2m': 280., 'sd': .2, 'sde': .8, 'rsn': 250., 'snowc': 100.,
-                  'tp': .002, 'smlt': .001, 'e': -.001, 'ssr': 86400., 'str': -43200.,
-                  'tcc': .5, 'sp': 99000., 'z': 100*9.80665}
+        values = {'t2m': 280., 'd2m': 275., 'sp': 99000., 'u10': 3., 'v10': 4.,
+                  'sd': .2, 'sde': .8, 'rsn': 250., 'snowc': 100.,
+                  'tp': .002, 'sf': .0005, 'smlt': .001, 'e': -.001, 'ssrd': 8.64e6, 'strd': 2.592e7,
+                  'ssr': 86400., 'str': -43200., 'tcc': .5, 'deg0l': 1500., 'z': 100*9.80665,
+                  **{f'stl{i}': 275. for i in range(1, 5)}}
         fields = {lookup[name][0]: (lookup[name][1], values.get(lookup[name][0], .25)) for name in request['variable']}
         write_netcdf(target, fields, day=day, hours=hours)
         with netCDF4.Dataset(target, 'a') as ds:
-            ds['valid_time'][:] = [day_index*24+int(hour[:2]) for day_index in range(len(request['day']))
-                                   for hour in request['time']]
-        if dataset == 'reanalysis-era5-pressure-levels':
-            with netCDF4.Dataset(target, 'w') as ds:
-                for key, size in [('valid_time', hours), ('pressure_level', len(PRESSURE_LEVELS)),
-                                  ('latitude', 2), ('longitude', 2)]:
-                    ds.createDimension(key, size)
-                time = ds.createVariable('valid_time', 'i8', ('valid_time',))
-                time.units = f'hours since {day} 00:00:00'; time[:] = np.arange(hours)
-                ds.createVariable('latitude', 'f8', ('latitude',))[:] = [49.95, 50.05]
-                ds.createVariable('longitude', 'f8', ('longitude',))[:] = [240.05, 239.95]
-                level = ds.createVariable('pressure_level', 'f8', ('pressure_level',))
-                level.units = 'hPa'; level[:] = PRESSURE_LEVELS
-                z = (1000-np.array(PRESSURE_LEVELS))*10.
-                for name, value, units in [('z', z*9.80665, 'm**2 s**-2'), ('t', 280-z*.006, 'K')]:
-                    field = ds.createVariable(name, 'f8', ('valid_time', 'pressure_level', 'latitude', 'longitude'))
-                    field.units = units; field[:] = value[None, :, None, None]
+            ds['valid_time'][:] = [int((stamp - origin).total_seconds()//3600) for stamp in stamps]
 
 
 class PipelineTests(unittest.TestCase):
@@ -275,7 +294,7 @@ class PipelineTests(unittest.TestCase):
             run_pipeline(*self.arguments, client=client)
         with gzip.open(self.root/'output/daily_2025-12.csv.gz', 'rt') as stream:
             rows = list(csv.DictReader(stream))
-        self.assertEqual(len(rows), 23)
+        self.assertEqual(len(rows), 40)
         self.assertTrue(all(row['qc'] == 'valid' for row in rows))
         self.assertEqual(next(float(r['value']) for r in rows if r['variable'] == 'precipitation_mm'), 2.)
 
@@ -366,10 +385,10 @@ class PipelineTests(unittest.TestCase):
                 'type': 'Feature', 'properties': {'id': 'A', 'name': 'A', 'part': 'local'},
                 'geometry': {'type': 'Polygon', 'coordinates': [[[-120.03, 49.97], [-119.97, 49.97],
                               [-119.97, 50.03], [-120.03, 50.03], [-120.03, 49.97]]]}}]}))
-            for product, expected_count in [('era5-land', 23), ('era5', 3)]:
+            for product, expected_count, calls in [('era5-land', 40, 2), ('era5', 3, 1)]:
                 client = FakeClient(); output = root/product; cache = root/f'{product}_cache'
                 run = run_pipeline(geometry, product, output, cache, '2025-12-31', '2025-12-31', client=client)
-                self.assertEqual(client.calls, 2)
+                self.assertEqual(client.calls, calls)
                 with gzip.open(output/'daily_2025-12.csv.gz', 'rt') as stream:
                     rows = list(csv.DictReader(stream))
                 self.assertEqual(len(rows), expected_count)
@@ -378,10 +397,14 @@ class PipelineTests(unittest.TestCase):
                 if product == 'era5-land':
                     self.assertAlmostEqual(values['precipitation_mm'], 2.)
                     self.assertAlmostEqual(values['actual_evapotranspiration_mm'], 1.)
+                    self.assertAlmostEqual(values['snowfall_mm'] + values['rainfall_mm'], 2.)
+                    self.assertAlmostEqual(values['longwave_down_mean_wm2'], 300.)
+                    self.assertAlmostEqual(values['wind_speed_ms'], 5.)
                 else:
-                    self.assertAlmostEqual(values['freezing_level_geopotential_height_m'], (280-273.15)/.006)
+                    self.assertAlmostEqual(values['freezing_level_above_ground_m'], 1500.)
+                    self.assertAlmostEqual(values['freezing_level_above_sea_level_m'], 1600.)
                 run_pipeline(geometry, product, output, cache, '2025-12-31', '2025-12-31', client=client)
-                self.assertEqual(client.calls, 2)
+                self.assertEqual(client.calls, calls)
                 (output/'daily_2025-12.csv.gz').write_text('corrupt')
                 run_pipeline(geometry, product, output, cache, '2025-12-31', '2025-12-31', cache_only=True)
                 self.assertEqual(json.loads((output/'month_2025-12.json').read_text())['rows'], expected_count)
@@ -397,13 +420,76 @@ class PipelineTests(unittest.TestCase):
                               [-119.97, 50.03], [-120.03, 50.03], [-120.03, 49.97]]]}}]}))
             client = FakeClient()
             run_pipeline(geometry, 'era5-land', root/'output', root/'cache', '2025-12-29', '2026-01-01', client=client)
-            self.assertEqual(client.calls, 5)
-            for month, count in [('2025-12', 69), ('2026-01', 23)]:
+            self.assertEqual(client.calls, 4)
+            for month, count in [('2025-12', 120), ('2026-01', 40)]:
                 with gzip.open(root/'output'/f'daily_{month}.csv.gz', 'rt') as stream:
                     rows = list(csv.DictReader(stream))
                 self.assertEqual(len(rows), count)
                 self.assertTrue(all(row['qc'] == 'valid' for row in rows))
                 self.assertTrue(all(float(row['value']) == 2 for row in rows if row['variable'] == 'precipitation_mm'))
+
+    def test_prefetch_retries_transient_failures_and_caches_once(self):
+        client = FakeClient()
+        retrieve, failures = client.retrieve, []
+        def flaky(dataset, request, target):
+            if not failures:
+                failures.append(dataset)
+                raise RuntimeError('Number queued requests for this dataset is temporarily limited')
+            retrieve(dataset, request, target)
+        area = [50.1, -120.1, 49.9, -119.9]
+        specs = make_requests('era5-land', date(2025, 12, 31), area) + accumulated_requests(
+            date(2025, 12, 31), date(2025, 12, 31), area)
+        manifest = {}
+        with patch.object(client, 'retrieve', side_effect=flaky), redirect_stdout(io.StringIO()):
+            prefetch(specs, self.root/'cache', manifest, client, workers=2, retry_seconds=0)
+        self.assertEqual(len(failures), 1)
+        self.assertEqual(client.calls, 2)
+        self.assertEqual(len(manifest), 2)
+        self.assertEqual(json.loads((self.root/'cache/requests.manifest.json').read_text()).keys(), manifest.keys())
+
+    def test_queue_limit_is_transient_even_with_status_digits_in_job_id(self):
+        from download_cds import transient
+        import requests
+        queued = requests.HTTPError('400 Client Error: Bad Request for url: https://cds.climate.copernicus.eu/'
+                                    'api/retrieve/v1/jobs/a71f9fc3-b27d-49f0-bc5a-bd403ce3f43c/results\n'
+                                    'Number queued requests for this dataset is temporarily limited')
+        self.assertTrue(transient(queued))
+        self.assertFalse(transient(requests.HTTPError('403 Client Error: Forbidden ... cost limits exceeded')))
+        self.assertFalse(transient(RuntimeError('Source unavailable')))
+
+    def test_newest_first_requests_latest_month_first(self):
+        client = FakeClient()
+        retrieve, order = client.retrieve, []
+        def record(dataset, request, target):
+            order.append((request['year'], request['month']))
+            retrieve(dataset, request, target)
+        with patch.object(client, 'retrieve', side_effect=record), redirect_stdout(io.StringIO()):
+            run_pipeline(self.geometry, 'era5', self.root/'output', self.root/'cache', '2025-12-30', '2026-01-02',
+                         client=client, workers=1, newest_first=True)
+        self.assertEqual(order, [(['2026'], ['01']), (['2025'], ['12'])])
+        self.assertTrue((self.root/'output/month_2025-12.json').exists())
+
+    def test_response_cached_by_another_process_is_reused(self):
+        from download_cds import fetch_response
+        client = FakeClient()
+        spec = make_requests('era5', date(2025, 12, 31), [50.1, -120.1, 49.9, -119.9])[0]
+        (self.root/'cache').mkdir()
+        fetch_response(spec, self.root/'cache', {}, client, lock=threading.Lock())
+        with patch.object(client, 'retrieve', side_effect=AssertionError('Downloaded again')):
+            fetch_response(spec, self.root/'cache', {}, client)
+        self.assertEqual(client.calls, 1)
+
+    def test_request_errors_are_not_retried(self):
+        client = FakeClient()
+        specs = make_requests('era5', date(2025, 12, 31), [50.1, -120.1, 49.9, -119.9])
+        for error in (RuntimeError('Source unavailable'),
+                      OSError('403 Client Error: Forbidden; cost limits exceeded')):
+            with self.subTest(error=str(error)):
+                with patch.object(client, 'retrieve', side_effect=error) as retrieve, \
+                     patch('download_cds.time.sleep', side_effect=AssertionError('Retried')):
+                    with self.assertRaises(type(error)):
+                        prefetch(specs, self.root/'cache', {}, client)
+                self.assertEqual(retrieve.call_count, 1)
 
 
 if __name__ == '__main__':

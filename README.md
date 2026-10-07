@@ -32,15 +32,17 @@ python research/download_daily.py --geojson outputs/projects43_independent/dam_c
 ```
 
 This downloads AORC, ERA5-Land and ERA5, computes daily catchment statistics
-and derived variables, and exports `catchment_daily.csv` with 47 columns
-(date, project ID and 45 values), `catchment_daily_qc.csv` with 182 columns
-(the same keys and per-variable quality fields), and
-`catchment_daily.csv.manifest.json` with units and provenance. Both tables
-have the same 129 project-day rows in this example. Keep all three files.
-It also writes `catchment_daily.csv.checks/` with coverage and source-comparison
-plots, a PDF of project time series, and consistency/QC reports.
-Repeat the same command to resume completed source periods. AORC also needs
-the `zstd` command-line decoder on `PATH`.
+and derived variables, checks them, and writes the delivery:
+`catchment_daily.csv` holds the 25 requested variables in 28 columns (one
+source per variable; soil temperature in four layers), `catchment_daily_README.md` documents each column's source, whether
+it is native or computed, units, definition and matching forecast-model fields,
+and `catchment_daily_full.csv` holds all 62 variables with
+`catchment_daily_full_qc.csv` (per-value quality fields),
+`catchment_daily_full.csv.manifest.json` (units and provenance) and
+`catchment_daily_full.csv.checks/` (consistency, plausibility and AORC/ERA5-Land
+comparison reports and plots). All tables have the same 129 project-day rows
+in this example. Repeat the same command to resume completed source periods.
+AORC also needs the `zstd` command-line decoder on `PATH`.
 
 The [data pipeline guide](docs/data_pipeline.md) covers CDS token setup, AORC
 and ERA5/ERA5-Land downloads, derived variables, units, quality flags and final
@@ -53,8 +55,19 @@ variable definitions and how to interpret the checks. AORC wind is **10 m
 above ground**. To check an existing delivery without downloading again:
 
 ```bash
-python research/check_daily.py outputs/catchment_daily.csv
+python research/check_daily.py outputs/catchment_daily_full.csv
+python research/deliver_daily.py outputs/catchment_daily_full.csv
 ```
+
+To plot one catchment, also while a download is still running:
+
+```bash
+python research/plot_daily.py outputs/catchment_daily.csv.work --project MICA --kind overview
+```
+
+`--kind compare` overlays the sources for one variable and `--kind wateryear`
+compares water years; see [Plots](docs/data_pipeline.md#plots). For a 30-year
+run on a compute host, see [long runs](docs/data_pipeline.md#long-runs-on-a-compute-host).
 
 ## Build options
 

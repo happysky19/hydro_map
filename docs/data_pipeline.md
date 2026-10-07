@@ -9,7 +9,9 @@ not remove dates from that calendar.
 The boundaries use documented HydroSHEDS outlet cells and exclude virtual
 endorheic connections. Kootenay Canal represents natural drainage at its
 tailrace return. Its turbine inflow requires a separate operational diversion
-model. See [project outlets](project_outlets.md).
+model. See [project outlets](project_outlets.md). For why AORC is the primary forcing and
+how other hydrological studies chose theirs, see
+[forcing used in hydrological practice](model_data_sources.md).
 
 ## One-command workflow
 
@@ -20,36 +22,53 @@ python research/download_daily.py --geojson outputs/projects43_independent/dam_c
 ```
 
 This single-line command works in Bash, Git Bash and PowerShell. It reads all
-local projects in the GeoJSON and performs five stages automatically:
+local projects in the GeoJSON and performs three stages automatically:
 
-1. AORC download, native-grid diagnostics and daily aggregation.
-2. ERA5-Land download and daily catchment statistics.
-3. ERA5 download and daily catchment statistics.
-4. Verified values and QC exports, each with one row per project and UTC day.
-5. Consistency checks, coverage and source-comparison plots, and project time series.
+1. AORC, ERA5-Land and ERA5 download and daily catchment statistics, all three
+   at the same time and, by default, from the latest data backwards.
+2. Verified values and QC exports, each with one row per project and UTC day.
+3. Consistency, plausibility and source-agreement checks with plots, then the
+   requested-variable table and its README.
 
-The same `--output` argument now produces three files:
+The same `--output` argument produces the delivery:
 
-- `outputs/catchment_daily.csv`: 47 columns (`date`, `project_id` and 45 values).
-- `outputs/catchment_daily_qc.csv`: 182 columns (the same two keys and four
-  quality fields per variable).
-- `outputs/catchment_daily.csv.manifest.json`: units, column definitions and
-  provenance for both tables.
+- `outputs/catchment_daily.csv`: the 25 requested variables, 31 columns
+  (`date`, `project_id`, 28 values: one source per variable, soil
+  temperature in its four layers, and `aorc_gap_filled`).
+- `outputs/catchment_daily_README.md`: for every requested column, its source,
+  whether it is a native source field or computed here, units, daily
+  definition, matching ECMWF IFS / NOAA GFS / WeatherNext 2 forecast fields,
+  and the QC results of this delivery.
+- `outputs/catchment_daily_full.csv`: every variable, 64 columns (`date`,
+  `project_id` and 62 source-qualified values, including the ERA5-Land
+  counterparts of the AORC forcing used for cross-checks).
+- `outputs/catchment_daily_full_qc.csv`: 250 columns (the same two keys and
+  four quality fields per full-table variable).
+- `outputs/catchment_daily_full.csv.manifest.json`: units, column definitions
+  and provenance for the full tables.
 
-The three-day, 43-project example has 129 rows in each table, in the same order.
-All 45 variables remain included; the split does not select model features or
-fill missing values. Missing values retain their quality flags in the QC table;
-completion does not imply that every observation exists. Keep all three files.
-No separate aggregation or export command is needed.
+The requested table copies its columns from the full table; its names drop the
+source prefix (the README gives the source). Where an AORC value is blank
+because the AORC archive lacks the data (for example all of 2024-06-18), the
+requested table fills it from the same ERA5-Land quantity adjusted to AORC for
+that catchment and calendar month and names the filled columns in
+`aorc_gap_filled`; the full table is never filled. See the
+[daily data notes](data_notes.md). The
+three-day, 43-project example has 129 rows in each table, in the same order.
+Missing values retain their quality flags in the QC table; completion does not
+imply that every observation exists. No separate export command is needed.
 
-The `outputs/catchment_daily.csv.checks/` directory contains `coverage.png`,
-`source_comparison.png`, `timeseries.pdf` (one page per project), numerical
-checks and per-variable QC summaries. See the [daily data notes](data_notes.md)
-for measurement heights, signs, definitions and interpretation. To check an
-existing delivery without downloading, run:
+The `outputs/catchment_daily_full.csv.checks/` directory contains
+`coverage.png`, `source_comparison.png` (every quantity available from both
+AORC and ERA5-Land), `timeseries.pdf` (one page per project), numerical checks
+and per-variable QC summaries. See the [daily data notes](data_notes.md) for
+measurement heights, signs, definitions and interpretation. To check an
+existing delivery and rebuild the requested table and README without
+downloading, run:
 
 ```bash
-python research/check_daily.py outputs/catchment_daily.csv
+python research/check_daily.py outputs/catchment_daily_full.csv
+python research/deliver_daily.py outputs/catchment_daily_full.csv
 ```
 
 The required arguments are `--geojson`, `--start` and `--end`. If `--output`
@@ -57,15 +76,43 @@ is omitted, the CSV is named `outputs/catchment_daily_START_END.csv`. For the
 full period, use a new output filename:
 
 ```bash
-python research/download_daily.py --geojson outputs/projects43_independent/dam_catchments.geojson --start 1996-01-01 --end 2025-12-31 --output outputs/catchment_daily_1996_2025.csv --chunk-days 31
+python research/download_daily.py --geojson outputs/projects43_independent/dam_catchments.geojson --start 1996-01-01 --end 2025-12-31 --output outputs/catchment_daily_1996_2025.csv
 ```
 
 The script requires `zstd` and checks the local CDS configuration before
 starting AORC. This configuration check does not prove that the provider will
-accept the account, terms or requests. The source stages run sequentially.
-If a source stage fails, the final delivery is not replaced. Repeating the same
-command reuses hash-verified completed years/months and available source cache;
-an interrupted AORC year is recomputed.
+accept the account, terms or requests. The three sources run concurrently: AORC
+is limited by S3 reads and decompression, the CDS products by the provider's
+queue. AORC processes the latest year first and the CDS products queue and
+process the latest months first, so recent data are usable early; pass
+`--oldest-first` to reverse this. If one source fails, the others continue and
+the final delivery is not replaced. Repeating the same command reuses
+hash-verified completed years/months and available source cache; an
+interrupted AORC year is recomputed.
+
+### Long runs on a compute host
+
+The CDS queue sets the duration of a 30-year run. At October 2026 rates an AORC
+year takes roughly 30-40 minutes (under a day for 30 years), ERA5 needs 360
+monthly requests (about a day), and ERA5-Land needs about 1,100 requests: its
+17 hourly fields cost more than twice the per-request limit for a month, so
+each month takes three requests. With each request waiting 5-15 minutes in the
+queue and two in flight, ERA5-Land takes several days. `--cds-workers 3` keeps
+more requests queued when the CDS accepts them; rejected submissions are
+retried. Start the run detached from the terminal and keep the log; the same
+command resumes after any interruption:
+
+```bash
+nohup python research/download_daily.py --geojson outputs/projects43_independent/dam_catchments.geojson --start 1996-01-01 --end 2025-12-31 --output outputs/catchment_daily_1996_2025.csv --work-dir /scratch/hydro/work > download_1996_2025.log 2>&1 &
+```
+
+`tail -f download_1996_2025.log` follows progress. On a batch scheduler, put the
+same command in the job script with a wall time of at least two days, or
+resubmit it until it finishes. Put `--work-dir` on large local or scratch
+storage. Raw AORC chunks are discarded after use unless `--keep-chunks` is
+given (about 30 GB per year, useful to reprocess without downloading); CDS
+responses are always kept (about 5 GB per year of ERA5-Land). While the sources download, completed years and
+months can already be plotted (see [Plots](#plots)).
 Post-export checks run on the saved delivery. If they fail, the files remain
 available, the command returns status 2, and the log gives the check-only command.
 Missing values are reported separately and are not filled automatically.
@@ -97,7 +144,15 @@ downloaded data. Keep the working folder and cache intact.
 `--max-download-gb` defaults to a 2,000 GB **AORC network-read ceiling per
 invocation**, not a file-size estimate or a CDS limit. Use
 `--max-download-gb 2` to bound a small demo. The other optional controls are
-`--workers` (default 4) and `--chunk-days` (CDS batches, default 7, maximum 31).
+`--workers` (concurrent AORC reads and decompressions, default 16, at most 32)
+and `--chunk-days` (ERA5-Land state batches, default 14).
+The CDS rejects an ERA5-Land request whose size cost (variables × hourly
+steps × 2) exceeds 12,000; with the 17 hourly ERA5-Land fields this allows at
+most 14 days, and the downloader refuses a larger value before contacting the
+CDS. Each CDS product keeps two requests queued at once. Queue limits
+("Number queued requests for this dataset is temporarily limited"), server
+errors and network failures are retried for up to an hour; rejected requests
+and missing licences stop the run immediately.
 For Parquet, install the optional dependency below and use a `.parquet` output.
 
 Routing interpretation, including Kootenay Canal's tailrace/diversion note,
@@ -162,7 +217,6 @@ accept the terms for each required dataset on its CDS download page:
 
 - [ERA5-Land hourly](https://cds.climate.copernicus.eu/datasets/reanalysis-era5-land?tab=download)
 - [ERA5 single levels](https://cds.climate.copernicus.eu/datasets/reanalysis-era5-single-levels?tab=download)
-- [ERA5 pressure levels](https://cds.climate.copernicus.eu/datasets/reanalysis-era5-pressure-levels?tab=download)
 
 The request preview described below does not need a token. It checks local
 configuration and constructs requests; it does not verify account permissions,
@@ -229,17 +283,23 @@ OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 python research/download_aorc.py \
 python research/download_cds.py --product era5-land \
   --geojson outputs/projects43_independent/dam_catchments.geojson \
   --output-dir data/era5_land_1996_2025 --cache-dir data/cds_cache \
-  --start 1996-01-01 --end 2025-12-31 --chunk-days 31
+  --start 1996-01-01 --end 2025-12-31
 
 python research/download_cds.py --product era5 \
   --geojson outputs/projects43_independent/dam_catchments.geojson \
   --output-dir data/era5_1996_2025 --cache-dir data/cds_cache \
-  --start 1996-01-01 --end 2025-12-31 --chunk-days 31
+  --start 1996-01-01 --end 2025-12-31
 ```
 
-CDS requests are split into bounded calendar batches; the default is seven
-days. Larger batches reduce request overhead but require more temporary disk
-space. Processing reads time slices rather than loading a 30-year cube.
+The two CDS products may run at the same time with a shared cache: their
+request manifest is updated under a file lock. Most of the time is spent in the
+CDS queue (typically 5-15 minutes per request in October 2026), so requests
+are as large as the limits allow: hourly ERA5-Land states in batches of at most
+14 days within a month (the size limit above), ERA5-Land 24-hour endpoints in
+one request per year, and ERA5 single-level fields in one request per month.
+For 2024-2025 this is 75 ERA5-Land and 24 ERA5 requests. All uncached requests
+are queued first, two at a time per product by default (`--workers`); daily
+processing then decodes each hash-verified cached response once per batch.
 
 Repeat an identical command to resume verified completed periods. AORC writes
 annual files; CDS writes monthly files. Configuration and output hashes are
@@ -258,8 +318,13 @@ python research/export_daily.py \
   --geojson outputs/projects43_independent/dam_catchments.geojson \
   --input-dir data/aorc_1996_2025_derived data/era5_land_1996_2025 data/era5_1996_2025 \
   --start 1996-01-01 --end 2025-12-31 \
-  --output outputs/delivery/catchment_daily_1996_2025.csv
+  --output outputs/delivery/catchment_daily_1996_2025_full.csv
+python research/check_daily.py outputs/delivery/catchment_daily_1996_2025_full.csv
+python research/deliver_daily.py outputs/delivery/catchment_daily_1996_2025_full.csv
 ```
+
+`deliver_daily.py` writes `catchment_daily_1996_2025.csv` (requested columns)
+and `catchment_daily_1996_2025_README.md` beside the full table.
 
 Use `.csv.gz` for compressed CSV or `.parquet` for optional Parquet output.
 The QC table uses the same format: `example.csv.gz` produces
@@ -269,7 +334,7 @@ or re-export existing completed source periods without downloading again. For
 the one-command example above, use these source directories:
 
 ```bash
-python research/export_daily.py --geojson outputs/projects43_independent/dam_catchments.geojson --input-dir outputs/catchment_daily.csv.work/aorc outputs/catchment_daily.csv.work/era5-land outputs/catchment_daily.csv.work/era5 --start 2025-12-29 --end 2025-12-31 --output outputs/catchment_daily.csv
+python research/export_daily.py --geojson outputs/projects43_independent/dam_catchments.geojson --input-dir outputs/catchment_daily.csv.work/aorc outputs/catchment_daily.csv.work/era5-land outputs/catchment_daily.csv.work/era5 --start 2025-12-29 --end 2025-12-31 --output outputs/catchment_daily_full.csv
 ```
 
 Let an existing download finish before updating its checkout or re-exporting
@@ -295,6 +360,34 @@ Its `columns` and `qc_columns` dictionaries describe the two tables;
 It also retains original source-variable names, units, aggregation definitions,
 input hashes and project metadata. Deliver both tables and the manifest.
 The destination is supplied through `--output`.
+
+## Plots
+
+`research/plot_daily.py` draws one catchment from a delivery
+(`OUTPUT_full.csv`) or from a working directory while it is still downloading;
+it uses whatever years and months are complete. Gaps in the data break the
+lines instead of being bridged. Long periods are shown as weekly or monthly
+points (`--resample` chooses daily `D`, weekly `W` or monthly `M`; amounts are
+summed over complete periods, states averaged). Figures are written to
+`figures/` unless `--output` names a PNG, PDF or SVG file.
+
+```bash
+python research/plot_daily.py outputs/catchment_daily_1996_2025.csv.work --project MICA
+python research/plot_daily.py outputs/catchment_daily_1996_2025.csv.work --project MICA --kind wateryear --variable snow_water_equivalent_mm
+python research/plot_daily.py outputs/catchment_daily_1996_2025_full.csv --project BROWNLEE --kind compare --variable precipitation_mm --start 2015-10-01
+```
+
+| Kind | What it shows | What to look for |
+| --- | --- | --- |
+| `overview` (default) | Stacked panels on one time axis: precipitation split into rain and snow, daily mean air temperature with the daily minimum-maximum range and the 0 °C line, snow water equivalent, surface and root-zone soil moisture, actual and potential evapotranspiration, and the 0 °C level above sea level | Snow accumulates while temperature stays below 0 °C and melts as it rises; soil moisture should rise with melt and rain and fall while evapotranspiration is high; rain-on-snow appears as rain bars over a snowpack |
+| `compare` | One variable from every source that has it (AORC, ERA5-Land, ERA5) and, below, ERA5-Land minus AORC with its mean and correlation | A steady offset is a bias that can be corrected; a drifting or seasonal difference, or low correlation, means the sources disagree on timing |
+| `wateryear` | One variable for each water year (1 October to 30 September): running totals for daily amounts (precipitation, snowfall, snowmelt, evapotranspiration), daily values for states (snow water equivalent, soil moisture); earlier years in grey, their median dashed and the latest year highlighted | Whether the current year is wetter or drier, and its snowpack larger or smaller, than usual at the same date; the timing of peak snow water equivalent and melt-out |
+
+`--start` and `--end` limit the period; `--source` selects the source for
+`wateryear`. Variable names are the column names without source prefix and
+with the units suffix as stored in the source files, for example
+`precipitation_mm`, `tmean_c`, `snow_water_equivalent_mm` or
+`root_zone_soil_moisture_0_100cm_m3m3`.
 
 ## Variables and calculations
 
@@ -360,9 +453,7 @@ evaporation and not a calibrated crop-specific water demand.
 The complete archive comes from the
 [CDS hourly product](https://cds.climate.copernicus.eu/datasets/reanalysis-era5-land).
 It provides model estimates on a 0.1° distribution grid (native resolution
-about 9 km). The public NCAR three-variable demonstration remains available
-in `download_era5_land.py`, but its tested subset does not provide this full
-variable list or the entire requested period.
+about 9 km).
 
 | Requested quantity | Output or calculation | Daily units and meaning |
 | --- | --- | --- |
@@ -377,7 +468,9 @@ variable list or the entire requested period.
 | Actual evapotranspiration | `actual_evapotranspiration_mm` from total evaporation | mm/day, positive upward water loss; negative values represent net deposition/condensation |
 | Net shortwave/longwave radiation | `net_shortwave_energy_MJ_m2`, `net_longwave_energy_MJ_m2` | Accumulated net energy, MJ/m²/day |
 | Total net radiation | `net_radiation_energy_MJ_m2`, `net_radiation_mean_W_m2` | Net solar plus net thermal energy, MJ/m²/day, and equivalent mean flux, W/m² |
-| Temperature and precipitation | `tmean_degC`, `tmin_degC`, `tmax_degC`, `precipitation_mm` | Source-qualified comparison fields; same temperature-statistic definitions; precipitation in mm/day |
+| Downward radiation | `shortwave_down_mean_W_m2`, `longwave_down_mean_W_m2` and `_energy_MJ_m2` from `ssrd`, `strd` | Daily mean flux and energy of the 24-hour accumulation |
+| Net shortwave/longwave flux | `net_shortwave_mean_W_m2`, `net_longwave_mean_W_m2` | The same accumulations as equivalent mean flux, W/m² |
+| Forcing counterparts of AORC | `tmean_degC`, `tmin_degC`, `tmax_degC`, `precipitation_mm`, `rainfall_mm`, `snowfall_mm`, `specific_humidity_kg_kg`, `relative_humidity_pct`, `vapor_pressure_deficit_kPa`, `wet_bulb_temperature_degC`, `surface_pressure_Pa`, `u_wind_m_s`, `v_wind_m_s`, `wind_speed_m_s` | Same names and daily definitions as AORC for direct comparison. Humidity is calculated from 2 m dewpoint and surface pressure with the AORC formulas; snowfall is the native ERA5-Land `sf` and rainfall is `tp - sf` |
 
 All four soil-water layers are retained. Layer boundaries are 0-7, 7-28,
 28-100 and 100-289 cm. The defined root-zone mean is
@@ -395,39 +488,46 @@ steps. For those fields, one complete endpoint represents 24 hours:
 ### ERA5: clouds and the freezing level
 
 The [single-level product](https://cds.climate.copernicus.eu/datasets/reanalysis-era5-single-levels)
-supplies total cloud cover, surface pressure and surface geopotential. The
-[pressure-level product](https://cds.climate.copernicus.eu/datasets/reanalysis-era5-pressure-levels)
-supplies temperature and geopotential through the lower/middle atmosphere.
+supplies total cloud cover, the 0°C level and surface geopotential. No
+pressure-level data are needed.
 
-`cloud_cover_fraction` is a daily mean fraction, 0-1. Freezing-level processing masks
-pressure levels below the local surface and interpolates the lowest upward
-warm-to-cold 0°C crossing. No crossing and multiple-crossing profiles are
-flagged rather than extrapolated. The output retains both
-`freezing_level_geopotential_height_m`, relative to the reference geoid, and
-`freezing_level_above_terrain_m`, relative to local terrain. The requested
-"0°C isotherm elevation" is this same diagnostic with the vertical reference
-made explicit; it is not a second independent measurement.
+`cloud_cover_fraction` is a daily mean fraction, 0-1.
+`freezing_level_above_ground_m` is the native ECMWF `zero_degree_level`
+(`deg0l`): the height above the surface where temperature passes from positive
+to negative, computed by ECMWF on the model's 137 vertical levels. It is zero
+when the whole column is below 0°C; with more than one warm layer, ECMWF assigns
+the top of the second atmospheric layer ([ECMWF parameter 228024](https://codes.ecmwf.int/grib/param-db/228024)).
+`freezing_level_above_sea_level_m` adds the ERA5 surface geopotential height
+(`z/9.80665`) in every cell and hour, as ECMWF recommends; it equals the model
+terrain height when the column is below freezing. This is the requested
+"0°C isotherm elevation". Both are defined at every cell and hour, so daily
+means are never blank because of a cold or inverted profile.
 
-The values table contains **45 data variables**: 19 from AORC with
-`--derive`, 23 from ERA5-Land and 3 from ERA5. Together with `date` and
-`project_id`, it has 47 columns. Each variable has four fields in the separate
-QC table, which has 182 columns including the same two keys.
-Daily accumulated quantities use `mm` or `MJ/m2` in the machine-readable unit
-dictionary; the daily interval makes them numerically equivalent to the
-mm/day and MJ/m²/day amounts in the tables above.
+The values table contains **62 data variables**: 19 from AORC with
+`--derive`, 40 from ERA5-Land and 3 from ERA5. Together with `date` and
+`project_id`, the full table has 64 columns. Each variable has four fields in
+the separate QC table, which has 250 columns including the same two keys.
+The requested table holds the 25 requested variables in 28 columns (13 AORC,
+12 ERA5-Land and 3 ERA5); `research/delivery_variables.py` lists them with their forecast
+counterparts. Daily accumulated quantities use `mm` or `MJ/m2` in the
+machine-readable unit dictionary; the daily interval makes them numerically
+equivalent to the mm/day and MJ/m²/day amounts in the tables above.
 
 ## Code reference
 
 | File | Purpose |
 | --- | --- |
-| `research/download_daily.py` | One command for all three sources, daily processing, resume and final CSV/Parquet export |
+| `research/download_daily.py` | One command for all three sources, daily processing, resume, checks and the final delivery |
 | `research/download_aorc.py` | Retrieve native AORC fields and calculate polygon series; `--derive` enables diagnostics |
 | `research/meteorology.py` | Humidity, wet bulb, rain/snow partition, wind speed and Hargreaves PET formulas |
 | `research/aggregate_daily.py` | Aggregate hourly polygon series with explicit UTC timing and coverage rules |
 | `research/download_cds.py` | Retrieve ERA5-Land/ERA5, calculate polygon statistics and write monthly daily files |
-| `research/cds_fields.py` | CDS variable definitions, soil weighting, conversions and freezing-level calculations |
+| `research/cds_fields.py` | CDS variable definitions, soil weighting, humidity, wind and freezing-level conversions |
 | `research/export_daily.py` | Verify source artifacts and export aligned daily values and QC tables plus their manifest |
-| `research/check_daily.py` | Check delivered values/QC, compare sources and plot coverage and project time series without downloading |
+| `research/check_daily.py` | Check delivered values/QC, physical plausibility and AORC/ERA5-Land agreement; plot coverage and project time series |
+| `research/deliver_daily.py` | Write the requested-variable table and README from a checked full delivery |
+| `research/delivery_variables.py` | Requested columns: source, native or computed, definition and forecast counterparts |
+| `research/plot_daily.py` | Overview, source comparison and water-year plots for one catchment, from a delivery or a working directory |
 
 For modeling, begin with AORC precipitation and temperature as meteorological
 forcing. Rain/snow partition and PET are calculated inputs with the method

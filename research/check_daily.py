@@ -15,6 +15,32 @@ import numpy as np
 from export_daily import QUALITY, digest
 
 
+SOURCES = ('aorc_v1.1', 'era5_land_cds')
+# Daily catchment-mean plausibility limits; exceeding one is a failed check, not a correction.
+PLAUSIBLE = {
+    **{name: (0, 300) for name in ('precipitation_mm', 'rainfall_mm', 'snowfall_mm')},
+    'snowmelt_mm': (0, 200), 'actual_evapotranspiration_mm': (-3, 12), 'pet_hargreaves_mm': (0, 12),
+    **{name: (-60, 50) for name in ('tmean_c', 'tmin_c', 'tmax_c', 'wet_bulb_temperature_c')},
+    **{f'soil_temperature_layer{i}_c': (-40, 45) for i in range(1, 5)},
+    'specific_humidity_kgkg': (0, .03), 'relative_humidity_pct': (0, 105),
+    'vapor_pressure_deficit_kpa': (0, 7), 'surface_pressure_pa': (50000, 105000),
+    'u_wind_ms': (-30, 30), 'v_wind_ms': (-30, 30), 'wind_speed_ms': (0, 30),
+    'shortwave_down_mean_wm2': (0, 450), 'longwave_down_mean_wm2': (100, 500),
+    'net_shortwave_mean_wm2': (0, 400), 'net_longwave_mean_wm2': (-250, 50),
+    'net_radiation_mean_wm2': (-200, 350), 'snow_water_equivalent_mm': (0, 3000),
+    'snow_depth_m': (0, 10), 'snow_density_kgm3': (50, 600), 'snow_cover_pct': (0, 100),
+    'perennial_snow_area_pct': (0, 100),
+    **{f'soil_moisture_layer{i}_m3m3': (0, .8) for i in range(1, 5)},
+    'root_zone_soil_moisture_0_100cm_m3m3': (0, .8), 'cloud_cover_fraction': (0, 1),
+    'freezing_level_above_ground_m': (0, 6000), 'freezing_level_above_sea_level_m': (0, 7000),
+}
+# Mean-ratio comparisons are only meaningful for nonnegative quantities.
+SEASONS = {'DJF': (12, 1, 2), 'MAM': (3, 4, 5), 'JJA': (6, 7, 8), 'SON': (9, 10, 11)}
+RATIO_VARIABLES = {'precipitation_mm', 'rainfall_mm', 'snowfall_mm', 'specific_humidity_kgkg',
+                   'surface_pressure_pa', 'wind_speed_ms', 'shortwave_down_mean_wm2',
+                   'longwave_down_mean_wm2', 'vapor_pressure_deficit_kpa', 'relative_humidity_pct'}
+
+
 def table_rows(path, columns):
     if path.suffix == '.parquet':
         import pyarrow.parquet as pq
@@ -59,10 +85,6 @@ def load_delivery(path):
     # QC strings are counted while streaming rather than retained for every row.
     values = np.full((len(days), len(projects), len(columns)), np.nan)
     counts, qc_errors = Counter(), []
-    freezing = {c: dict(project_days=manifest['row_count'], valid_project_days=0,
-                        valid_hours_range=None, min_valid_area_fraction_range=None, qc_counts=Counter())
-                for c in columns if manifest['columns'][c].get('source') == 'era5_cds'
-                and manifest['columns'][c].get('variable', '').startswith('freezing_level_')}
     failure_count = 0
     row_count = 0
     for i, (row, quality) in enumerate(zip_longest(
@@ -86,29 +108,18 @@ def load_delivery(path):
                                  or (qc != 'valid' and np.isnan(value))))
             except (TypeError, ValueError):
                 valid, coherent = False, False
-                hours, area = np.nan, np.nan
             if not coherent:
                 failure_count += 1
                 if len(qc_errors) < 5:
                     qc_errors.append(dict(date=key[0], project_id=key[1], column=column))
             if valid and np.isfinite(value):
                 values[d, p, j] = value
-            if column in freezing:
-                detail = freezing[column]
-                detail['valid_project_days'] += int(valid and np.isfinite(value))
-                detail['qc_counts'][str(qc)] += 1
-                for field, number in (('valid_hours_range', hours),
-                                      ('min_valid_area_fraction_range', area)):
-                    if np.isfinite(number):
-                        previous = detail[field]
-                        detail[field] = ([number, number] if previous is None
-                                         else [min(previous[0], number), max(previous[1], number)])
         row_count += 1
     if row_count != manifest['row_count']:
         raise ValueError('Missing project-day rows')
     check = dict(check='QC/value agreement', evaluated=values.size, failed=failure_count,
                  examples=qc_errors)
-    return manifest, days, projects, columns, values, counts, check, freezing
+    return manifest, days, projects, columns, values, counts, check
 
 
 def consistency_checks(manifest, days, projects, columns, values):
@@ -156,34 +167,54 @@ def consistency_checks(manifest, days, projects, columns, values):
               ['root_zone_soil_moisture_0_100cm_m3m3']+
               [f'soil_moisture_layer{i}_m3m3' for i in (1, 2, 3)],
               lambda root, a, b, c: (root, .07*a+.21*b+.72*c))
-    for (source, name), index in lookup.items():
+    for (source, name), index in sorted(lookup.items()):
         units = manifest['columns'][columns[index]]['units']
-        nonnegative = (name in {'precipitation_mm', 'rainfall_mm', 'snowfall_mm', 'snowmelt_mm',
-                               'snow_water_equivalent_mm', 'snow_depth_m', 'snow_density_kgm3',
-                               'wind_speed_ms', 'pet_hargreaves_mm', 'vapor_pressure_deficit_kpa',
-                               'freezing_level_above_terrain_m', 'surface_pressure_pa',
-                               'relative_humidity_pct'} or '_down_' in name)
-        bounds = ((0, 1) if units in ('m3/m3', 'kg/kg') or name == 'cloud_cover_fraction'
-                  else (0, 100) if name == 'snow_cover_pct'
-                  else (-273.15, None) if units == 'degC'
-                  else (0, None) if nonnegative else None)
-        if bounds:
-            check(source, f'{name} lower bound', [name], lambda a, b=bounds[0]: (a, b), 'greater')
-            if bounds[1] is not None:
-                check(source, f'{name} upper bound', [name], lambda a, b=bounds[1]: (b, a), 'greater')
+        low, high = PLAUSIBLE.get(name, (0, 1) if units in ('m3/m3', 'kg/kg') else
+                                  (-273.15, None) if units == 'degC' else (None, None))
+        if low is not None:
+            check(source, f'{name} lower bound', [name], lambda a, b=low: (a, b), 'greater')
+        if high is not None:
+            check(source, f'{name} upper bound', [name], lambda a, b=high: (b, a), 'greater')
     return checks, lookup
 
 
-def comparison(x, y, project, variable):
+def comparison(x, y, project, variable, season='all'):
     valid = np.isfinite(x) & np.isfinite(y)
     x, y = x[valid], y[valid]
     diff = y-x
-    return dict(project_id=project, variable=variable, paired_days=len(x),
+    ratio = (float(y.mean()/x.mean()) if len(x) and variable in RATIO_VARIABLES
+             and abs(x.mean()) > 1e-12 else None)
+    return dict(project_id=project, variable=variable, season=season, paired_days=len(x),
+                mean_aorc=float(x.mean()) if len(x) else None,
+                mean_land=float(y.mean()) if len(x) else None,
                 bias_land_minus_aorc=float(diff.mean()) if len(x) else None,
+                ratio_land_to_aorc=ratio,
                 mae=float(np.abs(diff).mean()) if len(x) else None,
                 rmse=float(np.sqrt(np.mean(diff**2))) if len(x) else None,
                 correlation=float(np.corrcoef(x, y)[0, 1])
                 if len(x) >= 3 and np.ptp(x) > 1e-12 and np.ptp(y) > 1e-12 else None)
+
+
+def shared_variables(lookup):
+    return sorted({name for source, name in lookup if source == SOURCES[0]}
+                  & {name for source, name in lookup if source == SOURCES[1]})
+
+
+def persistent_snow(manifest, days, projects, columns, values, lookup):
+    """Catchments whose daily SWE never falls below 50 mm in a full year (glacier or ice cells)."""
+    if len(days) < 365:
+        return []
+    found = []
+    for (source, name), index in sorted(lookup.items()):
+        if name != 'snow_water_equivalent_mm':
+            continue
+        for p, project in enumerate(projects):
+            series = values[:, p, index]
+            if np.isfinite(series).sum() >= 365 and np.nanmin(series) > 50:
+                found.append(dict(source=source, project_id=project,
+                                  minimum_swe_mm=float(np.nanmin(series)),
+                                  mean_swe_mm=float(np.nanmean(series))))
+    return found
 
 
 def write_csv(path, rows, columns):
@@ -219,42 +250,41 @@ def plot_delivery(folder, manifest, days, projects, columns, values, lookup):
     fig.savefig(folder/'coverage.png', dpi=160)
     plt.close(fig)
 
-    fig, axes = plt.subplots(2, 2, figsize=(10, 9), layout='constrained')
-    for ax, variable, title in zip(axes.flat,
-            ('precipitation_mm', 'tmean_c', 'tmin_c', 'tmax_c'),
-            ('Precipitation (mm/day)', 'Mean temperature (°C)',
-             'Minimum temperature (°C)', 'Maximum temperature (°C)')):
-        if any((s, variable) not in lookup for s in ('aorc_v1.1', 'era5_land_cds')):
-            ax.text(.5, .5, 'Both sources are required', ha='center', transform=ax.transAxes)
-            ax.set_title(title)
-            ax.set_xticks([])
-            ax.set_yticks([])
-            continue
-        x, y = [values[:, :, lookup[s, variable]].ravel() for s in ('aorc_v1.1', 'era5_land_cds')]
-        valid = np.isfinite(x) & np.isfinite(y)
-        x, y = x[valid], y[valid]
-        stats = comparison(x, y, 'ALL', variable)
-        if len(x):
-            # Metrics use all pairs; only scatter markers are thinned for long records.
-            take = np.linspace(0, len(x)-1, min(10000, len(x)), dtype=int)
-            ax.scatter(x[take], y[take], s=12, alpha=.35, color='#176b91', edgecolors='none')
-            lo, hi = min(x.min(), y.min()), max(x.max(), y.max())
-            pad = max((hi-lo)*.05, .05)
-            ax.plot([lo-pad, hi+pad], [lo-pad, hi+pad], '--', color='#6b7280', lw=1)
-            ax.set_xlim(lo-pad, hi+pad)
-            ax.set_ylim(lo-pad, hi+pad)
-            title += f"\nn={len(x):,}  bias={stats['bias_land_minus_aorc']:.2f}  RMSE={stats['rmse']:.2f}"
-        else:
-            ax.text(.5, .5, 'No paired valid days', ha='center', transform=ax.transAxes)
-            ax.set_xticks([])
-            ax.set_yticks([])
-        ax.set_title(title)
-        ax.set_xlabel('AORC')
-        ax.set_ylabel('ERA5-Land')
-        ax.grid(alpha=.15)
-    fig.suptitle('Source comparison · '+span)
-    fig.savefig(folder/'source_comparison.png', dpi=160)
-    plt.close(fig)
+    shared = shared_variables(lookup)
+    if shared:
+        ncols = 4
+        nrows = int(np.ceil(len(shared)/ncols))
+        fig, axes = plt.subplots(nrows, ncols, figsize=(4.2*ncols, 4*nrows), layout='constrained',
+                                 squeeze=False)
+        for ax in axes.flat[len(shared):]:
+            ax.axis('off')
+        for ax, variable in zip(axes.flat, shared):
+            x, y = [values[:, :, lookup[s, variable]].ravel() for s in SOURCES]
+            valid = np.isfinite(x) & np.isfinite(y)
+            x, y = x[valid], y[valid]
+            title = f"{variable} ({manifest['columns'][columns[lookup[SOURCES[0], variable]]]['units']})"
+            if len(x):
+                stats = comparison(x, y, 'ALL', variable)
+                # Metrics use all pairs; only scatter markers are thinned for long records.
+                take = np.linspace(0, len(x)-1, min(10000, len(x)), dtype=int)
+                ax.scatter(x[take], y[take], s=6, alpha=.25, color='#176b91', edgecolors='none')
+                lo, hi = min(x.min(), y.min()), max(x.max(), y.max())
+                pad = max((hi-lo)*.05, 1e-6)
+                ax.plot([lo-pad, hi+pad], [lo-pad, hi+pad], '--', color='#6b7280', lw=1)
+                ax.set_xlim(lo-pad, hi+pad)
+                ax.set_ylim(lo-pad, hi+pad)
+                r = stats['correlation']
+                title += f"\nbias={stats['bias_land_minus_aorc']:.3g}  r={r:.2f}" if r is not None else ''
+            else:
+                ax.text(.5, .5, 'No paired valid days', ha='center', transform=ax.transAxes)
+            ax.set_title(title, fontsize=9)
+            ax.set_xlabel('AORC', fontsize=8)
+            ax.set_ylabel('ERA5-Land', fontsize=8)
+            ax.tick_params(labelsize=7)
+            ax.grid(alpha=.15)
+        fig.suptitle('AORC versus ERA5-Land daily catchment means · '+span)
+        fig.savefig(folder/'source_comparison.png', dpi=130)
+        plt.close(fig)
 
     plot_days, plot_values = days, values
     scale = 'Daily values'
@@ -276,7 +306,8 @@ def plot_delivery(folder, manifest, days, projects, columns, values, lookup):
                'Surface radiation', 'W/m²'),
               (['snow_water_equivalent_mm'], 'Snow water equivalent', 'mm'),
               (['wind_speed_ms'], '10 m wind speed', 'm/s'),
-              (['freezing_level_above_terrain_m'], 'Freezing level above terrain', 'm')]
+              (['freezing_level_above_sea_level_m', 'freezing_level_above_ground_m'],
+               'ERA5 0 °C level', 'm')]
     with PdfPages(folder/'timeseries.pdf') as pdf:
         for p, project in enumerate(projects):
             fig, axes = plt.subplots(3, 2, figsize=(12, 10), layout='constrained')
@@ -293,9 +324,12 @@ def plot_delivery(folder, manifest, days, projects, columns, values, lookup):
                         if len(variables) > 1:
                             label += ' '+{'shortwave_down_mean_wm2': 'SW down',
                                           'longwave_down_mean_wm2': 'LW down',
-                                          'net_radiation_mean_wm2': 'net total'}[variable]
+                                          'net_radiation_mean_wm2': 'net total',
+                                          'freezing_level_above_sea_level_m': 'above sea level',
+                                          'freezing_level_above_ground_m': 'above ground'}[variable]
                         ax.plot(plot_days, y, label=label, color=colors[source], lw=1.5,
-                                linestyle='--' if variable == 'longwave_down_mean_wm2' else '-',
+                                linestyle='--' if variable in ('longwave_down_mean_wm2',
+                                                               'freezing_level_above_ground_m') else '-',
                                 marker='o' if len(plot_days) <= 14 else None, markersize=3)
                         plotted = True
                 if not plotted:
@@ -306,7 +340,7 @@ def plot_delivery(folder, manifest, days, projects, columns, values, lookup):
                 else:
                     ax.legend(frameon=False, fontsize=8)
                     if variables[0] in ('precipitation_mm', 'snow_water_equivalent_mm',
-                                        'wind_speed_ms', 'freezing_level_above_terrain_m'):
+                                        'wind_speed_ms', 'freezing_level_above_sea_level_m'):
                         ax.set_ylim(bottom=0)
                 ax.set_title(title)
                 ax.set_ylabel(units)
@@ -330,16 +364,20 @@ def plot_delivery(folder, manifest, days, projects, columns, values, lookup):
 
 def check_file(path, *, plots=True):
     path = Path(path).resolve()
-    manifest, days, projects, columns, values, counts, qc_check, freezing = load_delivery(path)
+    manifest, days, projects, columns, values, counts, qc_check = load_delivery(path)
     checks, lookup = consistency_checks(manifest, days, projects, columns, values)
     checks.insert(0, qc_check)
     comparisons = []
-    for variable in ('precipitation_mm', 'tmean_c', 'tmin_c', 'tmax_c'):
-        if all((s, variable) in lookup for s in ('aorc_v1.1', 'era5_land_cds')):
-            x, y = [values[:, :, lookup[s, variable]] for s in ('aorc_v1.1', 'era5_land_cds')]
-            comparisons += [comparison(x[:, p], y[:, p], project, variable)
-                            for p, project in enumerate(projects)]
-            comparisons.append(comparison(x.ravel(), y.ravel(), 'ALL', variable))
+    months = np.array([day.month for day in days])
+    for variable in shared_variables(lookup):
+        x, y = [values[:, :, lookup[s, variable]] for s in SOURCES]
+        comparisons += [comparison(x[:, p], y[:, p], project, variable)
+                        for p, project in enumerate(projects)]
+        comparisons.append(comparison(x.ravel(), y.ravel(), 'ALL', variable))
+        for season, selected in SEASONS.items():
+            mask = np.isin(months, selected)
+            if mask.any():
+                comparisons.append(comparison(x[mask].ravel(), y[mask].ravel(), 'ALL', variable, season))
     summaries = []
     for p, project in enumerate(projects):
         for j, column in enumerate(columns):
@@ -352,6 +390,13 @@ def check_file(path, *, plots=True):
                                   minimum=float(y.min()) if len(y) else None,
                                   mean=float(y.mean()) if len(y) else None,
                                   maximum=float(y.max()) if len(y) else None))
+    missing = {column: int(np.isnan(values[:, :, j]).sum()) for j, column in enumerate(columns)
+               if np.isnan(values[:, :, j]).any()}
+    missing_qc = {}
+    for (project, column, qc), number in counts.items():
+        if qc != 'valid':
+            missing_qc.setdefault(column, Counter())[qc] += number
+    snow = persistent_snow(manifest, days, projects, columns, values, lookup)
     folder = Path(str(path)+'.checks')
     folder.mkdir(parents=True, exist_ok=True)
     (folder/'summary.json').unlink(missing_ok=True)
@@ -368,22 +413,20 @@ def check_file(path, *, plots=True):
                   row_count=manifest['row_count'], project_count=len(projects), start=str(days[0]),
                   end=str(days[-1]), failed_checks=sum(r['failed'] > 0 for r in checks),
                   missing_values=int(np.isnan(values).sum()), total_values=values.size,
-                  checks=checks, comparisons=comparisons, plots=plots, freezing_level=freezing,
-                  scope='Delivery integrity and consistency; no independent observation validation.')
+                  missing_by_column={column: dict(missing=number, qc=dict(missing_qc.get(column, {})))
+                                     for column, number in missing.items()},
+                  persistent_snow=snow, checks=checks, comparisons=comparisons, plots=plots,
+                  scope='Delivery integrity, physical plausibility and AORC/ERA5-Land agreement; '
+                        'no independent observation validation.')
     (folder/'summary.json').write_text(json.dumps(report, indent=2, allow_nan=False)+'\n')
     print(f"Checks: {report['failed_checks']} failed; {report['missing_values']:,} missing values; {folder}",
           flush=True)
-    for column, detail in freezing.items():
-        label = 'above terrain' if 'above_terrain' in column else 'geopotential height'
-        reasons = ', '.join(f'{flag}={count}' for flag, count in sorted(detail['qc_counts'].items()))
-        print(f"ERA5 freezing level ({label}): {detail['valid_project_days']}/{detail['project_days']} "
-              f"valid project-days; QC project-day counts: {reasons}", flush=True)
-        print(f"  Full-area valid hours/day range: {detail['valid_hours_range']}; "
-              f"daily minimum valid area fraction range: {detail['min_valid_area_fraction_range']}", flush=True)
-        if not detail['valid_project_days']:
-            print('  No usable freezing-level values. Check the QC reasons; do not replace with zero. '
-                  'The daily rule requires a unique crossing at every contributing cell and all 24 hours.',
-                  flush=True)
+    for column, detail in report['missing_by_column'].items():
+        reasons = ', '.join(f'{qc}={n}' for qc, n in sorted(detail['qc'].items()))
+        print(f"  {column}: {detail['missing']} missing project-days ({reasons})", flush=True)
+    for item in snow:
+        print(f"  Persistent snow: {item['source']} {item['project_id']} SWE never below "
+              f"{item['minimum_swe_mm']:.0f} mm", flush=True)
     return report
 
 
