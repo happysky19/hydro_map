@@ -66,6 +66,12 @@ class Store:
         self.lock = threading.Lock()
         self.bytes = 0
         self.refresh_years = set()
+        # Offline runs still know which objects the source reported as absent.
+        self.absent = set()
+        log = directory / 'requests.jsonl'
+        if offline and log.exists():
+            with log.open() as stream:
+                self.absent = {record['url'] for record in map(json.loads, stream) if record.get('status') == 404}
 
     def path(self, url):
         return self.directory / hashlib.sha256(url.encode()).hexdigest()
@@ -83,6 +89,8 @@ class Store:
             record = json.loads(record_path.read_text())
             check(record['url'] == url and digest(path) == record['sha256'], 'Cache hash mismatch')
             return path.read_bytes(), path
+        if self.offline and url in self.absent:
+            raise FileNotFoundError(url)
         check(not self.offline, f'Not available in offline cache: {url}')
         for attempt in range(3):
             try:
@@ -423,45 +431,12 @@ def run(args):
             check(all(np.array_equal(a, b) for a, b in zip(reference, coords)), 'Grid changed between years')
         metas[year], times_by_year[year] = m, times
 
-    years = range(args.start.year, args.end.year + 1)
-    for year in (reversed(years) if getattr(args, 'newest_first', False) else years):
+    def finalize(year, start, end, extracted):
+        """Write one year's hourly series, daily statistics and manifest (manifest last)."""
         hourly = args.output_dir / f'hourly_{year}.csv.gz'
         daily = args.output_dir / f'daily_{year}.csv.gz'
         manifest = args.output_dir / f'year_{year}.json'
-        if manifest.exists():
-            record = json.loads(manifest.read_text())
-            check(record['configuration_sha256'] == config_hash and hourly.exists() and daily.exists()
-                  and record['hourly_sha256'] == digest(hourly) and record['daily_sha256'] == digest(daily),
-                  f'Completed output verification failed: {year}')
-            incomplete = any(row['valid_hours'] != row['hours'] for row in record['hourly_quality'])
-            if not (incomplete and args.refresh_incomplete):
-                state = 'contains gaps' if incomplete else 'all requested hours valid'
-                print(f'{year}: verified existing output ({state}); skipped', flush=True)
-                continue
-            print(f'{year}: refreshing incomplete output from the source', flush=True)
-            # A refresh interruption must not leave old hashes claiming new files.
-            manifest.unlink()
-        if args.refresh_incomplete:
-            store.refresh_years.update((year, year + 1))
-            for changed_year in (year, year + 1):
-                metas.pop(changed_year, None)
-                times_by_year.pop(changed_year, None)
-        start, end = max(args.start, dt.date(year, 1, 1)), min(args.end, dt.date(year, 12, 31))
-        load_year(year)
-        if end.month == 12 and end.day == 31 and 'APCP_surface' in variables:
-            load_year(year + 1, optional=year == args.end.year)
         series, qc_summary = {}, []
-        if derive:
-            extracted = extract_native_series(store, metas, times_by_year, blocks, variables,
-                                               start, end, zstd, args.workers, args.keep_chunks)
-        else:
-            extracted = {}
-            for variable in variables:
-                name, units, kind = FIELDS[variable]
-                target = requested_hours(start, end, kind == 'hour_ending_amount')
-                sums, coverage = extract_series(store, metas, times_by_year, blocks, variable,
-                                                target, zstd, args.workers, args.keep_chunks)
-                extracted[name] = (target, sums, coverage, units, kind)
         for name, (target, sums, coverage, units, kind) in extracted.items():
             for project in features:
                 full = np.abs(coverage[project] - 1) <= 1e-9
@@ -489,6 +464,56 @@ def run(args):
                    else 'computed_all_hours_valid',
             hourly_quality=qc_summary, network_bytes_this_process=store.bytes))
         print(f'{year}: wrote {hourly.name}, {daily.name}; {daily_rows} daily rows', flush=True)
+
+    # A finished year is written in the background while the next year downloads;
+    # at most one year waits to be written, which bounds memory.
+    background, pending = ThreadPoolExecutor(max_workers=1), None
+    try:
+        years = range(args.start.year, args.end.year + 1)
+        for year in (reversed(years) if getattr(args, 'newest_first', False) else years):
+            hourly = args.output_dir / f'hourly_{year}.csv.gz'
+            daily = args.output_dir / f'daily_{year}.csv.gz'
+            manifest = args.output_dir / f'year_{year}.json'
+            if manifest.exists():
+                record = json.loads(manifest.read_text())
+                check(record['configuration_sha256'] == config_hash and hourly.exists() and daily.exists()
+                      and record['hourly_sha256'] == digest(hourly) and record['daily_sha256'] == digest(daily),
+                      f'Completed output verification failed: {year}')
+                incomplete = any(row['valid_hours'] != row['hours'] for row in record['hourly_quality'])
+                if not (incomplete and args.refresh_incomplete):
+                    state = 'contains gaps' if incomplete else 'all requested hours valid'
+                    print(f'{year}: verified existing output ({state}); skipped', flush=True)
+                    continue
+                print(f'{year}: refreshing incomplete output from the source', flush=True)
+                # A refresh interruption must not leave old hashes claiming new files.
+                manifest.unlink()
+            if args.refresh_incomplete:
+                store.refresh_years.update((year, year + 1))
+                for changed_year in (year, year + 1):
+                    metas.pop(changed_year, None)
+                    times_by_year.pop(changed_year, None)
+            start, end = max(args.start, dt.date(year, 1, 1)), min(args.end, dt.date(year, 12, 31))
+            load_year(year)
+            if end.month == 12 and end.day == 31 and 'APCP_surface' in variables:
+                load_year(year + 1, optional=year == args.end.year)
+            if derive:
+                extracted = extract_native_series(store, metas, times_by_year, blocks, variables,
+                                                   start, end, zstd, args.workers, args.keep_chunks)
+            else:
+                extracted = {}
+                for variable in variables:
+                    name, units, kind = FIELDS[variable]
+                    target = requested_hours(start, end, kind == 'hour_ending_amount')
+                    sums, coverage = extract_series(store, metas, times_by_year, blocks, variable,
+                                                    target, zstd, args.workers, args.keep_chunks)
+                    extracted[name] = (target, sums, coverage, units, kind)
+            if pending is not None:
+                pending.result()
+            pending = background.submit(finalize, year, start, end, extracted)
+        if pending is not None:
+            pending.result()
+    finally:
+        background.shutdown(wait=True)
 
 
 def main():

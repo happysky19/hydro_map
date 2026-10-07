@@ -27,7 +27,7 @@ DERIVED_METHODS = {
         'relative_humidity_pct': '100 * e / es(T); supersaturation retained',
         'vapor_pressure_deficit_kpa': 'max(es(T) - e, 0)',
         'source': 'https://www.weather.gov/media/owp/operations/aorc_v1_1_methods.pdf'},
-    'wet_bulb': {'method': 'Ferrel ventilated-psychrometer root, 32 bisections',
+    'wet_bulb': {'method': 'Ferrel ventilated-psychrometer root, safeguarded Newton iteration',
         'formula': 'es(Tw) - 0.00066*(1+0.00115*Tw)*p_kpa*(T-Tw) = min(e,es(T))',
         'convention': 'Liquid-water saturation; supersaturated inputs give Tw=T.',
         'source': 'https://repository.library.noaa.gov/view/noaa/1388/noaa_1388_DS1.pdf'},
@@ -72,17 +72,29 @@ def humidity(temperature_c, specific_humidity, pressure_pa):
 
 
 def wet_bulb_temperature(temperature_c, specific_humidity, pressure_pa):
-    """Solve Ferrel's liquid-water psychrometer equation; missing inputs stay NaN."""
+    """Solve Ferrel's liquid-water psychrometer equation; missing inputs stay NaN.
+
+    The residual increases monotonically with wet-bulb temperature, so Newton steps
+    from a dewpoint-based first guess converge in a few iterations; a step leaving
+    the current bracket falls back to bisection.
+    """
     t, vapor, pressure = _vapor(temperature_c, specific_humidity, pressure_pa)
     saturation = saturation_vapor_pressure_kpa(t)
     vapor = np.minimum(vapor, saturation)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        ratio = np.log(np.maximum(vapor, 1e-12) / .6108)
+        dewpoint = 237.3 * ratio / (17.27 - ratio)
     lower, upper = np.full(t.shape, -120.), t.copy()
-    for _ in range(32):
-        mid = (lower + upper) / 2
-        residual = (saturation_vapor_pressure_kpa(mid)
-                    - .00066 * (1 + .00115 * mid) * pressure * (t - mid) - vapor)
-        lower, upper = np.where(residual < 0, mid, lower), np.where(residual < 0, upper, mid)
-    return np.where(vapor == saturation, t, (lower + upper) / 2)
+    wet = np.clip(t - (t - dewpoint) / 3, lower, upper)
+    for _ in range(6):
+        es = saturation_vapor_pressure_kpa(wet)
+        gamma = .00066 * (1 + .00115 * wet) * pressure
+        residual = es - gamma * (t - wet) - vapor
+        slope = es * 17.27 * 237.3 / (wet + 237.3) ** 2 + gamma - .00066 * .00115 * pressure * (t - wet)
+        lower, upper = np.where(residual < 0, wet, lower), np.where(residual < 0, upper, wet)
+        step = wet - residual / slope
+        wet = np.where((step >= lower) & (step <= upper), step, (lower + upper) / 2)
+    return np.where(vapor == saturation, t, wet)
 
 
 def derive_native(fields):
