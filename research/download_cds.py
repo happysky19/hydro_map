@@ -405,18 +405,30 @@ def fetch_response(spec, cache_dir, manifest, client, cache_only=False, lock=Non
     return path
 
 
-def prefetch(specs, cache_dir, manifest, client, workers=2, attempts=30, retry_seconds=120):
-    """Queue uncached requests concurrently; processing later reads only verified cache files."""
+def prefetch(specs, cache_dir, manifest, client, workers=2, attempts=30, retry_seconds=120,
+             queue_hours=12):
+    """Queue uncached requests concurrently; processing later reads only verified cache files.
+
+    A queue-limit rejection is the provider's flow control: it is retried for up to
+    queue_hours without using up the attempts allowed for other transient errors. A
+    request that still fails does not stop the others; the first failure is raised
+    once every other request has finished, so a rerun only needs the failed ones.
+    """
     lock = threading.Lock()
     Path(cache_dir).mkdir(parents=True, exist_ok=True)
 
     def fetch(spec):
-        for attempt in range(attempts):
+        failures, waited = 0, 0.
+        while True:
             try:
                 path = fetch_response(spec, cache_dir, manifest, client, lock=lock)
                 break
             except Exception as error:
-                if attempt == attempts-1 or not transient(error):
+                queued = 'temporarily limited' in str(error)
+                failures += not queued
+                waited += queued*retry_seconds
+                if (not transient(error) or failures >= attempts
+                        or (queued and waited > queue_hours*3600)):
                     raise
                 print(f"Retrying {spec['dataset']} after: {error}", flush=True)
                 time.sleep(retry_seconds)
@@ -426,16 +438,19 @@ def prefetch(specs, cache_dir, manifest, client, workers=2, attempts=30, retry_s
               f"days {request['day'][0]}-{request['day'][-1]}", flush=True)
         return path
 
-    pool = ThreadPoolExecutor(max_workers=workers)
-    try:
+    errors = []
+    with ThreadPoolExecutor(max_workers=workers) as pool:
         for future in as_completed([pool.submit(fetch, spec) for spec in specs]):
-            future.result()
-    finally:
-        pool.shutdown(wait=True, cancel_futures=True)
+            if future.exception() is not None:
+                errors.append(future.exception())
+                print(f'CDS request failed: {future.exception()}', flush=True)
+    if errors:
+        print(f'{len(errors)} of {len(specs)} CDS requests failed; rerun to retry them', flush=True)
+        raise errors[0]
 
 
 def run_pipeline(geojson, product, output_dir, cache_dir, start, end, *, projects=None,
-                 chunk_days=14, dry_run=False, cache_only=False, client=None, workers=2,
+                 chunk_days=14, dry_run=False, cache_only=False, client=None, workers=3,
                  newest_first=False):
     """Return run metadata. Existing completed months require verified file hashes."""
     geojson, output_dir, cache_dir = map(Path, [geojson, output_dir, cache_dir])
@@ -594,7 +609,7 @@ def main():
     parser.add_argument('--start', required=True); parser.add_argument('--end', required=True)
     parser.add_argument('--projects', nargs='+')
     parser.add_argument('--chunk-days', type=int, default=14)
-    parser.add_argument('--workers', type=int, default=2, help='Concurrent CDS requests (1–8)')
+    parser.add_argument('--workers', type=int, default=3, help='Concurrent CDS requests (1–8)')
     parser.add_argument('--newest-first', action='store_true', help='Request and process the latest months first')
     parser.add_argument('--dry-run', action='store_true'); parser.add_argument('--cache-only', action='store_true')
     args = parser.parse_args()

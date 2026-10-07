@@ -31,7 +31,7 @@ class DeliveryCheckError(RuntimeError):
 
 def run(geojson, start, end, output=None, *, work_dir=None, cache_dir=None,
         max_download_gb=2000, workers=16, chunk_days=14, cds_client=None, newest_first=True,
-        cds_workers=2, keep_chunks=False):
+        cds_workers=3, keep_chunks=False):
     """Run the three sources concurrently, then export, check and deliver.
 
     A failed source does not stop the others; repeating the command resumes every
@@ -130,8 +130,8 @@ def main():
     parser.add_argument('--max-download-gb', type=float, default=2000,
                         help='AORC network-read ceiling per invocation (default: 2000 GB)')
     parser.add_argument('--workers', type=int, default=16, help='Concurrent AORC reads (1–32; default: 16)')
-    parser.add_argument('--cds-workers', type=int, default=2,
-                        help='Requests kept in the CDS queue per product (1–8; default: 2)')
+    parser.add_argument('--cds-workers', type=int, default=3,
+                        help='Requests kept in the CDS queue per product (1–8; default: 3)')
     parser.add_argument('--keep-chunks', action='store_true',
                         help='Keep raw AORC chunks in the cache to reprocess later without downloading')
     parser.add_argument('--oldest-first', dest='newest_first', action='store_false',

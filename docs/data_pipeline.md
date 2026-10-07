@@ -96,10 +96,11 @@ The CDS queue sets the duration of a 30-year run. At October 2026 rates an AORC
 year takes roughly 30-40 minutes (under a day for 30 years), ERA5 needs 360
 monthly requests (about a day), and ERA5-Land needs about 1,100 requests: its
 17 hourly fields cost more than twice the per-request limit for a month, so
-each month takes three requests. With each request waiting 5-15 minutes in the
-queue and two in flight, ERA5-Land takes several days. `--cds-workers 3` keeps
-more requests queued when the CDS accepts them; rejected submissions are
-retried. Start the run detached from the terminal and keep the log; the same
+each month takes three requests. In October 2026 a request waited 5-35 minutes
+in the queue, so with three in flight ERA5-Land takes several days. The CDS
+rejects further submissions once a user has a few requests queued for a
+dataset (five was too many), so raising `--cds-workers` above 3 mostly adds
+rejected submissions. Start the run detached from the terminal and keep the log; the same
 command resumes after any interruption:
 
 ```bash
@@ -149,10 +150,13 @@ and `--chunk-days` (ERA5-Land state batches, default 14).
 The CDS rejects an ERA5-Land request whose size cost (variables × hourly
 steps × 2) exceeds 12,000; with the 17 hourly ERA5-Land fields this allows at
 most 14 days, and the downloader refuses a larger value before contacting the
-CDS. Each CDS product keeps two requests queued at once. Queue limits
-("Number queued requests for this dataset is temporarily limited"), server
-errors and network failures are retried for up to an hour; rejected requests
-and missing licences stop the run immediately.
+CDS. Each CDS product keeps three requests queued at once (`--cds-workers`).
+A queue-limit rejection ("Number queued requests for this dataset is
+temporarily limited") is retried every two minutes for up to 12 hours; server
+errors and network failures up to 30 times. Invalid or oversized requests and
+missing licences are not retried. A request that fails does not stop the
+others: the run reports it after the rest are cached, and rerunning the same
+command fetches only what is missing.
 For Parquet, install the optional dependency below and use a `.parquet` output.
 
 Routing interpretation, including Kootenay Canal's tailrace/diversion note,
@@ -298,7 +302,7 @@ are as large as the limits allow: hourly ERA5-Land states in batches of at most
 14 days within a month (the size limit above), ERA5-Land 24-hour endpoints in
 one request per year, and ERA5 single-level fields in one request per month.
 For 2024-2025 this is 75 ERA5-Land and 24 ERA5 requests. All uncached requests
-are queued first, two at a time per product by default (`--workers`); daily
+are queued first, three at a time per product by default (`--workers`); daily
 processing then decodes each hash-verified cached response once per batch.
 
 Repeat an identical command to resume verified completed periods. AORC writes

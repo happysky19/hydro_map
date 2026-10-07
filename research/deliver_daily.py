@@ -126,6 +126,20 @@ def readme_text(manifest, selected, files, missing, checks, gaps=None):
         '`degC`, `Pa`, `kPa`, `kg_kg`, `m3_m3`, `kg_m3`, `m_s`, `m`, `pct` (%) and `fraction` (0-1).', '',
         '## Sources', '',
         *[f'- `{source}`: {label}' for source, label in SOURCE_LABELS.items()], '',
+        'AORC is the forcing that the National Weather Service uses to calibrate the National Water Model '
+        'and its River Forecast Center models. It is an observation-based best estimate, not measured truth. '
+        'In the United States its precipitation follows radar-gauge analyses (NEXRAD Stage IV from 2002); '
+        'in Canada it follows NLDAS-2, and NOAA reports lower accuracy there because gauges are sparse. '
+        'Precipitation and temperature are adjusted to gauge-based climatologies (PRISM, including a '
+        'regional PRISM for the Canadian Columbia basin, and Livneh). Temperature comes from NLDAS-2 '
+        'until 2015 and from the URMA analysis from 2016. Humidity, pressure, radiation and wind are '
+        'model fields from NLDAS-2 (URMA from 2016 for humidity, pressure and longwave radiation). The '
+        'largest uncertainties are high-elevation and Canadian precipitation, and the source changes in '
+        '2002 and 2016 can shift long-term averages ([AORC v1.1 methods]'
+        '(https://www.weather.gov/media/owp/operations/aorc_v1_1_methods.pdf)).', '',
+        'ERA5-Land and ERA5 are ECMWF reanalyses: physically consistent model estimates constrained by '
+        'assimilated observations, available worldwide and without changes of source, but coarser than '
+        'AORC and with their own precipitation biases over mountains.', '',
         '## Requested variables', '',
         f"{len({item['quantity'].split(' (')[0] for _, _, item in selected})} requested variables in "
         f"{len(selected)} columns, in the order of the request; soil temperature is given for the four "
