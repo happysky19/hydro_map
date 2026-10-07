@@ -187,6 +187,8 @@ def scan(client, first_year=1996):
         masks = [np.isnan(client._decode(client.arrays[short], path.read_bytes() or None)) for path in paths]
         client.release()
         valid_time = client.coordinates['valid_time']
+        # The last chunk runs past the end of the time axis; those hours are not data.
+        masks = [mask[:len(valid_time) - t * chunk_t] for mask, (t, _, _) in zip(masks, indexes)]
         starts = [EPOCH + timedelta(hours=int(valid_time[t * chunk_t])) for t, _, _ in indexes]
         return masks, starts
 
@@ -202,7 +204,7 @@ def scan(client, first_year=1996):
         for mask, start in zip(masks, starts):
             gap = mask & ~water
             if gap.any():
-                hours = sorted({(start.hour + i) % 24 for i in np.flatnonzero(gap.any(axis=(1, 2)))})
+                hours = sorted({(start.hour + int(i)) % 24 for i in np.flatnonzero(gap.any(axis=(1, 2)))})
                 found.append(f'{start:%Y-%m-%d} {gap.mean():.0%}' + ('' if len(hours) == 24 else f' at {hours} UTC'))
         note = ' (read from the CDS in runs)' if short in FROM_CDS else ''
         print(f'{short:6}', (f'gaps in {len(found)} of {len(masks)} chunks: ' + '; '.join(found[:5])
@@ -275,7 +277,10 @@ def inspect(client, short):
         hours_of_day = np.bincount(valid_time[gap] % 24, minlength=24)
         print('by UTC hour:', ' '.join(f'{h:02d}:{n}' for h, n in enumerate(hours_of_day) if n))
         years = np.bincount(stamps[gap].astype('datetime64[Y]').astype(int) + 1970)
-        print('by year:', ' '.join(f'{year}:{n}' for year, n in enumerate(years) if n)[:400])
+        print('by year:', ' '.join(f'{year}:{n}' for year, n in enumerate(years) if n))
+        recent = gap & (stamps >= np.datetime64('1996-01-01T00'))
+        print(f'from 1996: {recent.sum()} hours with blank land cells, {(recent & (valid_time % 24 == 0)).sum()} '
+              f'of them at 00 UTC (when runs read daily totals), largest share {shares[recent].max(initial=0):.1%}')
         edges = np.flatnonzero(np.diff(np.r_[0, gap.astype(int), 0]))
         runs = sorted(zip(edges[::2], edges[1::2]), key=lambda run: run[0] - run[1])
         print(f'{len(runs)} blank stretches; longest:')
