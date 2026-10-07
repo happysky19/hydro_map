@@ -7,6 +7,7 @@ and processed months. Completed years and months can already be plotted.
 """
 
 import argparse
+from collections import Counter
 from datetime import date
 import json
 from pathlib import Path
@@ -40,19 +41,23 @@ def cds_progress(folder, cache):
     product, area = run['product'], run['area_north_west_south_east']
     start, end = date.fromisoformat(run['start']), date.fromisoformat(run['end'])
     batch_days = run['chunk_days'] if product == 'era5-land' else 31
-    from_cds = run.get('methods', {}).get('fields_from_cds', ())
-    endpoints = accumulated_requests(start, end, area, from_cds) if product == 'era5-land' else []
+    endpoints = accumulated_requests(start, end, area) if product == 'era5-land' else []
     hashes = {json_hash({key: spec[key] for key in ['dataset', 'request']})
               for first, last in date_chunks(start, end, batch_days)
               for spec in batch_requests(product, first, last, area, endpoints)}
     manifest_path = cache / 'requests.manifest.json'
     manifest = json.loads(manifest_path.read_text()) if manifest_path.exists() else {}
-    downloaded = sum(1 for key in hashes if key in manifest and (cache / f'{key}.nc').exists())
+    downloaded = [key for key in hashes if key in manifest and (cache / f'{key}.nc').exists()]
+    # Responses a copy could not supply are replaced from the CDS; the count shows how often.
+    short = lambda provider: ('Earth Data Hub' if 'Earth Data Hub' in provider else 'ARCO-ERA5' if 'ARCO' in provider
+                              else 'CDS')
+    providers = Counter(short(manifest[key].get('provider', 'CDS')) for key in downloaded)
+    sources = ', '.join(f'{name} {count}' for name, count in sorted(providers.items()))
     months = len(list(date_chunks(start, end, 31)))
     processed = sorted(path.stem.split('_')[1] for path in folder.glob('month_*.json'))
     span = f' ({processed[0]} to {processed[-1]})' if processed else ''
-    return (f'{downloaded}/{len(hashes)} requests downloaded, {len(processed)}/{months} months processed{span}; '
-            f'last change {latest_change([manifest_path, *folder.glob("*")])}')
+    return (f'{len(downloaded)}/{len(hashes)} requests downloaded, {len(processed)}/{months} months processed{span}; '
+            f'from {sources or "none yet"}; last change {latest_change([manifest_path, *folder.glob("*")])}')
 
 
 def main():

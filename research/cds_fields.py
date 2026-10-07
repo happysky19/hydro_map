@@ -1,9 +1,15 @@
 """CDS field definitions and grid-cell calculations before spatial aggregation."""
 
+import threading
+
 import numpy as np
 
 from meteorology import humidity, saturation_vapor_pressure_kpa, wet_bulb_temperature
 
+
+# netCDF4 and the HDF5 library beneath it are not thread-safe: every NetCDF read or write
+# in the process holds this lock, while downloads and decoding stay parallel.
+NETCDF_LOCK = threading.RLock()
 
 # CDS names, NetCDF units and temporal processing are explicit to prevent aliases
 # such as snow depth water equivalent from being interpreted as physical depth.

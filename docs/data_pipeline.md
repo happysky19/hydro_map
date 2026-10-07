@@ -79,11 +79,11 @@ full period, use a new output filename:
 python research/download_daily.py --geojson outputs/projects43_independent/dam_catchments.geojson --start 1996-01-01 --end 2025-12-31 --output outputs/catchment_daily_1996_2025.csv
 ```
 
-The script requires `zstd` and checks the local CDS configuration before
-starting AORC. This configuration check does not prove that the provider will
-accept the account, terms or requests. The three sources run concurrently: AORC
-is limited by S3 reads and decompression, the CDS products by the provider's
-queue. AORC processes the latest year first and the CDS products queue and
+The script requires `zstd` and checks the local CDS configuration and the
+Earth Data Hub token before starting AORC. This check does not prove that the
+providers will accept the account, terms or requests. The three sources run
+concurrently: AORC is limited by S3 reads and decompression, ERA5 and ERA5-Land
+by their providers. AORC processes the latest year first and the CDS products queue and
 process the latest months first, so recent data are usable early; pass
 `--oldest-first` to reverse this. If one source fails, the others continue and
 the final delivery is not replaced. Repeating the same command reuses
@@ -92,40 +92,44 @@ interrupted AORC year is recomputed.
 
 ### Long runs on a compute host
 
-The CDS queue sets the duration of a 30-year run. At October 2026 rates an AORC
-year takes about 20 minutes of processing (roughly 10 hours for 30 years,
-overlapping with its S3 download). ERA5 is read by default from Google's public
-ARCO-ERA5 copy, which has no queue: about 35 seconds and 3.7 GB per month,
-roughly 4 hours and 1.3 TB for 30 years (`--era5-source cds` uses the CDS
-instead; both give the same values to GRIB packing precision). ERA5-Land needs
-about 1,100 CDS requests: its
-17 hourly fields cost more than twice the per-request limit for a month, so
-each month takes three requests. In October 2026 a request waited 5-35 minutes
-in the queue, so with three in flight ERA5-Land takes several days. The CDS
-rejects further submissions once a user has a few requests queued for a
-dataset (five was too many), so raising `--cds-workers` above 3 mostly adds
-rejected submissions. `--land-source edh` reads ERA5-Land instead from the
-[DestinE Earth Data Hub](https://earthdatahub.destine.eu/) copy, which has no
-queue. For the 43 catchments a year is about 1,500 chunk reads of 3.3 MB,
-within the free allowance of 500,000 a month; in October 2026 one day of all
-fields over the catchments took 50 seconds, against 2-23 minutes in the CDS
-queue. Surface net thermal radiation is blank in the copy, so it is still
-requested from the CDS: one small request per year, all years queued at the
-start and three at a time. Before a long run, check the store with
-`python research/check_edh.py --scan --compare-cds --geojson <catchment file>`. Every source
-works through the period year by year, latest first, and writes each finished
-year (AORC) or month (CDS) as it goes.
+By default ERA5 comes from Google's public
+[ARCO-ERA5](https://cloud.google.com/storage/docs/public-datasets/era5) copy and
+ERA5-Land from the [DestinE Earth Data Hub](https://earthdatahub.destine.eu/)
+copy, neither of which has a queue. Every response from a copy is checked: if
+any field is blank in a cell that a catchment uses, the response is replaced by
+the CDS original, so a gap in a copy cannot reach the daily values. In October
+2026 the only such gap in the Earth Data Hub for 1996-2025 was surface net
+thermal radiation, blank everywhere from 2024-11-01 to 2024-11-27, so a 30-year
+run makes one CDS request (the 2024 endpoints). `--era5-source cds`
+and `--land-source cds` use the CDS queue for everything instead (in October
+2026 a request waited 2-35 minutes, so ERA5-Land alone took several days).
+
+Measured on a 16-core workstation in October 2026, a 30-year run takes about
+10-12 hours, set by AORC; the three sources run side by side:
+
+| Source | Per unit | 30 years |
+| --- | --- | --- |
+| AORC (S3) | about 20 minutes per year | about 10 hours |
+| ERA5 (ARCO-ERA5) | about 35 seconds and 3.7 GB per month | about 4 hours, 1.3 TB read |
+| ERA5-Land (Earth Data Hub) | a few minutes of reading and about 40 seconds of processing per month | about 5 hours, about 150 GB read |
+| Export, checks and delivery | | a few minutes |
+
+The Earth Data Hub allows 500,000 chunk reads a month; a 30-year run needs about
+50,000. Every source works through the period year by year, latest first, and
+writes each finished year (AORC) or month (ERA5, ERA5-Land) as it goes. Before
+a long run, check the Earth Data Hub store with
+`python research/check_edh.py --scan --compare-cds --geojson <catchment file>`.
 
 Before starting, on the host that will run the download:
 
 1. Clone or update the repository, create a Python 3.10+ environment and run
    `python -m pip install -e . -r research/requirements.txt`; check
    `zstd --version`.
-2. Put `~/.cdsapirc` there (section 2) and accept the ERA5-Land licence once
-   on the CDS website (the ERA5 single-level licence too if `--era5-source cds`).
-   For `--land-source edh`, also add the DestinE personal access token to
-   `~/.netrc` as `machine data.earthdatahub.destine.eu password <token>` and
-   run `chmod 600 ~/.netrc`.
+2. Put `~/.cdsapirc` there (section 2) and accept the ERA5-Land and ERA5
+   single-level licences once on the CDS website. Add the DestinE personal
+   access token to `~/.netrc` as
+   `machine data.earthdatahub.destine.eu password <token>` and run
+   `chmod 600 ~/.netrc` (not needed with `--land-source cds`).
 3. Copy the catchment file to `outputs/projects43_independent/dam_catchments.geojson`
    (the `outputs/` folder is not in Git), or rebuild it with `hydro-map build`
    (section 3). Every run of a project must use the same file.
@@ -154,11 +158,13 @@ tail -n 20 download_1996_2025.log
 ```
 
 `progress_daily.py` prints the AORC years processed, and for ERA5-Land and ERA5
-the CDS requests downloaded and months processed, with the time of the last
-change. In the log, `synchronized native fields chunk N/61` is AORC progress
-within a year, `Cached reanalysis-...` is a finished CDS request, `saved ...
-daily values` a processed month, and `Retrying ... temporarily limited` is the
-CDS queue limit, which is normal. If no file has changed for several hours,
+the requests downloaded, which provider answered them, and the months
+processed, with the time of the last change. In the log, `synchronized native
+fields chunk N/61` is AORC progress within a year, `Cached reanalysis-...` is a
+finished request, `saved ... daily values` a processed month, and `CDS queue
+full ...; retrying in 2 min` the CDS queue limit, which is normal. `... blank in
+catchment cells from ...; replacing the response with the CDS original` means
+a copy had a gap and the CDS fills it. If no file has changed for several hours,
 look at the end of the log. To stop, press `Ctrl-c` in the tmux window (or
 `kill` the process); running the identical command again resumes from the
 completed years, months and downloaded requests. Do not run two commands on the
@@ -167,10 +173,9 @@ same working directory at once.
 Put `--work-dir` on large local or scratch storage. Raw AORC chunks are
 discarded after use unless `--keep-chunks` is given (about 30 GB per year,
 useful to reprocess without downloading); CDS responses are always kept (about
-5 GB per year of ERA5-Land). With `--land-source edh`, the raw Earth Data Hub
-chunks of the current year are kept in `cache/cds/edh_chunks` and deleted once
-its requests are answered. While the sources download, completed years and
-months can already be plotted (see [Plots](#plots)). When all three finish, the
+5 GB per year of ERA5-Land). The raw Earth Data Hub chunks of the current year
+are kept in `cache/cds/edh_chunks` and deleted once its requests are answered.
+While the sources download, completed years and months can already be plotted (see [Plots](#plots)). When all three finish, the
 command exports, checks and writes the delivery files listed above.
 
 Post-export checks run on the saved delivery. If they fail, the files remain
@@ -246,7 +251,7 @@ NetCDF4. To enable optional Parquet output:
 python -m pip install -r research/requirements-parquet.txt
 ```
 
-## 2. Configure the CDS token
+## 2. Configure the CDS and Earth Data Hub tokens
 
 ERA5 and ERA5-Land use a **Climate Data Store Personal Access Token**. Register
 or sign in at the [CDS API setup page](https://cds.climate.copernicus.eu/how-to-api)
@@ -280,6 +285,23 @@ accept the terms for each required dataset on its CDS download page:
 
 - [ERA5-Land hourly](https://cds.climate.copernicus.eu/datasets/reanalysis-era5-land?tab=download)
 - [ERA5 single levels](https://cds.climate.copernicus.eu/datasets/reanalysis-era5-single-levels?tab=download)
+
+ERA5-Land is read by default from the
+[Earth Data Hub](https://earthdatahub.destine.eu/), which needs a free DestinE
+account. Copy its personal access token into `~/.netrc` on the host that runs
+the downloads, as one line, and restrict the file:
+
+```text
+machine data.earthdatahub.destine.eu password <YOUR_EDH_TOKEN>
+```
+
+```bash
+chmod 600 ~/.netrc
+python research/check_edh.py
+```
+
+`check_edh.py` confirms access, units and the accumulation convention without
+printing the token; its last line should be `RESULT: all checks passed`.
 
 The request preview described below does not need a token. It checks local
 configuration and constructs requests; it does not verify account permissions,
@@ -354,15 +376,15 @@ python research/download_cds.py --product era5 \
   --start 1996-01-01 --end 2025-12-31
 ```
 
-The two CDS products may run at the same time with a shared cache: their
-request manifest is updated under a file lock. Most of the time is spent in the
-CDS queue (typically 5-15 minutes per request in October 2026), so requests
-are as large as the limits allow: hourly ERA5-Land states in batches of at most
-14 days within a month (the size limit above), ERA5-Land 24-hour endpoints in
-one request per year, and ERA5 single-level fields in one request per month.
-For 2024-2025 this is 75 ERA5-Land and 24 ERA5 requests. All uncached requests
-are queued first, three at a time per product by default (`--workers`); daily
-processing then decodes each hash-verified cached response once per batch.
+The two products may run at the same time with a shared cache: their request
+manifest is updated under a file lock. Requests keep the CDS shape and size
+limits whichever provider answers them, so responses from the CDS and from the
+copies are interchangeable in the cache: hourly ERA5-Land states in batches of
+at most 14 days within a month (the size limit above), ERA5-Land 24-hour
+endpoints in one request per year, and ERA5 single-level fields in one request
+per month. A year's uncached requests are fetched first, three
+at a time per product by default (`--workers`); daily processing then decodes
+each hash-verified cached response once per batch.
 
 Repeat an identical command to resume verified completed periods. AORC writes
 annual files; CDS writes monthly files. Configuration and output hashes are
@@ -516,7 +538,7 @@ evaporation and not a calibrated crop-specific water demand.
 The complete archive comes from the
 [CDS hourly product](https://cds.climate.copernicus.eu/datasets/reanalysis-era5-land).
 It provides model estimates on a 0.1° distribution grid (native resolution
-about 9 km). With `--land-source edh` the same hourly fields are read from the
+about 9 km). By default the same hourly fields are read from the
 Earth Data Hub ERA5-Land store, a Zarr copy in chunks of 60 days by
 5° × 10° with values rounded to fewer significant bits.
 `research/edh_era5_land.py` answers the CDS requests from it and writes the
@@ -525,8 +547,13 @@ units and accumulation type are checked like a CDS response. For 2024-11-19
 over the 43 catchments' area, both copies had the same grid and blank cells and
 differed by at most 4.5e-4 of each field's largest value (0.12 K in dewpoint
 and soil temperature, 30 Pa in pressure), and accumulations are totals since
-00 UTC in both. Surface net thermal radiation (`str`) was blank in the store
-over the whole area on 2024-11-20 00 UTC, so it is always taken from the CDS.
+00 UTC in both. Surface net thermal radiation (`str`) is blank in the store
+everywhere from 2024-11-01 to 2024-11-27, so a run takes the 2024 24-hour
+endpoints from the CDS. Otherwise, since 1996 the store holds every value a run
+reads: at the catchments no field is blank at 00 UTC outside that gap, states
+are never blank, and only the radiation fields have a few blank cells at other
+hours, which runs do not read (`python research/check_edh.py --field NAME`
+shows this for any field).
 
 | Requested quantity | Output or calculation | Daily units and meaning |
 | --- | --- | --- |

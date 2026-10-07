@@ -116,6 +116,8 @@ class DownloadDailyTests(unittest.TestCase):
         with ExitStack() as stack, redirect_stdout(io.StringIO()):
             self.aorc_inputs(stack)
             stack.enter_context(patch('cdsapi.Client', return_value=FakeClient()))
+            stack.enter_context(patch('edh_era5_land.token', return_value='test'))
+            stack.enter_context(patch('edh_era5_land.EdhClient', side_effect=lambda *args, **kwargs: FakeClient()))
             stack.enter_context(patch.object(sys, 'argv', ['download_daily.py',
                 '--geojson', str(self.geojson), '--start', str(self.day), '--end', str(self.day),
                 '--output', str(self.output)]))
@@ -172,6 +174,8 @@ class DownloadDailyTests(unittest.TestCase):
         with ExitStack() as stack, redirect_stdout(io.StringIO()):
             self.aorc_inputs(stack)
             stack.enter_context(patch('cdsapi.Client', return_value=FakeClient()))
+            stack.enter_context(patch('edh_era5_land.token', return_value='test'))
+            stack.enter_context(patch('edh_era5_land.EdhClient', side_effect=lambda *args, **kwargs: FakeClient()))
             stack.enter_context(patch.object(sys, 'argv', ['download_daily.py',
                 '--geojson', str(self.geojson), '--start', str(self.day), '--end', str(self.day)]))
             previous = Path.cwd()

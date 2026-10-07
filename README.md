@@ -23,8 +23,10 @@ The 43 project records represent **43 distinct local drainage domains**. Seven M
 
 ## Historical daily data
 
-Install the research dependencies, configure `~/.cdsapirc` as described below,
-and run one command for all three sources:
+Install the research dependencies, configure the CDS key (`~/.cdsapirc`) and
+the DestinE Earth Data Hub token (`~/.netrc`) as described in the
+[data pipeline guide](docs/data_pipeline.md), and run one command for all three
+sources:
 
 ```bash
 python -m pip install -e . -r research/requirements.txt
@@ -44,7 +46,7 @@ comparison reports and plots). All tables have the same 129 project-day rows
 in this example. Repeat the same command to resume completed source periods.
 AORC also needs the `zstd` command-line decoder on `PATH`.
 
-The [data pipeline guide](docs/data_pipeline.md) covers CDS token setup, AORC
+The [data pipeline guide](docs/data_pipeline.md) covers credential setup, AORC
 and ERA5/ERA5-Land downloads, derived variables, units, quality flags and final
 CSV/Parquet delivery. The research scripts preserve one source per variable
 and export one row per project and UTC date. Start with a short sample before
