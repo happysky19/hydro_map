@@ -6,7 +6,7 @@ Neither API keys nor internal delivery paths belong in this script or its output
 
 import argparse
 from calendar import monthrange
-from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 import csv
 from datetime import date, datetime, timedelta, timezone
@@ -15,7 +15,6 @@ import hashlib
 import json
 from math import ceil, floor
 from pathlib import Path, PurePosixPath
-import queue
 import tempfile
 import threading
 import time
@@ -25,7 +24,7 @@ import netCDF4
 import numpy as np
 from pyproj import Transformer
 
-from cds_fields import (ALIASES, ALL_FIELDS, LAND_STATES, LAND_ACCUMULATED, ERA_SURFACE,
+from cds_fields import (ALIASES, ALL_FIELDS, LAND_STATES, LAND_ACCUMULATED, ERA_SURFACE, NETCDF_LOCK,
                         daily_schema, land_daily_fields, era_daily_fields)
 from hydro_map.plotting import load_features
 from area_weights import fractional_weights, strict_area_mean
@@ -39,6 +38,7 @@ GRID_ATOL = 2e-5
 LAND_REQUEST_LIMIT = 12000
 # Full status phrases: bare codes also occur inside CDS job identifiers in the message.
 PERMANENT_ERRORS = ('403 Client Error', 'cost limits exceeded', 'too large')
+CDS_PROVIDER = 'Copernicus Climate Data Store'
 TRANSIENT_ERRORS = ('temporarily limited', '429 Client Error', '500 Server Error', '502 Server Error',
                     '503 Server Error', '504 Server Error')
 
@@ -104,29 +104,23 @@ def make_requests(product, start, area, end=None):
     return [dict(kind=kind, dataset=dataset, request=request, fields=list(fields))]
 
 
-def accumulated_requests(start, end, area, from_cds=()):
+def accumulated_requests(start, end, area):
     """ERA5-Land 24-hour endpoints at 00 UTC of each following day, one request per year.
 
     Each request is the product of its months and days: a few unneeded dates are cheap,
     and the CDS skips impossible ones. Endpoints are small, so a year stays far below the
-    size limit while avoiding dozens of queued requests. Fields in from_cds get their own
-    request, marked for the CDS, when another provider answers the rest.
+    size limit while avoiding dozens of queued requests.
     """
     needed = list(dates(start+timedelta(days=1), end+timedelta(days=1)))
-    groups = [([name for name in LAND_ACCUMULATED if name not in from_cds], None),
-              ([name for name in LAND_ACCUMULATED if name in from_cds], 'cds')]
     result = []
     for year in sorted({day.year for day in needed}):
         within = [day for day in needed if day.year == year]
-        for fields, provider in groups:
-            if not fields:
-                continue
-            request = dict(variable=[LAND_ACCUMULATED[name][0] for name in fields], year=f'{year:04d}',
-                           month=sorted({f'{day.month:02d}' for day in within}),
-                           day=sorted({f'{day.day:02d}' for day in within}), time=['00:00'],
-                           area=area, data_format='netcdf', download_format='unarchived')
-            spec = dict(kind='accumulated', dataset='reanalysis-era5-land', request=request, fields=fields)
-            result.append(dict(spec, provider=provider) if provider else spec)
+        request = dict(variable=[v[0] for v in LAND_ACCUMULATED.values()], year=f'{year:04d}',
+                       month=sorted({f'{day.month:02d}' for day in within}),
+                       day=sorted({f'{day.day:02d}' for day in within}), time=['00:00'],
+                       area=area, data_format='netcdf', download_format='unarchived')
+        result.append(dict(kind='accumulated', dataset='reanalysis-era5-land', request=request,
+                           fields=list(LAND_ACCUMULATED)))
     return result
 
 
@@ -257,7 +251,7 @@ def read_response(path, required, day=None):
     result = {}
     with netcdf_paths(path) as paths:
         for filename in paths:
-            with netCDF4.Dataset(filename) as ds:
+            with NETCDF_LOCK, netCDF4.Dataset(filename) as ds:
                 time_name = next((name for name in ['valid_time', 'time'] if name in ds.variables), None)
                 if time_name is None:
                     raise ValueError('Missing valid-time coordinate')
@@ -400,7 +394,7 @@ def fetch_response(spec, cache_dir, manifest, client, cache_only=False, lock=Non
     finally:
         temporary.unlink(missing_ok=True)
     record = dict(request=identity, request_sha256=request_hash, sha256=sha256(path),
-                  provider=getattr(client, 'provider', 'Copernicus Climate Data Store'),
+                  provider=getattr(client, 'provider', CDS_PROVIDER),
                   bytes=path.stat().st_size, retrieved_utc=datetime.now(timezone.utc).isoformat())
     manifest_path = cache_dir/'requests.manifest.json'
     with lock, _manifest_lock(cache_dir):
@@ -463,41 +457,14 @@ def prefetch(specs, cache_dir, manifest, client, workers=2, attempts=30, retry_s
         raise errors[0]
 
 
-def fetch_in_background(specs, cache_dir, manifest, client, workers, lock):
-    """Fetch requests in the given order on daemon threads; returns a future per request hash.
-
-    Daemon threads let the process exit while requests still wait in a provider's queue.
-    """
-    keyed = {json_hash({key: spec[key] for key in ['dataset', 'request']}): spec for spec in specs}
-    futures = {key: Future() for key in keyed}
-    waiting = queue.SimpleQueue()
-    for item in keyed.items():
-        waiting.put(item)
-
-    def work():
-        while True:
-            try:
-                key, spec = waiting.get_nowait()
-            except queue.Empty:
-                return
-            try:
-                futures[key].set_result(fetch_retrying(spec, cache_dir, manifest, client, lock))
-            except BaseException as error:
-                print(f'CDS request failed: {error}', flush=True)
-                futures[key].set_exception(error)
-
-    for _ in range(min(workers, len(keyed))):
-        threading.Thread(target=work, daemon=True).start()
-    return futures
-
-
 def run_pipeline(geojson, product, output_dir, cache_dir, start, end, *, projects=None,
                  chunk_days=14, dry_run=False, cache_only=False, client=None, workers=3,
                  newest_first=False, era5_source='arco', land_source='cds', cds_client=None):
     """Return run metadata. Existing completed months require verified file hashes.
 
-    With land_source='edh', fields the Earth Data Hub copy lacks are requested from
-    the CDS through cds_client (default: a cdsapi client).
+    A response from a copy (Earth Data Hub or ARCO-ERA5) that is blank in any cell a
+    catchment uses is replaced by the CDS original, fetched through cds_client (default:
+    a cdsapi client), so gaps in a copy never reach the daily values.
     """
     geojson, output_dir, cache_dir = map(Path, [geojson, output_dir, cache_dir])
     if isinstance(start, str): start = date.fromisoformat(start)
@@ -522,9 +489,6 @@ def run_pipeline(geojson, product, output_dir, cache_dir, start, end, *, project
     area = padded_area(features, .1 if product == 'era5-land' else .25)
     # Only ERA5-Land approaches the CDS size limit; three ERA5 single-level fields fit a month.
     batch_days = chunk_days if product == 'era5-land' else 31
-    from_cds = ()
-    if product == 'era5-land' and land_source == 'edh':
-        from edh_era5_land import FROM_CDS as from_cds
     source = 'era5_land_cds' if product == 'era5-land' else 'era5_cds'
     dependencies = [Path(__file__), Path(__file__).with_name('cds_fields.py'),
                     Path(__file__).with_name('area_weights.py'), Path(__file__).with_name('meteorology.py'),
@@ -534,8 +498,7 @@ def run_pipeline(geojson, product, output_dir, cache_dir, start, end, *, project
                **forcing, area_north_west_south_east=area, chunk_days=chunk_days,
                daily_schema=daily_schema(product), code_sha256={p.name: sha256(p) for p in dependencies},
                methods=dict(provider=('Google ARCO-ERA5, a copy of the CDS dataset' if product == 'era5' and era5_source == 'arco'
-                                      else 'DestinE Earth Data Hub copy of the CDS dataset; '
-                                           f'{", ".join(from_cds)} from the Copernicus Climate Data Store'
+                                      else 'DestinE Earth Data Hub copy of the CDS dataset'
                                       if product == 'era5-land' and land_source == 'edh'
                                       else 'Copernicus Climate Data Store'),
                             spatial='WGS84 geodesic polygon/native-grid intersections; full-area coverage required',
@@ -547,9 +510,8 @@ def run_pipeline(geojson, product, output_dir, cache_dir, start, end, *, project
                             humidity='Cell-hour vapour pressure from 2 m dewpoint (FAO56 liquid-water Tetens, as for AORC); q=0.622e/(p-0.378e); RH, VPD and wet bulb as for AORC',
                             wind='Cell-hour hypot(u10, v10) before spatial averaging',
                             precipitation_phase='ERA5-Land snowfall; rainfall = total precipitation - snowfall',
-                            freezing_level='ECMWF zero_degree_level (deg0l): model-level 0 degC height above ground, zero when the whole column is below 0 degC; above sea level adds surface geopotential/9.80665',
-                            **({'fields_from_cds': list(from_cds)} if from_cds else {})))
-    endpoint_specs = accumulated_requests(start, end, area, from_cds) if product == 'era5-land' else []
+                            freezing_level='ECMWF zero_degree_level (deg0l): model-level 0 degC height above ground, zero when the whole column is below 0 degC; above sea level adds surface geopotential/9.80665'))
+    endpoint_specs = accumulated_requests(start, end, area) if product == 'era5-land' else []
     unique = {}
     for first, last in date_chunks(start, end, batch_days):
         for spec in batch_requests(product, first, last, area, endpoint_specs):
@@ -590,12 +552,8 @@ def run_pipeline(geojson, product, output_dir, cache_dir, start, end, *, project
         else:
             import cdsapi
             client = cdsapi.Client(progress=False)
-    if from_cds and cds_client is None and not cache_only:
-        import cdsapi
-        cds_client = cdsapi.Client(progress=False)
-    provider_client = lambda spec: cds_client if spec.get('provider') == 'cds' else client
     lock = threading.Lock()
-    weights, grid = None, None
+    weights, grid, grid_label, used = None, None, None, None
     identity = Transformer.from_crs(4326, 4326, always_xy=True)
     months = list(date_chunks(start, end, 31))
     months = months[::-1] if newest_first else months
@@ -617,25 +575,54 @@ def run_pipeline(geojson, product, output_dir, cache_dir, start, end, *, project
                 for first, last in date_chunks(month_start, month_end, batch_days):
                     for spec in batch_requests(product, first, last, area, endpoint_specs):
                         specs.setdefault(json_hash({key: spec[key] for key in ['dataset', 'request']}), spec)
-        prefetch([spec for spec in specs.values() if spec.get('provider') != 'cds'],
-                 cache_dir, manifest, client, workers, lock=lock)
+        prefetch(list(specs.values()), cache_dir, manifest, client, workers, lock=lock)
         # Providers that keep raw chunks while answering a year's requests release them here.
         getattr(client, 'release', lambda: None)()
-        for key in specs:
-            if key in background:
-                background[key].result()
 
-    # Fields split off for the CDS wait in its queue; all years queue at the start, in order.
-    background = {}
-    if from_cds and not cache_only:
-        split = {}
-        for month_start, month_end in months:
-            if not complete(month_start):
-                for first, last in date_chunks(month_start, month_end, batch_days):
-                    for spec in batch_requests(product, first, last, area, endpoint_specs):
-                        if spec.get('provider') == 'cds':
-                            split.setdefault(json_hash({key: spec[key] for key in ['dataset', 'request']}), spec)
-        background = fetch_in_background(list(split.values()), cache_dir, manifest, cds_client, workers, lock)
+    def check_grid(record, label):
+        """The first field fixes the grid and catchment weights; every later field must match it."""
+        nonlocal grid, grid_label, weights, used
+        current = (record['latitude'], record['longitude'])
+        if grid is None:
+            grid, grid_label = current, label
+            weights, info = {}, []
+            for feature in features:
+                project = feature['properties']['id']
+                weights[project], detail = fractional_weights(feature['geometry'], grid[1], grid[0], identity)
+                info.append(dict(project_id=project, **detail))
+            atomic_json(output_dir/'polygon_weights.json', info)
+            used = np.logical_or.reduce([weight > 0 for weight in weights.values()])
+        elif not _same_grid(grid, current):
+            axes = _grid_diagnostics(grid, current)
+            diagnostic = output_dir/'grid_mismatch.json'
+            atomic_json(diagnostic, dict(reference_field=grid_label, received_field=label,
+                                        tolerance_degrees=GRID_ATOL, axes=axes))
+            detail = '; '.join(f'{axis}: {values}' for axis, values in axes.items())
+            raise ValueError(f'CDS grid mismatch for {label} versus {grid_label}; '
+                             f'{detail}. Details: {diagnostic}')
+
+    def checked_response(spec, path, first):
+        """Read a response; one from a copy with blanks in catchment cells is replaced by the CDS original."""
+        nonlocal cds_client
+        fields = read_response(path, spec['fields'])
+        for name, record in fields.items():
+            check_grid(record, f'{first} {spec["kind"]}/{name}')
+        blank = [name for name, record in fields.items() if np.isnan(record['data'][:, used]).any()]
+        key = path.stem
+        with lock:
+            provider = manifest.get(key, {}).get('provider', CDS_PROVIDER)
+        if not blank or provider == CDS_PROVIDER or cache_only:
+            return path, fields
+        print(f"{first}: {', '.join(blank)} blank in catchment cells from {provider}; "
+              f"replacing the response with the CDS original", flush=True)
+        if cds_client is None:
+            import cdsapi
+            cds_client = cdsapi.Client(progress=False)
+        with lock:
+            manifest.pop(key, None)
+            path.unlink(missing_ok=True)
+        path = fetch_retrying(spec, cache_dir, manifest, cds_client, lock)
+        return path, read_response(path, spec['fields'])
 
     prefetched = set()
     for month_start, month_end in months:
@@ -653,38 +640,20 @@ def run_pipeline(geojson, product, output_dir, cache_dir, start, end, *, project
                 writer = csv.DictWriter(stream, fieldnames=DAILY_FIELDS); writer.writeheader()
                 for first, last in date_chunks(month_start, month_end, batch_days):
                     specs = batch_requests(product, first, last, area, endpoint_specs)
-                    responses = [(spec, fetch_response(spec, cache_dir, manifest, provider_client(spec), cache_only, lock))
+                    responses = [(spec, fetch_response(spec, cache_dir, manifest, client, cache_only, lock))
                                  for spec in specs]
-                    source_hashes.update({path.name: sha256(path) for _, path in responses})
                     # Each response is decoded once per batch; days then select their hours by timestamp.
-                    loaded = [(spec, read_response(path, spec['fields'])) for spec, path in responses]
+                    loaded = []
+                    for spec, path in responses:
+                        path, fields = checked_response(spec, path, first)
+                        source_hashes[path.name] = sha256(path)
+                        loaded.append((spec, fields))
                     for day in dates(first, last):
                         records = {}
                         for spec, fields in loaded:
                             target_day = day+timedelta(days=1) if spec['kind'] == 'accumulated' else day
                             if covers(spec['request'], target_day):
-                                records.setdefault(spec['kind'], {}).update(fields)
-                        for kind, fields in records.items():
-                            for name, record in fields.items():
-                                current = (record['latitude'], record['longitude'])
-                                label = f'{day} {kind}/{name}'
-                                if grid is None:
-                                    grid = current
-                                    grid_label = label
-                                    weights, info = {}, []
-                                    for feature in features:
-                                        project = feature['properties']['id']
-                                        weights[project], detail = fractional_weights(feature['geometry'], grid[1], grid[0], identity)
-                                        info.append(dict(project_id=project, **detail))
-                                    atomic_json(output_dir/'polygon_weights.json', info)
-                                elif not _same_grid(grid, current):
-                                    axes = _grid_diagnostics(grid, current)
-                                    diagnostic = output_dir/'grid_mismatch.json'
-                                    atomic_json(diagnostic, dict(reference_field=grid_label, received_field=label,
-                                                                tolerance_degrees=GRID_ATOL, axes=axes))
-                                    detail = '; '.join(f'{axis}: {values}' for axis, values in axes.items())
-                                    raise ValueError(f'CDS grid mismatch for {label} versus {grid_label}; '
-                                                     f'{detail}. Details: {diagnostic}')
+                                records[spec['kind']] = fields
                         if product == 'era5-land':
                             states = {key: align_hours(record, day) for key, record in records['states'].items()}
                             accumulated = {key: align_hours(record, day+timedelta(days=1), 1)[0]
@@ -718,8 +687,8 @@ def main():
     parser.add_argument('--newest-first', action='store_true', help='Request and process the latest months first')
     parser.add_argument('--era5-source', choices=['arco', 'cds'], default='arco',
                         help='ERA5 provider: the public ARCO-ERA5 copy (no queue) or the CDS')
-    parser.add_argument('--land-source', choices=['cds', 'edh'], default='cds',
-                        help='ERA5-Land provider: the CDS or the Earth Data Hub copy (needs a DestinE token)')
+    parser.add_argument('--land-source', choices=['edh', 'cds'], default='edh',
+                        help='ERA5-Land provider: the Earth Data Hub copy (default; needs a DestinE token) or the CDS')
     parser.add_argument('--dry-run', action='store_true'); parser.add_argument('--cache-only', action='store_true')
     args = parser.parse_args()
     run_pipeline(**vars(args))

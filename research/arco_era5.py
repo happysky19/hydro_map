@@ -17,6 +17,8 @@ import numcodecs
 import numpy as np
 import requests
 
+from cds_fields import NETCDF_LOCK
+
 
 STORE = 'https://storage.googleapis.com/gcp-public-data-arco-era5/ar/full_37-1h-0p25deg-chunk-1.zarr-v3'
 # CDS request name -> (NetCDF name, ARCO array, units)
@@ -117,7 +119,7 @@ class ArcoClient:
                 else:
                     data = np.stack(list(pool.map(lambda index: self._field(array, index, rows, columns), indexes)))
                 fields[short] = (data, units)
-        with netCDF4.Dataset(target, 'w') as ds:
+        with NETCDF_LOCK, netCDF4.Dataset(target, 'w') as ds:
             ds.createDimension('valid_time', len(stamps))
             ds.createDimension('latitude', len(rows))
             ds.createDimension('longitude', len(columns))

@@ -13,9 +13,8 @@ so that the 00 UTC value is the previous day's 24-hour total, as in the CDS; the
 hourly values at one point show whether the store follows that convention.
 --compare-cds requests the same day and area from both providers and compares
 every value through the pipeline's own reader; with --geojson the area is the
-one a run over those catchments requests. Fields the store lacks (FROM_CDS) are
-read from the CDS in runs and are not compared. --scan looks for gaps in the
-store over the period of a long run.
+one a run over those catchments requests. --scan looks for gaps in the store
+over the period of a long run; runs fill any gap in catchment cells from the CDS.
 """
 
 import argparse
@@ -31,12 +30,12 @@ import numpy as np
 
 from cds_fields import LAND_ACCUMULATED, LAND_STATES
 from download_cds import _units_match, accumulated_requests, make_requests, padded_area, read_response
-from edh_era5_land import EPOCH, FROM_CDS, EdhClient
+from edh_era5_land import EPOCH, EdhClient
 from hydro_map.plotting import load_features
 
 
-POINT = (47.5, -123.5)        # Olympic Mountains: rain and a clear daily solar cycle
-DAY = date(2024, 11, 19)
+POINT = (47.5, -123.5)        # Olympic Mountains: frequent rain and a clear daily solar cycle
+DAY = date(2024, 12, 9)        # outside the store's 2024-11-01 to 2024-11-27 gap in net thermal radiation
 SCAN_POINT = (48.0, -117.0)   # inside the 43 catchments' area; its 5 x 10 degree chunk is land
 GAP_TIME = datetime(2024, 11, 20, tzinfo=timezone.utc)   # str blank over the catchments, CDS has it
 REGIONS = {'catchments': SCAN_POINT, 'US Midwest': (40.0, -90.0), 'Canada': (55.0, -105.0),
@@ -123,9 +122,7 @@ def compare_cds(client, folder, geojson=None):
     features = load_features(geojson) if geojson else None
     area = (padded_area(features, .1) if features else
             [POINT[0] + .3, POINT[1] - .3, POINT[0] - .3, POINT[1] + .3])
-    specs = make_requests('era5-land', DAY, area, DAY) + accumulated_requests(DAY, DAY, area, FROM_CDS)
-    print(f'\n{", ".join(FROM_CDS)}: read from the CDS in runs, not compared')
-    specs = [spec for spec in specs if spec.get('provider') != 'cds']
+    specs = make_requests('era5-land', DAY, area, DAY) + accumulated_requests(DAY, DAY, area)
     providers = {'CDS': cdsapi.Client(progress=False), 'EDH': client}
     problems = []
     for spec in specs:
@@ -206,11 +203,10 @@ def scan(client, first_year=1996):
             if gap.any():
                 hours = sorted({(start.hour + int(i)) % 24 for i in np.flatnonzero(gap.any(axis=(1, 2)))})
                 found.append(f'{start:%Y-%m-%d} {gap.mean():.0%}' + ('' if len(hours) == 24 else f' at {hours} UTC'))
-        note = ' (read from the CDS in runs)' if short in FROM_CDS else ''
-        print(f'{short:6}', (f'gaps in {len(found)} of {len(masks)} chunks: ' + '; '.join(found[:5])
-                             if found else f'no gaps in {len(masks)} chunks') + note)
-        if found and short not in FROM_CDS:
-            problems.append(f'{short} has gaps in the store')
+        print(f'{short:6}', f'gaps in {len(found)} of {len(masks)} chunks: ' + '; '.join(found[:5])
+              if found else f'no gaps in {len(masks)} chunks')
+        if found:
+            problems.append(f'{short} has gaps in the store (runs fill them from the CDS)')
     print(f'scan took {(time.monotonic() - started) / 60:.0f} min')
     return problems
 

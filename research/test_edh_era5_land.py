@@ -1,5 +1,6 @@
 """Earth Data Hub responses: chunked Zarr v3 values in the CDS layout, each chunk fetched once."""
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timezone
 import json
 from pathlib import Path
@@ -105,6 +106,16 @@ class EdhTests(unittest.TestCase):
             self.client.retrieve(spec['dataset'], spec['request'], target)
             tp = read_response(target, spec['fields'])['tp']
             np.testing.assert_allclose(tp['data'][:, :4, :4], .024, rtol=1e-4)
+
+    def test_concurrent_requests_write_complete_files(self):
+        batches = [make_requests('era5-land', day, self.area, day)[0]
+                   for day in (date(2025, 12, 30), date(2025, 12, 31))] * 3
+        targets = [self.root / f'{i}.nc' for i in range(len(batches))]
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            list(pool.map(lambda item: self.client.retrieve(item[0]['dataset'], item[0]['request'], item[1]),
+                          zip(batches, targets)))
+        for spec, target in zip(batches, targets):
+            self.assertEqual(read_response(target, spec['fields'])['t2m']['data'].shape, (24, 8, 8))
 
     def test_hours_outside_the_store_are_refused(self):
         late = make_requests('era5-land', date(2026, 1, 2), self.area, date(2026, 1, 3))[0]

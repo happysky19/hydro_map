@@ -17,7 +17,7 @@ import netCDF4
 import numpy as np
 
 from cds_fields import (root_zone_moisture, land_daily_fields, era_daily_fields, dewpoint_humidity,
-                        ALL_FIELDS, LAND_STATES, LAND_ACCUMULATED)
+                        ALL_FIELDS, LAND_STATES, LAND_ACCUMULATED, NETCDF_LOCK)
 from download_cds import (make_requests, accumulated_requests, read_response, process_day, run_pipeline,
                           align_hours, prefetch)
 from meteorology import humidity
@@ -125,14 +125,6 @@ class FieldTests(unittest.TestCase):
         cost = max(len(r['fields'])*len(r['request']['month'])*len(r['request']['day'])*2 for r in requests)
         self.assertLess(cost, 12000)
 
-    def test_fields_for_the_cds_get_their_own_endpoint_request(self):
-        area = [51, -121, 49, -119]
-        whole = accumulated_requests(date(2025, 12, 31), date(2025, 12, 31), area)
-        split = accumulated_requests(date(2025, 12, 31), date(2025, 12, 31), area, ('str',))
-        self.assertEqual([spec.get('provider') for spec in split], [None, 'cds'])
-        self.assertEqual(split[1]['fields'], ['str'])
-        self.assertEqual(split[1]['request']['variable'], ['surface_net_thermal_radiation'])
-        self.assertEqual(split[0]['fields'] + split[1]['fields'], whole[0]['fields'])
 
 
 def write_netcdf(path, variables, *, day='2025-12-31', hours=24, expver=False,
@@ -242,7 +234,7 @@ class ResponseTests(unittest.TestCase):
 
 class FakeClient:
     # Prefetch threads call retrieve concurrently; the HDF5 library is not thread-safe.
-    lock = threading.Lock()
+    lock = NETCDF_LOCK
 
     def __init__(self):
         self.calls = 0
@@ -275,6 +267,22 @@ class FakeClient:
         write_netcdf(target, fields, day=day, hours=hours)
         with netCDF4.Dataset(target, 'a') as ds:
             ds['valid_time'][:] = [int((stamp - origin).total_seconds()//3600) for stamp in stamps]
+
+
+class BlankClient(FakeClient):
+    """Answers with the named fields blank in one cell; a provider name marks a copy of the CDS."""
+    def __init__(self, blank, provider=None):
+        super().__init__()
+        self.blank = blank
+        if provider:
+            self.provider = provider
+
+    def _write(self, dataset, request, target):
+        super()._write(dataset, request, target)
+        with netCDF4.Dataset(target, 'a') as ds:
+            for name in self.blank:
+                if name in ds.variables:
+                    ds[name][0, 0, 0] = np.nan
 
 
 class PipelineTests(unittest.TestCase):
@@ -522,25 +530,28 @@ class PipelineTests(unittest.TestCase):
         self.assertTrue((self.root/'output/month_2026-01.json').exists())
         self.assertFalse((self.root/'output/month_2025-12.json').exists())
 
-    def test_fields_lacking_in_another_provider_come_from_the_cds(self):
-        hub, cds = FakeClient(), FakeClient()
-        requested = {'hub': [], 'cds': []}
-        for name, client in [('hub', hub), ('cds', cds)]:
-            retrieve = client.retrieve
-            def record(dataset, request, target, name=name, retrieve=retrieve):
-                requested[name] += request['variable']
-                retrieve(dataset, request, target)
-            client.retrieve = record
+    def test_copy_with_blank_catchment_cells_is_replaced_from_the_cds(self):
+        copy, cds = BlankClient(['t2m'], 'Test copy'), FakeClient()
+        log = io.StringIO()
+        with redirect_stdout(log):
+            run_pipeline(*self.arguments, client=copy, cds_client=cds)
+        self.assertIn('t2m blank in catchment cells from Test copy', log.getvalue())
+        self.assertEqual(cds.calls, 1)
+        with gzip.open(self.root/'output/daily_2025-12.csv.gz', 'rt') as stream:
+            self.assertTrue(all(row['qc'] == 'valid' for row in csv.DictReader(stream)))
+        manifest = json.loads((self.root/'cache/requests.manifest.json').read_text())
+        self.assertEqual(sorted(record['provider'] for record in manifest.values()),
+                         ['Copernicus Climate Data Store', 'Test copy'])
+
+    def test_blanks_also_in_the_cds_are_left_to_quality_control(self):
+        copy, cds = BlankClient(['t2m'], 'Test copy'), BlankClient(['t2m'])
         with redirect_stdout(io.StringIO()):
-            run_pipeline(*self.arguments, client=hub, cds_client=cds, land_source='edh')
-        self.assertEqual(requested['cds'], ['surface_net_thermal_radiation'])
-        self.assertNotIn('surface_net_thermal_radiation', requested['hub'])
+            run_pipeline(*self.arguments, client=copy, cds_client=cds)
+        self.assertEqual(cds.calls, 1)
         with gzip.open(self.root/'output/daily_2025-12.csv.gz', 'rt') as stream:
             rows = {row['variable']: row for row in csv.DictReader(stream)}
-        self.assertEqual(rows['net_radiation_mean_wm2']['qc'], 'valid')
-        self.assertAlmostEqual(float(rows['net_radiation_mean_wm2']['value']), .5)
-        manifest = json.loads((self.root/'cache/requests.manifest.json').read_text())
-        self.assertEqual(len(manifest), 3)
+        self.assertNotEqual(rows['tmean_c']['qc'], 'valid')
+        self.assertEqual(rows['precipitation_mm']['qc'], 'valid')
 
     def test_request_errors_are_not_retried(self):
         client = FakeClient()

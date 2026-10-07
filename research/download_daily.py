@@ -31,7 +31,7 @@ class DeliveryCheckError(RuntimeError):
 
 def run(geojson, start, end, output=None, *, work_dir=None, cache_dir=None,
         max_download_gb=2000, workers=16, chunk_days=14, cds_client=None, newest_first=True,
-        cds_workers=3, keep_chunks=False, era5_source='arco', land_source='cds'):
+        cds_workers=3, keep_chunks=False, era5_source='arco', land_source='edh'):
     """Run the three sources concurrently, then export, check and deliver.
 
     A failed source does not stop the others; repeating the command resumes every
@@ -66,7 +66,7 @@ def run(geojson, start, end, output=None, *, work_dir=None, cache_dir=None,
             from arco_era5 import ArcoClient
             clients[product] = ArcoClient()
         else:
-            # With the Earth Data Hub, the CDS still supplies the fields the copy lacks.
+            # The CDS also fills any gap found in a response from a copy.
             import cdsapi
             clients[product] = cdsapi.Client(progress=False)
     if land_source == 'edh' and cds_client is None:
@@ -93,7 +93,7 @@ def run(geojson, start, end, output=None, *, work_dir=None, cache_dir=None,
         **{label: (lambda product=product, folder=folder: download_cds.run_pipeline(
                geojson, product, folder, cache_dir / 'cds', start, end, chunk_days=chunk_days,
                client=land_client if product == 'era5-land' else clients[product],
-               cds_client=clients['era5-land'] if product == 'era5-land' else None,
+               cds_client=clients['era5-land'],
                workers=cds_workers, newest_first=newest_first, era5_source=era5_source, land_source=land_source))
            for label, product, folder in [('ERA5-Land', 'era5-land', folders[1]), ('ERA5', 'era5', folders[2])]},
     }
@@ -147,8 +147,9 @@ def main():
                         help='Requests kept in the CDS queue per product (1–8; default: 3)')
     parser.add_argument('--era5-source', choices=['arco', 'cds'], default='arco',
                         help='ERA5 provider: the public ARCO-ERA5 copy on Google Cloud (default; no queue) or the CDS')
-    parser.add_argument('--land-source', choices=['cds', 'edh'], default='cds',
-                        help='ERA5-Land provider: the CDS queue (default) or the Earth Data Hub copy (needs a DestinE token)')
+    parser.add_argument('--land-source', choices=['edh', 'cds'], default='edh',
+                        help='ERA5-Land provider: the Earth Data Hub copy (default; needs a DestinE token in ~/.netrc) '
+                             'or the CDS queue')
     parser.add_argument('--keep-chunks', action='store_true',
                         help='Keep raw AORC chunks in the cache to reprocess later without downloading')
     parser.add_argument('--oldest-first', dest='newest_first', action='store_false',

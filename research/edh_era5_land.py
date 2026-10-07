@@ -7,8 +7,9 @@ caching, resumption and daily processing are unchanged. Raw chunks are kept in
 a disk cache while the requests of one year are answered, because consecutive
 batches share chunks, and released afterwards.
 
-Fields in FROM_CDS have gaps in the store and are requested from the CDS by
-the pipeline instead.
+The store has gaps (surface net thermal radiation is blank everywhere from
+2024-11-01 to 2024-11-27); the pipeline replaces any response that is blank in
+a catchment cell with the CDS original.
 
 Access needs a free DestinE account; the personal access token is read from
 ~/.netrc (machine data.earthdatahub.destine.eu password <token>).
@@ -30,16 +31,13 @@ import numpy as np
 import requests
 
 from arco_era5 import listed, request_times
-from cds_fields import ALL_FIELDS, LAND_ACCUMULATED
+from cds_fields import ALL_FIELDS, LAND_ACCUMULATED, NETCDF_LOCK
 
 
 HOST = 'data.earthdatahub.destine.eu'
 STORE = f'https://{HOST}/era5/era5-land-v0.zarr'
 EPOCH = datetime(1950, 1, 1, tzinfo=timezone.utc)
 NAMES = {long: short for short, (long, _) in ALL_FIELDS.items()}
-# Surface net thermal radiation is blank in the store over the catchments on
-# 2024-11-20 although the CDS has it (checked October 2026); runs request it from the CDS.
-FROM_CDS = ('str',)
 
 
 def token():
@@ -213,7 +211,8 @@ class EdhClient:
         needed = [(short, index) for short in names for index, _, _ in self._blocks(short, positions, rows, columns)]
         with ThreadPoolExecutor(max_workers=self.workers) as pool:
             list(pool.map(lambda item: self._fetch(*item), needed))
-        with netCDF4.Dataset(target, 'w') as ds:
+        values = {short: self.series(short, positions, rows, columns) for short in names}
+        with NETCDF_LOCK, netCDF4.Dataset(target, 'w') as ds:
             ds.createDimension('valid_time', len(stamps))
             ds.createDimension('latitude', len(rows))
             ds.createDimension('longitude', len(columns))
@@ -230,5 +229,5 @@ class EdhClient:
                 variable.units = attributes.get('units', ALL_FIELDS[short][1])
                 variable.GRIB_stepType = attributes.get('GRIB_stepType',
                                                         'accum' if short in LAND_ACCUMULATED else 'instant')
-                variable[:] = self.series(short, positions, rows, columns)
+                variable[:] = values[short]
             ds.source = STORE
