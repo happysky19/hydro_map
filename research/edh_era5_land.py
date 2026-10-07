@@ -7,6 +7,9 @@ caching, resumption and daily processing are unchanged. Raw chunks are kept in
 a disk cache while the requests of one year are answered, because consecutive
 batches share chunks, and released afterwards.
 
+Fields in FROM_CDS have gaps in the store and are requested from the CDS by
+the pipeline instead.
+
 Access needs a free DestinE account; the personal access token is read from
 ~/.netrc (machine data.earthdatahub.destine.eu password <token>).
 """
@@ -34,6 +37,9 @@ HOST = 'data.earthdatahub.destine.eu'
 STORE = f'https://{HOST}/era5/era5-land-v0.zarr'
 EPOCH = datetime(1950, 1, 1, tzinfo=timezone.utc)
 NAMES = {long: short for short, (long, _) in ALL_FIELDS.items()}
+# Surface net thermal radiation is blank in the store over the catchments on
+# 2024-11-20 although the CDS has it (checked October 2026); runs request it from the CDS.
+FROM_CDS = ('str',)
 
 
 def token():

@@ -106,10 +106,13 @@ rejects further submissions once a user has a few requests queued for a
 dataset (five was too many), so raising `--cds-workers` above 3 mostly adds
 rejected submissions. `--land-source edh` reads ERA5-Land instead from the
 [DestinE Earth Data Hub](https://earthdatahub.destine.eu/) copy, which has no
-queue; for the 43 catchments this is about 1,200 chunk reads per year, within
-the free allowance of 500,000 a month. Before a long run, compare one day of
-the store with the CDS over the catchments' area with
-`python research/check_edh.py --compare-cds --geojson <catchment file>`. Every source
+queue. For the 43 catchments a year is about 1,500 chunk reads of 3.3 MB,
+within the free allowance of 500,000 a month; in October 2026 one day of all
+fields over the catchments took 50 seconds, against 2-23 minutes in the CDS
+queue. Surface net thermal radiation is blank in the copy, so it is still
+requested from the CDS: one small request per year, all years queued at the
+start and three at a time. Before a long run, check the store with
+`python research/check_edh.py --scan --compare-cds --geojson <catchment file>`. Every source
 works through the period year by year, latest first, and writes each finished
 year (AORC) or month (CDS) as it goes.
 
@@ -514,12 +517,16 @@ The complete archive comes from the
 [CDS hourly product](https://cds.climate.copernicus.eu/datasets/reanalysis-era5-land).
 It provides model estimates on a 0.1° distribution grid (native resolution
 about 9 km). With `--land-source edh` the same hourly fields are read from the
-Earth Data Hub ERA5-Land store,
-a Zarr copy in chunks of 60 days by 5° × 10°, stored with 13 mantissa bits
-(relative precision about 1e-4). `research/edh_era5_land.py` answers the CDS
-requests from it and writes the same NetCDF layout, so caching and daily
-processing are unchanged; the store's units and accumulation type are checked
-like a CDS response.
+Earth Data Hub ERA5-Land store, a Zarr copy in chunks of 60 days by
+5° × 10° with values rounded to fewer significant bits.
+`research/edh_era5_land.py` answers the CDS requests from it and writes the
+same NetCDF layout, so caching and daily processing are unchanged; the store's
+units and accumulation type are checked like a CDS response. For 2024-11-19
+over the 43 catchments' area, both copies had the same grid and blank cells and
+differed by at most 4.5e-4 of each field's largest value (0.12 K in dewpoint
+and soil temperature, 30 Pa in pressure), and accumulations are totals since
+00 UTC in both. Surface net thermal radiation (`str`) was blank in the store
+over the whole area on 2024-11-20 00 UTC, so it is always taken from the CDS.
 
 | Requested quantity | Output or calculation | Daily units and meaning |
 | --- | --- | --- |
@@ -597,7 +604,7 @@ equivalent to the mm/day and MJ/m²/day amounts in the tables above.
 | `research/cds_fields.py` | CDS variable definitions, soil weighting, humidity, wind and freezing-level conversions |
 | `research/arco_era5.py` | Serves ERA5 single-level requests from the public ARCO-ERA5 copy in the CDS response layout |
 | `research/edh_era5_land.py` | Serves ERA5-Land requests from the Earth Data Hub copy in the CDS response layout |
-| `research/check_edh.py` | Checks the Earth Data Hub store: units, accumulation convention and, with `--compare-cds`, values against the CDS |
+| `research/check_edh.py` | Checks the Earth Data Hub store: units, accumulation convention, gaps (`--scan`) and values against the CDS (`--compare-cds`) |
 | `research/export_daily.py` | Verify source artifacts and export aligned daily values and QC tables plus their manifest |
 | `research/check_daily.py` | Check delivered values/QC, physical plausibility and AORC/ERA5-Land agreement; plot coverage and project time series |
 | `research/deliver_daily.py` | Write the requested-variable table and README from a checked full delivery |

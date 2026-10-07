@@ -9,7 +9,7 @@ short names in ECMWF IFS open data (0.25 deg), NOAA GFS 0.25 deg GRIB2
 
 AORC, LAND, ERA5 = 'aorc_v1.1', 'era5_land_cds', 'era5_cds'
 SOURCE_LABELS = {AORC: 'NOAA AORC v1.1 (hourly, 30 arc-second)',
-                 LAND: 'ECMWF ERA5-Land (hourly, 0.1 deg)',
+                 LAND: 'ECMWF ERA5-Land (hourly, 0.1 deg; read from the CDS or its Earth Data Hub copy)',
                  ERA5: 'ECMWF ERA5 single levels (hourly, 0.25 deg; read from the CDS or its ARCO-ERA5 copy)'}
 NOT_AVAILABLE = 'not available'
 DERIVE = 'derive from T, humidity and pressure as here'

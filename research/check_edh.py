@@ -3,6 +3,7 @@
     python research/check_edh.py                 # layout, units and hourly values at one point
     python research/check_edh.py --compare-cds   # also compare one small request with the CDS
     python research/check_edh.py --compare-cds --geojson outputs/projects43_independent/dam_catchments.geojson
+    python research/check_edh.py --scan          # blanks in one land chunk per year since 1996
 
 Reads the personal access token from ~/.netrc
 (machine data.earthdatahub.destine.eu password <token>); the token is never
@@ -11,10 +12,13 @@ so that the 00 UTC value is the previous day's 24-hour total, as in the CDS; the
 hourly values at one point show whether the store follows that convention.
 --compare-cds requests the same day and area from both providers and compares
 every value through the pipeline's own reader; with --geojson the area is the
-one a run over those catchments requests.
+one a run over those catchments requests. Fields the store lacks (FROM_CDS) are
+read from the CDS in runs and are not compared. --scan looks for gaps in the
+store over the period of a long run.
 """
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, date, timedelta, timezone
 from pathlib import Path
 import sys
@@ -25,12 +29,13 @@ import numpy as np
 
 from cds_fields import LAND_ACCUMULATED, LAND_STATES
 from download_cds import _units_match, accumulated_requests, make_requests, padded_area, read_response
-from edh_era5_land import EPOCH, EdhClient
+from edh_era5_land import EPOCH, FROM_CDS, EdhClient
 from hydro_map.plotting import load_features
 
 
 POINT = (47.5, -123.5)        # Olympic Mountains: rain and a clear daily solar cycle
 DAY = date(2024, 11, 19)
+SCAN_POINT = (48.0, -117.0)   # inside the 43 catchments' area; its 5 x 10 degree chunk is land
 TOLERANCE = 2e-3              # of each field's largest magnitude; both copies are packed differently
 LAND = {**LAND_STATES, **LAND_ACCUMULATED}
 
@@ -112,7 +117,9 @@ def compare_cds(client, folder, geojson=None):
     features = load_features(geojson) if geojson else None
     area = (padded_area(features, .1) if features else
             [POINT[0] + .3, POINT[1] - .3, POINT[0] - .3, POINT[1] + .3])
-    specs = make_requests('era5-land', DAY, area, DAY) + accumulated_requests(DAY, DAY, area)
+    specs = make_requests('era5-land', DAY, area, DAY) + accumulated_requests(DAY, DAY, area, FROM_CDS)
+    print(f'\n{", ".join(FROM_CDS)}: read from the CDS in runs, not compared')
+    specs = [spec for spec in specs if spec.get('provider') != 'cds']
     providers = {'CDS': cdsapi.Client(progress=False), 'EDH': client}
     problems = []
     for spec in specs:
@@ -151,16 +158,69 @@ def compare_cds(client, folder, geojson=None):
     return problems
 
 
+def scan(client, first_year=1996):
+    """Blank values in one land chunk, one 60-day chunk per year, for every field.
+
+    Cells blank in every sampled hour of 2 m temperature are water and are ignored.
+    Sampled dates move through the year, so every 60-day chunk position is seen.
+    """
+    latitude, longitude = client.coordinates['latitude'], client.coordinates['longitude']
+    row = int(np.argmin(np.abs(latitude - SCAN_POINT[0])))
+    column = int(np.argmin(np.abs((longitude + 180) % 360 - 180 - SCAN_POINT[1])))
+    last = EPOCH + timedelta(hours=int(client.coordinates['valid_time'][-1]))
+    stamps = [stamp for stamp in (datetime(year, 1 + 2 * (year % 6), 15, tzinfo=timezone.utc)
+                                  for year in range(first_year, last.year + 1)) if stamp <= last]
+    positions = client._positions(stamps)
+
+    def blanks(short):
+        """Blank masks of the sampled chunks and their first hours; raw chunks are deleted after use."""
+        chunk_t, chunk_y, chunk_x = client.arrays[short]['chunk_grid']['configuration']['chunk_shape']
+        indexes = sorted({(int(position // chunk_t), row // chunk_y, column // chunk_x) for position in positions})
+        with ThreadPoolExecutor(client.workers) as pool:
+            paths = list(pool.map(lambda index: client._fetch(short, index), indexes))
+        masks = [np.isnan(client._decode(client.arrays[short], path.read_bytes() or None)) for path in paths]
+        client.release()
+        valid_time = client.coordinates['valid_time']
+        starts = [EPOCH + timedelta(hours=int(valid_time[t * chunk_t])) for t, _, _ in indexes]
+        return masks, starts
+
+    started = time.monotonic()
+    temperature = blanks('t2m')
+    water = np.logical_and.reduce([mask.all(axis=0) for mask in temperature[0]])
+    print(f'\nblank values at {SCAN_POINT[0]}, {SCAN_POINT[1]} (5 x 10 degree chunk, {water.mean():.0%} water), '
+          f'one 60-day chunk per year from {first_year}')
+    problems = []
+    for short in LAND:
+        masks, starts = temperature if short == 't2m' else blanks(short)
+        found = []
+        for mask, start in zip(masks, starts):
+            gap = mask & ~water
+            if gap.any():
+                hours = sorted({(start.hour + i) % 24 for i in np.flatnonzero(gap.any(axis=(1, 2)))})
+                found.append(f'{start:%Y-%m-%d} {gap.mean():.0%}' + ('' if len(hours) == 24 else f' at {hours} UTC'))
+        note = ' (read from the CDS in runs)' if short in FROM_CDS else ''
+        print(f'{short:6}', (f'gaps in {len(found)} of {len(masks)} chunks: ' + '; '.join(found[:5])
+                             if found else f'no gaps in {len(masks)} chunks') + note)
+        if found and short not in FROM_CDS:
+            problems.append(f'{short} has gaps in the store')
+    print(f'scan took {(time.monotonic() - started) / 60:.0f} min')
+    return problems
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--compare-cds', action='store_true',
                         help='Also compare one small request with the CDS (needs ~/.cdsapirc)')
     parser.add_argument('--geojson', type=Path,
                         help='Compare over the area of these catchments instead of a small box')
+    parser.add_argument('--scan', action='store_true',
+                        help='Look for gaps in one land chunk per year since 1996 (about 2.5 GB)')
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix='edh-check-') as folder:
         client = EdhClient(Path(folder) / 'chunks')
         problems = layout(client) + point_series(client)
+        if args.scan:
+            problems += scan(client)
         if args.compare_cds:
             problems += compare_cds(client, Path(folder), args.geojson)
     print('\nRESULT:', 'all checks passed' if not problems else '; '.join(problems))

@@ -125,6 +125,15 @@ class FieldTests(unittest.TestCase):
         cost = max(len(r['fields'])*len(r['request']['month'])*len(r['request']['day'])*2 for r in requests)
         self.assertLess(cost, 12000)
 
+    def test_fields_for_the_cds_get_their_own_endpoint_request(self):
+        area = [51, -121, 49, -119]
+        whole = accumulated_requests(date(2025, 12, 31), date(2025, 12, 31), area)
+        split = accumulated_requests(date(2025, 12, 31), date(2025, 12, 31), area, ('str',))
+        self.assertEqual([spec.get('provider') for spec in split], [None, 'cds'])
+        self.assertEqual(split[1]['fields'], ['str'])
+        self.assertEqual(split[1]['request']['variable'], ['surface_net_thermal_radiation'])
+        self.assertEqual(split[0]['fields'] + split[1]['fields'], whole[0]['fields'])
+
 
 def write_netcdf(path, variables, *, day='2025-12-31', hours=24, expver=False,
                  latitudes=None, longitudes=None, coordinate_dtype='f8'):
@@ -512,6 +521,26 @@ class PipelineTests(unittest.TestCase):
                              '2026-01-02', client=client, newest_first=True)
         self.assertTrue((self.root/'output/month_2026-01.json').exists())
         self.assertFalse((self.root/'output/month_2025-12.json').exists())
+
+    def test_fields_lacking_in_another_provider_come_from_the_cds(self):
+        hub, cds = FakeClient(), FakeClient()
+        requested = {'hub': [], 'cds': []}
+        for name, client in [('hub', hub), ('cds', cds)]:
+            retrieve = client.retrieve
+            def record(dataset, request, target, name=name, retrieve=retrieve):
+                requested[name] += request['variable']
+                retrieve(dataset, request, target)
+            client.retrieve = record
+        with redirect_stdout(io.StringIO()):
+            run_pipeline(*self.arguments, client=hub, cds_client=cds, land_source='edh')
+        self.assertEqual(requested['cds'], ['surface_net_thermal_radiation'])
+        self.assertNotIn('surface_net_thermal_radiation', requested['hub'])
+        with gzip.open(self.root/'output/daily_2025-12.csv.gz', 'rt') as stream:
+            rows = {row['variable']: row for row in csv.DictReader(stream)}
+        self.assertEqual(rows['net_radiation_mean_wm2']['qc'], 'valid')
+        self.assertAlmostEqual(float(rows['net_radiation_mean_wm2']['value']), .5)
+        manifest = json.loads((self.root/'cache/requests.manifest.json').read_text())
+        self.assertEqual(len(manifest), 3)
 
     def test_request_errors_are_not_retried(self):
         client = FakeClient()

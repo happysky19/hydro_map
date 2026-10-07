@@ -65,19 +65,21 @@ def run(geojson, start, end, output=None, *, work_dir=None, cache_dir=None,
         elif product == 'era5' and era5_source == 'arco':
             from arco_era5 import ArcoClient
             clients[product] = ArcoClient()
-        elif product == 'era5-land' and land_source == 'edh':
-            import edh_era5_land
-            edh_era5_land.token()
         else:
+            # With the Earth Data Hub, the CDS still supplies the fields the copy lacks.
             import cdsapi
             clients[product] = cdsapi.Client(progress=False)
+    if land_source == 'edh' and cds_client is None:
+        import edh_era5_land
+        edh_era5_land.token()
     work_dir = Path(work_dir or str(output) + '.work').resolve()
     cache_dir = Path(cache_dir or work_dir / 'cache').resolve()
     work_dir.mkdir(parents=True, exist_ok=True)
     cache_dir.mkdir(parents=True, exist_ok=True)
-    if 'era5-land' not in clients:
+    land_client = clients['era5-land']
+    if land_source == 'edh' and cds_client is None:
         from edh_era5_land import EdhClient
-        clients['era5-land'] = EdhClient(cache_dir / 'cds' / 'edh_chunks')
+        land_client = EdhClient(cache_dir / 'cds' / 'edh_chunks')
     folders = [work_dir / name for name in ('aorc', 'era5-land', 'era5')]
     order = 'newest first' if newest_first else 'oldest first'
     print(f'{len(polygons)} projects; {(end-start).days+1} UTC days, {order}; working files: {work_dir}', flush=True)
@@ -90,8 +92,9 @@ def run(geojson, start, end, output=None, *, work_dir=None, cache_dir=None,
             refresh_incomplete=False, keep_chunks=keep_chunks, newest_first=newest_first)),
         **{label: (lambda product=product, folder=folder: download_cds.run_pipeline(
                geojson, product, folder, cache_dir / 'cds', start, end, chunk_days=chunk_days,
-               client=clients[product], workers=cds_workers, newest_first=newest_first,
-               era5_source=era5_source, land_source=land_source))
+               client=land_client if product == 'era5-land' else clients[product],
+               cds_client=clients['era5-land'] if product == 'era5-land' else None,
+               workers=cds_workers, newest_first=newest_first, era5_source=era5_source, land_source=land_source))
            for label, product, folder in [('ERA5-Land', 'era5-land', folders[1]), ('ERA5', 'era5', folders[2])]},
     }
     with ThreadPoolExecutor(max_workers=len(sources)) as pool:
