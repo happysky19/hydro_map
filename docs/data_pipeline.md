@@ -107,8 +107,9 @@ dataset (five was too many), so raising `--cds-workers` above 3 mostly adds
 rejected submissions. `--land-source edh` reads ERA5-Land instead from the
 [DestinE Earth Data Hub](https://earthdatahub.destine.eu/) copy, which has no
 queue; for the 43 catchments this is about 1,200 chunk reads per year, within
-the free allowance of 500,000 a month. Check the store against the CDS with
-`python research/check_edh.py --compare-cds` before a long run. Every source
+the free allowance of 500,000 a month. Before a long run, compare one day of
+the store with the CDS over the catchments' area with
+`python research/check_edh.py --compare-cds --geojson <catchment file>`. Every source
 works through the period year by year, latest first, and writes each finished
 year (AORC) or month (CDS) as it goes.
 

@@ -52,7 +52,7 @@ class EdhClient:
         self.session = session or requests.Session()
         if session is None:
             self.session.auth = ('edh', token())
-        self.lock, self.pending = threading.Lock(), {}
+        self.lock, self.pending, self.absent = threading.Lock(), {}, set()
         self.metadata = None
 
     def _get(self, path):
@@ -134,6 +134,11 @@ class EdhClient:
             event.wait()
         try:
             payload = self._get(key)
+            if payload is None:
+                # The store omits chunks without data; over land this would leave blanks.
+                print(f'Earth Data Hub has no chunk {key}; its cells are blank', flush=True)
+                with self.lock:
+                    self.absent.add(key)
             self.chunk_dir.mkdir(parents=True, exist_ok=True)
             temporary = path.with_suffix('.part')
             temporary.write_bytes(b'' if payload is None else payload)
