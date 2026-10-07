@@ -100,20 +100,60 @@ each month takes three requests. In October 2026 a request waited 5-35 minutes
 in the queue, so with three in flight ERA5-Land takes several days. The CDS
 rejects further submissions once a user has a few requests queued for a
 dataset (five was too many), so raising `--cds-workers` above 3 mostly adds
-rejected submissions. Start the run detached from the terminal and keep the log; the same
-command resumes after any interruption:
+rejected submissions. Every source works through the period year by year,
+latest first, and writes each finished year (AORC) or month (CDS) as it goes.
+
+Before starting, on the host that will run the download:
+
+1. Clone or update the repository, create a Python 3.10+ environment and run
+   `python -m pip install -e . -r research/requirements.txt`; check
+   `zstd --version`.
+2. Put `~/.cdsapirc` there (section 2) and accept the ERA5-Land and ERA5
+   single-level licences once on the CDS website.
+3. Copy the catchment file to `outputs/projects43_independent/dam_catchments.geojson`
+   (the `outputs/` folder is not in Git), or rebuild it with `hydro-map build`
+   (section 3). Every run of a project must use the same file.
+4. Use a node that can reach the internet (AWS S3 and the CDS). Many clusters
+   block it on compute nodes; use a login, data-transfer or interactive node
+   that allows long-running processes, following the site's rules.
+
+Start the run in a terminal multiplexer so it survives logging out:
 
 ```bash
-nohup python research/download_daily.py --geojson outputs/projects43_independent/dam_catchments.geojson --start 1996-01-01 --end 2025-12-31 --output outputs/catchment_daily_1996_2025.csv --work-dir /scratch/hydro/work > download_1996_2025.log 2>&1 &
+tmux new -s hydro
+python research/download_daily.py --geojson outputs/projects43_independent/dam_catchments.geojson --start 1996-01-01 --end 2025-12-31 --output outputs/catchment_daily_1996_2025.csv --work-dir /scratch/hydro/work_1996_2025 2>&1 | tee -a download_1996_2025.log
 ```
 
-`tail -f download_1996_2025.log` follows progress. On a batch scheduler, put the
-same command in the job script with a wall time of at least two days, or
-resubmit it until it finishes. Put `--work-dir` on large local or scratch
-storage. Raw AORC chunks are discarded after use unless `--keep-chunks` is
-given (about 30 GB per year, useful to reprocess without downloading); CDS
-responses are always kept (about 5 GB per year of ERA5-Land). While the sources download, completed years and
-months can already be plotted (see [Plots](#plots)).
+Detach with `Ctrl-b d` and return with `tmux attach -t hydro`. Without tmux,
+start the same command with `nohup ... > download_1996_2025.log 2>&1 &`. On a
+batch scheduler, put the command in the job script; when the wall time ends,
+submit the same job again and it continues where it stopped.
+
+Check progress at any time, from any terminal:
+
+```bash
+python research/progress_daily.py /scratch/hydro/work_1996_2025
+tail -n 20 download_1996_2025.log
+```
+
+`progress_daily.py` prints the AORC years processed, and for ERA5-Land and ERA5
+the CDS requests downloaded and months processed, with the time of the last
+change. In the log, `synchronized native fields chunk N/61` is AORC progress
+within a year, `Cached reanalysis-...` is a finished CDS request, `saved ...
+daily values` a processed month, and `Retrying ... temporarily limited` is the
+CDS queue limit, which is normal. If no file has changed for several hours,
+look at the end of the log. To stop, press `Ctrl-c` in the tmux window (or
+`kill` the process); running the identical command again resumes from the
+completed years, months and downloaded requests. Do not run two commands on the
+same working directory at once.
+
+Put `--work-dir` on large local or scratch storage. Raw AORC chunks are
+discarded after use unless `--keep-chunks` is given (about 30 GB per year,
+useful to reprocess without downloading); CDS responses are always kept (about
+5 GB per year of ERA5-Land). While the sources download, completed years and
+months can already be plotted (see [Plots](#plots)). When all three finish, the
+command exports, checks and writes the delivery files listed above.
+
 Post-export checks run on the saved delivery. If they fail, the files remain
 available, the command returns status 2, and the log gives the check-only command.
 Missing values are reported separately and are not filled automatically.
@@ -532,6 +572,7 @@ equivalent to the mm/day and MJ/m²/day amounts in the tables above.
 | `research/deliver_daily.py` | Write the requested-variable table and README from a checked full delivery |
 | `research/delivery_variables.py` | Requested columns: source, native or computed, definition and forecast counterparts |
 | `research/plot_daily.py` | Overview, source comparison and water-year plots for one catchment, from a delivery or a working directory |
+| `research/progress_daily.py` | Progress of a running or interrupted download: years, requests and months completed |
 
 For modeling, begin with AORC precipitation and temperature as meteorological
 forcing. Rain/snow partition and PET are calculated inputs with the method

@@ -528,20 +528,39 @@ def run_pipeline(geojson, product, output_dir, cache_dir, start, end, *, project
     if client is None and not cache_only:
         import cdsapi
         client = cdsapi.Client()
-    if not cache_only:
-        specs = list(unique.values())
-        prefetch(specs[::-1] if newest_first else specs, cache_dir, manifest, client, workers)
     weights, grid = None, None
     identity = Transformer.from_crs(4326, 4326, always_xy=True)
     months = list(date_chunks(start, end, 31))
-    for month_start, month_end in (months[::-1] if newest_first else months):
+    months = months[::-1] if newest_first else months
+
+    def complete(month_start):
         month = month_start.strftime('%Y-%m')
         daily_path, status_path = output_dir/f'daily_{month}.csv.gz', output_dir/f'month_{month}.json'
-        if status_path.exists():
-            status = json.loads(status_path.read_text())
-            if (status.get('status') == 'complete' and status.get('configuration_sha256') == configuration_hash
-                    and daily_path.exists() and status.get('daily_sha256') == sha256(daily_path)):
-                print(f'{month}: verified existing output', flush=True); continue
+        if not status_path.exists():
+            return False
+        status = json.loads(status_path.read_text())
+        return (status.get('status') == 'complete' and status.get('configuration_sha256') == configuration_hash
+                and daily_path.exists() and status.get('daily_sha256') == sha256(daily_path))
+
+    def prefetch_year(year):
+        """Queue a calendar year's uncached requests together, so finished years are usable early."""
+        specs = {}
+        for month_start, month_end in months:
+            if month_start.year == year and not complete(month_start):
+                for first, last in date_chunks(month_start, month_end, batch_days):
+                    for spec in batch_requests(product, first, last, area, endpoint_specs):
+                        specs.setdefault(json_hash({key: spec[key] for key in ['dataset', 'request']}), spec)
+        prefetch(list(specs.values()), cache_dir, manifest, client, workers)
+
+    prefetched = set()
+    for month_start, month_end in months:
+        month = month_start.strftime('%Y-%m')
+        daily_path, status_path = output_dir/f'daily_{month}.csv.gz', output_dir/f'month_{month}.json'
+        if complete(month_start):
+            print(f'{month}: verified existing output', flush=True); continue
+        if not cache_only and month_start.year not in prefetched:
+            prefetched.add(month_start.year)
+            prefetch_year(month_start.year)
         temporary = daily_path.with_suffix('.part')
         source_hashes, count = {}, 0
         try:
