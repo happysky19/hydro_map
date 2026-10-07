@@ -102,7 +102,8 @@ the CDS original, so a gap in a copy cannot reach the daily values. In October
 thermal radiation, blank everywhere from 2024-11-01 to 2024-11-27, so a 30-year
 run makes one CDS request (the 2024 endpoints). `--era5-source cds`
 and `--land-source cds` use the CDS queue for everything instead (in October
-2026 a request waited 2-35 minutes, so ERA5-Land alone took several days).
+2026 a request waited from 2 minutes to 4 hours, so ERA5-Land alone took
+several days).
 
 Measured on a 16-core workstation in October 2026, a 30-year run takes about
 10-12 hours, set by AORC; the three sources run side by side:
@@ -111,7 +112,7 @@ Measured on a 16-core workstation in October 2026, a 30-year run takes about
 | --- | --- | --- |
 | AORC (S3) | about 20 minutes per year | about 10 hours |
 | ERA5 (ARCO-ERA5) | about 35 seconds and 3.7 GB per month | about 4 hours, 1.3 TB read |
-| ERA5-Land (Earth Data Hub) | a few minutes of reading and about 40 seconds of processing per month | about 5 hours, about 150 GB read |
+| ERA5-Land (Earth Data Hub) | about 3 minutes of reading per year and 50 seconds of processing per month | about 6-7 hours, about 150 GB read, plus the CDS queue for the 2024 endpoints |
 | Export, checks and delivery | | a few minutes |
 
 The Earth Data Hub allows 500,000 chunk reads a month; a 30-year run needs about
