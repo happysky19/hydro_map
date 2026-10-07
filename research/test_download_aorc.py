@@ -76,6 +76,19 @@ class AorcDownloadTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'same geometry and part'):
                 load_polygons(path, ['B'])
 
+    def test_offline_store_remembers_objects_the_source_reported_absent(self):
+        import json, tempfile
+        from download_aorc import Store
+        with tempfile.TemporaryDirectory() as directory:
+            cache = Path(directory)
+            absent = 'https://example.invalid/2026.zarr/.zmetadata'
+            (cache / 'requests.jsonl').write_text(json.dumps(dict(url=absent, status=404, bytes=0)) + '\n')
+            store = Store(cache, 1e6, offline=True)
+            with self.assertRaises(FileNotFoundError):
+                store.read(absent)
+            with self.assertRaisesRegex(ValueError, 'offline cache'):
+                store.read('https://example.invalid/2025.zarr/.zmetadata')
+
     def test_amounts_need_next_midnight(self):
         start = end = dt.date(2025, 12, 31)
         states = requested_hours(start, end, False)

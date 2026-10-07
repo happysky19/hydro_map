@@ -30,6 +30,20 @@ class MeteorologyTests(unittest.TestCase):
         self.assertLess(float(wet_bulb_temperature(20., q, 60000.)),
                         float(wet_bulb_temperature(20., q, 101325.)))
 
+    def test_newton_wet_bulb_matches_fine_bisection(self):
+        rng = np.random.default_rng(7)
+        t = rng.uniform(-45, 45, 20000)
+        pressure = rng.uniform(55000, 105000, 20000)
+        vapor = saturation_vapor_pressure_kpa(t) * rng.uniform(.02, 1., 20000)
+        q = specific_humidity(vapor, pressure)
+        lower, upper = np.full(t.shape, -120.), t.copy()
+        for _ in range(60):
+            mid = (lower + upper) / 2
+            residual = (saturation_vapor_pressure_kpa(mid)
+                        - .00066 * (1 + .00115 * mid) * (pressure / 1000) * (t - mid) - vapor)
+            lower, upper = np.where(residual < 0, mid, lower), np.where(residual < 0, upper, mid)
+        np.testing.assert_allclose(wet_bulb_temperature(t, q, pressure), (lower + upper) / 2, rtol=0, atol=1e-9)
+
     def test_saturation_supersaturation_and_missing_union(self):
         q = specific_humidity(saturation_vapor_pressure_kpa(5.) * 1.1, 90000.)
         rh, vpd = humidity(5., q, 90000.)
