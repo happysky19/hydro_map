@@ -453,7 +453,7 @@ def prefetch(specs, cache_dir, manifest, client, workers=2, attempts=30, retry_s
 
 def run_pipeline(geojson, product, output_dir, cache_dir, start, end, *, projects=None,
                  chunk_days=14, dry_run=False, cache_only=False, client=None, workers=3,
-                 newest_first=False, era5_source='arco'):
+                 newest_first=False, era5_source='arco', land_source='cds'):
     """Return run metadata. Existing completed months require verified file hashes."""
     geojson, output_dir, cache_dir = map(Path, [geojson, output_dir, cache_dir])
     if isinstance(start, str): start = date.fromisoformat(start)
@@ -487,6 +487,8 @@ def run_pipeline(geojson, product, output_dir, cache_dir, start, end, *, project
                **forcing, area_north_west_south_east=area, chunk_days=chunk_days,
                daily_schema=daily_schema(product), code_sha256={p.name: sha256(p) for p in dependencies},
                methods=dict(provider=('Google ARCO-ERA5, a copy of the CDS dataset' if product == 'era5' and era5_source == 'arco'
+                                      else 'DestinE Earth Data Hub copy of the CDS dataset'
+                                      if product == 'era5-land' and land_source == 'edh'
                                       else 'Copernicus Climate Data Store'),
                             spatial='WGS84 geodesic polygon/native-grid intersections; full-area coverage required',
                             grid_coordinates='Regular axes reconstructed between endpoints; maximum coordinate residual and cross-field difference 0.00002 degrees; no data interpolation',
@@ -533,6 +535,9 @@ def run_pipeline(geojson, product, output_dir, cache_dir, start, end, *, project
         if product == 'era5' and era5_source == 'arco':
             from arco_era5 import ArcoClient
             client = ArcoClient()
+        elif product == 'era5-land' and land_source == 'edh':
+            from edh_era5_land import EdhClient
+            client = EdhClient(cache_dir / 'edh_chunks')
         else:
             import cdsapi
             client = cdsapi.Client(progress=False)
@@ -559,6 +564,8 @@ def run_pipeline(geojson, product, output_dir, cache_dir, start, end, *, project
                     for spec in batch_requests(product, first, last, area, endpoint_specs):
                         specs.setdefault(json_hash({key: spec[key] for key in ['dataset', 'request']}), spec)
         prefetch(list(specs.values()), cache_dir, manifest, client, workers)
+        # Providers that keep raw chunks while answering a year's requests release them here.
+        getattr(client, 'release', lambda: None)()
 
     prefetched = set()
     for month_start, month_end in months:
@@ -640,6 +647,8 @@ def main():
     parser.add_argument('--newest-first', action='store_true', help='Request and process the latest months first')
     parser.add_argument('--era5-source', choices=['arco', 'cds'], default='arco',
                         help='ERA5 provider: the public ARCO-ERA5 copy (no queue) or the CDS')
+    parser.add_argument('--land-source', choices=['cds', 'edh'], default='cds',
+                        help='ERA5-Land provider: the CDS or the Earth Data Hub copy (needs a DestinE token)')
     parser.add_argument('--dry-run', action='store_true'); parser.add_argument('--cache-only', action='store_true')
     args = parser.parse_args()
     run_pipeline(**vars(args))
