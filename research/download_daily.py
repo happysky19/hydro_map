@@ -62,7 +62,7 @@ def run(geojson, start, end, output=None, *, work_dir=None, cache_dir=None,
     for product in ('era5-land', 'era5'):
         if cds_client is None:
             import cdsapi
-            clients[product] = cdsapi.Client()
+            clients[product] = cdsapi.Client(progress=False)
         else:
             clients[product] = cds_client
     work_dir = Path(work_dir or str(output) + '.work').resolve()
@@ -142,8 +142,11 @@ def main():
     try:
         run(**vars(args))
     except KeyboardInterrupt:
-        print('Interrupted. Repeat the same command to resume completed periods.', file=sys.stderr)
-        return 130
+        print('Interrupted. Repeat the same command to resume completed periods.', file=sys.stderr, flush=True)
+        # Worker threads may be waiting on the CDS queue; every output is written atomically,
+        # so leave at once instead of waiting for them.
+        sys.stdout.flush()
+        os._exit(130)
     except DeliveryCheckError as error:
         print(str(error), file=sys.stderr)
         return 2

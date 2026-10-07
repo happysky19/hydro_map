@@ -430,7 +430,8 @@ def prefetch(specs, cache_dir, manifest, client, workers=2, attempts=30, retry_s
                 if (not transient(error) or failures >= attempts
                         or (queued and waited > queue_hours*3600)):
                     raise
-                print(f"Retrying {spec['dataset']} after: {error}", flush=True)
+                reason = 'queue full' if queued else str(error).splitlines()[0]
+                print(f"CDS {reason} for {spec['dataset']}; retrying in {retry_seconds/60:g} min", flush=True)
                 time.sleep(retry_seconds)
         request = spec['request']
         first = lambda value: value[0] if isinstance(value, list) else value
@@ -527,7 +528,7 @@ def run_pipeline(geojson, product, output_dir, cache_dir, start, end, *, project
     configuration_hash = json_hash(run)
     if client is None and not cache_only:
         import cdsapi
-        client = cdsapi.Client()
+        client = cdsapi.Client(progress=False)
     weights, grid = None, None
     identity = Transformer.from_crs(4326, 4326, always_xy=True)
     months = list(date_chunks(start, end, 31))
