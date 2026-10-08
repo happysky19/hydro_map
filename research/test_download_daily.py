@@ -104,6 +104,27 @@ class DownloadDailyTests(unittest.TestCase):
             self.assertTrue(item['metadata']['warnings'])
             self.assertTrue(item['metadata']['project_forcing']['A']['routing_requires_operations'])
 
+    def test_requested_table_can_be_written_as_parquet(self):
+        import pyarrow.parquet as pq
+        import deliver_daily
+        parquet = self.output.with_suffix('.parquet')
+        with ExitStack() as stack, redirect_stdout(io.StringIO()):
+            self.aorc_inputs(stack)
+            self.pipeline.run(self.geojson, self.day, self.day, self.output, cds_client=FakeClient())
+            stack.enter_context(patch.object(sys, 'argv', ['deliver_daily.py', str(self.full), '--output', str(parquet)]))
+            deliver_daily.main()
+        with self.output.open() as handle:
+            expected = next(csv.DictReader(handle))
+        table = pq.read_table(parquet)
+        self.assertEqual(table.column_names, list(expected))
+        self.assertEqual(str(table.schema.field('date').type), 'date32[day]')
+        row = table.to_pylist()[0]
+        self.assertEqual(row.pop('date').isoformat(), expected.pop('date'))
+        for name, text in expected.items():
+            self.assertEqual(row[name], (None if text == '' else text if name in ('project_id', 'aorc_gap_filled')
+                                         else float(text)), name)
+        self.assertIn("pandas.read_parquet('daily.parquet')", (self.root / 'daily_README.md').read_text())
+
     def test_missing_credentials_fail_before_source_downloads(self):
         with patch('shutil.which', return_value='zstd'), \
              patch('cdsapi.Client', side_effect=OSError('Missing CDS configuration')), \

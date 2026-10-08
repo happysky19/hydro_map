@@ -71,6 +71,15 @@ python research/check_daily.py outputs/catchment_daily_full.csv
 python research/deliver_daily.py outputs/catchment_daily_full.csv
 ```
 
+To deliver the requested table as Parquet while the full table stays CSV, name
+a `.parquet` output (needs `pyarrow`, `research/requirements-parquet.txt`). The
+README is rewritten to list it; in Parquet, blanks are nulls and `date` is a
+date column:
+
+```bash
+python research/deliver_daily.py outputs/catchment_daily_full.csv --output outputs/catchment_daily.parquet
+```
+
 The required arguments are `--geojson`, `--start` and `--end`. If `--output`
 is omitted, the CSV is named `outputs/catchment_daily_START_END.csv`. For the
 full period, use a new output filename:
