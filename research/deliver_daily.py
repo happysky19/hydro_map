@@ -123,7 +123,10 @@ def readme_text(manifest, selected, files, missing, checks, gaps=None):
         '- "Native" means the source field itself (units converted only); "computed" means calculated '
         'here from native fields as described.',
         '- Column names end with their units: `mm` is a daily amount (mm/day), `W_m2` a daily mean flux, '
-        '`degC`, `Pa`, `kPa`, `kg_kg`, `m3_m3`, `kg_m3`, `m_s`, `m`, `pct` (%) and `fraction` (0-1).', '',
+        '`degC`, `Pa`, `kPa`, `kg_kg`, `m3_m3`, `kg_m3`, `m_s`, `m`, `pct` (%) and `fraction` (0-1).',
+        *(['- In the Parquet table blanks are nulls and `date` is a date column; read it with '
+           f"`pandas.read_parquet('{files['requested']}')`."] if files['requested'].endswith('.parquet') else []),
+        '',
         '## Sources', '',
         *[f'- `{source}`: {label}' for source, label in SOURCE_LABELS.items()], '',
         'AORC is the forcing that the National Weather Service uses to calibrate the National Water Model '

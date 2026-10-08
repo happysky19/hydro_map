@@ -1,2 +1,2 @@
 -r requirements.txt
-pyarrow>=14,<25
+pyarrow>=14
