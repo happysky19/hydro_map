@@ -12,9 +12,20 @@ Kinds:
   wateryear  one variable by water year (1 Oct to 30 Sep): running totals for
              daily amounts, daily values for states; earlier years, their median
              and the latest year
+
+Kinds that draw every catchment at once (--geojson gives the polygons, names
+and outlets; only years complete for every catchment are used):
+  map        annual precipitation, snowfall share and mean air temperature on
+             the catchment polygons
+  seasons    monthly precipitation, snowfall share and air temperature, one
+             row per catchment, rows grouped by river system
+  anomaly    water-year precipitation of each catchment as a percentage of its
+             own mean, one row per catchment and one column per water year;
+             a dot marks a water year with missing days
 """
 
 import argparse
+import calendar
 import csv
 from datetime import date, timedelta
 import gzip
@@ -73,14 +84,16 @@ def label(variable):
     return LABELS.get(variable, (variable.replace('_', ' '), ''))
 
 
-def load(path, project, variables, start=None, end=None):
-    """Valid daily values as {(source, variable): (dates, values)} for one catchment."""
+def load_many(path, variables, start=None, end=None, projects=None):
+    """Valid daily values as {project: {(source, variable): (dates, values)}}, for PROJECTS or every catchment."""
     path, wanted, found = Path(path), set(variables), {}
 
-    def keep(source, variable, day, value):
-        if variable in wanted and value not in ('', None) and (start is None or day >= start) and (
-                end is None or day <= end):
-            found.setdefault((source, variable), {})[day] = float(value)
+    def keep(project, source, variable, day, value):
+        if variable not in wanted or value in ('', None) or (projects is not None and project not in projects):
+            return
+        day = day if isinstance(day, date) else date.fromisoformat(day)
+        if (start is None or day >= start) and (end is None or day <= end):
+            found.setdefault(project, {}).setdefault((source, variable), {})[day] = float(value)
 
     if path.is_dir():
         files = sorted(path.glob('*/daily_*.csv*')) + sorted(path.glob('daily_*.csv*'))
@@ -90,20 +103,24 @@ def load(path, project, variables, start=None, end=None):
             opener = gzip.open if file.suffix == '.gz' else open
             with opener(file, 'rt', newline='') as stream:
                 for row in csv.DictReader(stream):
-                    if row['project_id'] == project and row['qc'] == 'valid':
-                        keep(row['source'], row['variable'], date.fromisoformat(row['date']), row['value'])
+                    if row['qc'] == 'valid':
+                        keep(row['project_id'], row['source'], row['variable'], row['date'], row['value'])
     else:
         from check_daily import table_rows
         manifest = json.loads(Path(str(path) + '.manifest.json').read_text())
         columns = {column: (info['source'], info['variable']) for column, info in manifest['columns'].items()
                    if info.get('variable') in wanted}
         for row in table_rows(path, manifest['columns']):
-            if row['project_id'] == project:
-                day = date.fromisoformat(str(row['date']))
-                for column, (source, variable) in columns.items():
-                    keep(source, variable, day, row[column])
-    return {key: (np.array(sorted(values)), np.array([values[d] for d in sorted(values)]))
-            for key, values in found.items()}
+            day = date.fromisoformat(str(row['date']))
+            for column, (source, variable) in columns.items():
+                keep(row['project_id'], source, variable, day, row[column])
+    return {project: {key: (np.array(sorted(values)), np.array([values[d] for d in sorted(values)]))
+                      for key, values in series.items()} for project, series in found.items()}
+
+
+def load(path, project, variables, start=None, end=None):
+    """Valid daily values as {(source, variable): (dates, values)} for one catchment."""
+    return load_many(path, variables, start, end, {project}).get(project, {})
 
 
 def resolution(series, choice):
@@ -355,15 +372,328 @@ def plot_water_years(series, variable, source, title):
     return fig
 
 
+# ---------------------------------------------------------------- every catchment at once
+
+CATCHMENT_KINDS = ('map', 'seasons', 'anomaly')
+# Rows of the catchment figures, upstream to downstream within each river system. Catchments
+# not listed here follow, north to south.
+GROUPS = [
+    ('Columbia, Canada', ['MICA', 'REVELSTOKE', 'HUGH_KEENLEYSIDE', 'DUNCAN', 'KOOTENAY_CANAL', 'CORRA_LINN',
+                          'BRILLIANT', 'SEVEN_MILE', 'WANETA']),
+    ('Kootenai, Flathead,\nPend Oreille', ['LIBBY', 'HUNGRY_HORSE', 'KERR', 'NOXON_RAPIDS', 'CABINET_GORGE',
+                                           'ALBENI_FALLS', 'BOUNDARY']),
+    ('Columbia, US', ['GRAND_COULEE', 'CHIEF_JOSEPH', 'WELLS', 'ROCKY_REACH', 'ROCK_ISLAND', 'WANAPUM',
+                      'PRIEST_RAPIDS', 'MCNARY', 'JOHN_DAY', 'THE_DALLES', 'BONNEVILLE']),
+    ('Snake', ['PALISADES', 'AMERICAN_FALLS', 'BROWNLEE', 'OXBOW', 'HELLS_CANYON', 'DWORSHAK', 'LOWER_GRANITE',
+               'LITTLE_GOOSE', 'LOWER_MONUMENTAL', 'ICE_HARBOR']),
+    ('Cascades', ['ROSS', 'MOSSYROCK', 'SWIFT', 'DETROIT', 'LOOKOUT_POINT', 'ROUND_BUTTE']),
+]
+# One hue light to dark for amounts, a second hue for the snowfall share, blue-grey-red around 0 °C
+# (and around the mean for anomalies, blue for wet).
+BLUE_RAMP = [SURFACE, '#cde2fb', '#9ec5f4', '#6da7ec', '#3987e5', '#256abf', '#1c5cab', '#0d366b']
+ORANGE_RAMP = [SURFACE, '#fde3d6', '#f9bda2', '#f4966e', '#eb6834', '#c94f22', '#9c3a15']
+COLD_WARM = ['#0d366b', '#2a78d6', '#9ec5f4', '#f0efec', '#f4a3a2', '#e34948', '#8a1a1a']
+MONTH_LETTERS = list('JFMAMJJASOND')
+
+
+def catchments(geojson):
+    """{project: dict(name, lat, lon, area, rings)} from a dam_catchments GeoJSON."""
+    found = {}
+    for feature in json.loads(Path(geojson).read_text())['features']:
+        properties, geometry = feature['properties'], feature['geometry']
+        parts = geometry['coordinates'] if geometry['type'] == 'MultiPolygon' else [geometry['coordinates']]
+        name = properties.get('name') or properties['id']
+        if '(' in name and ')' in name:   # a short name in parentheses, for example Seli's Ksanka Qlispe (Kerr)
+            name = name[name.index('(') + 1:name.index(')')]
+        found[properties['id']] = dict(name=name, lat=float(properties['lat']), lon=float(properties['lon']),
+                                       area=float(properties.get('area_local') or properties.get('area') or 0),
+                                       rings=[np.array(part[0], dtype=float) for part in parts])
+    return found
+
+
+def arrange(projects, meta):
+    """Row order and (group title, row count) pairs: listed GROUPS first, then the rest north to south."""
+    rows, groups = [], []
+    for title, members in GROUPS:
+        present = [project for project in members if project in projects]
+        if present:
+            rows.extend(present)
+            groups.append((title, len(present)))
+    rest = sorted((project for project in projects if project not in rows), key=lambda project: -meta[project]['lat'])
+    if rest:
+        rows.extend(rest)
+        groups.append(('Other' if groups else '', len(rest)))
+    return rows, groups
+
+
+def span(years):
+    """'1997–2006 and 2025' for years with gaps, '1997–2025' when continuous."""
+    runs, start = [], years[0]
+    for year, following in zip(years, list(years[1:]) + [None]):
+        if following != year + 1:
+            runs.append(f'{start}–{year}' if year != start else str(year))
+            start = following
+    return ' and '.join(filter(None, [', '.join(runs[:-1]), runs[-1]]))
+
+
+COMPLETE_DAYS = 350   # a year counts for every-catchment figures when each catchment has this many days
+
+
+def year_counts(series_by_project, key, water=False):
+    """{year: {project: days with a value}} by calendar year, or by water year."""
+    counts = {}
+    for project, series in series_by_project.items():
+        for day in (series[key][0] if key in series else []):
+            year = water_year(day) if water else day.year
+            counts.setdefault(year, {}).setdefault(project, 0)
+            counts[year][project] += 1
+    return counts
+
+
+def complete_years(counts, projects):
+    """Years in which every catchment has at least COMPLETE_DAYS days."""
+    return sorted(year for year, by_project in counts.items()
+                  if all(by_project.get(project, 0) >= COMPLETE_DAYS for project in projects))
+
+
+def monthly(days, values, years, amount):
+    """Twelve monthly totals (amounts) or means (states), averaged over the calendar YEARS."""
+    keep = np.isin([day.year for day in days], years)
+    months, kept = np.array([day.month for day in days])[keep], values[keep]
+    if amount:
+        return np.array([kept[months == month].sum() for month in range(1, 13)]) / len(years)
+    return np.array([kept[months == month].mean() if (months == month).any() else np.nan for month in range(1, 13)])
+
+
+def catchment_figure(n_rows, width, years=None):
+    plt = setup()
+    plt.rcParams.update({'axes.titlesize': 11, 'axes.titleweight': 'bold', 'axes.titlelocation': 'left'})
+    height = max(4.5, .25 * n_rows + 2.6)
+    return plt, (width if years is None else max(width, 4.2 + .3 * len(years)), height)
+
+
+def ramp(colors, name='ramp'):
+    from matplotlib.colors import LinearSegmentedColormap
+    return LinearSegmentedColormap.from_list(name, colors)
+
+
+def around_zero(values, low=-1, high=1):
+    from matplotlib.colors import TwoSlopeNorm
+    return TwoSlopeNorm(0, min(low, np.floor(np.nanmin(values))), max(high, np.ceil(np.nanmax(values))))
+
+
+def row_axis(ax, names, groups):
+    """Catchment names as y ticks, a surface-coloured gap between river systems."""
+    ax.set_yticks(range(len(names)), names, fontsize=8.5)
+    ax.set_ylim(len(names) - .5, -.5)
+    ax.tick_params(length=0)
+    ax.grid(False)
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+    edge = 0
+    for _, count in groups[:-1]:
+        edge += count
+        ax.axhline(edge - .5, color=SURFACE, linewidth=2.5)
+
+
+def group_labels(ax, groups):
+    """River-system titles beside the rows, on a label-only axis with the same row scale."""
+    ax.axis('off')
+    ax.set_ylim(sum(count for _, count in groups) - .5, -.5)
+    edge = 0
+    for title, count in groups:
+        ax.text(1, edge + count / 2 - .5, title, transform=ax.get_yaxis_transform(), ha='right', va='center',
+                fontsize=9, color=INK_SECONDARY, fontweight='bold', linespacing=1.1)
+        edge += count
+
+
+def heat_bar(fig, image, ax, label):
+    bar = fig.colorbar(image, ax=ax, orientation='horizontal', fraction=.04, pad=.03, aspect=35)
+    bar.set_label(label, color=INK_SECONDARY, fontsize=9)
+    bar.outline.set_visible(False)
+    bar.ax.tick_params(labelsize=8)
+
+
+def climate(series_by_project, source, rows, years):
+    """Annual and monthly precipitation, snowfall and air temperature of each catchment over YEARS."""
+    found = {}
+    for project in rows:
+        series = series_by_project[project]
+        keep = lambda key: np.isin([day.year for day in series[key][0]], years)
+        annual = {variable: series[source, variable][1][keep((source, variable))] for variable in
+                  ('precipitation_mm', 'snowfall_mm', 'tmean_c')}
+        found[project] = dict(
+            precipitation=annual['precipitation_mm'].sum() / len(years),
+            snowfall=annual['snowfall_mm'].sum() / len(years), temperature=annual['tmean_c'].mean(),
+            months={variable: monthly(*series[source, variable], years, variable != 'tmean_c')
+                    for variable in ('precipitation_mm', 'snowfall_mm', 'tmean_c')})
+    return found
+
+
+def place_labels(ax, fig, points, labels):
+    """Each label beside its point, in the first of six positions that covers no other point or label."""
+    import matplotlib.patheffects as effects
+    fig.canvas.draw()
+    display = ax.transData.transform(points)
+    renderer, taken = fig.canvas.get_renderer(), []
+    for index, text in labels:
+        others = np.delete(display, index, axis=0)
+        best = None
+        for dx, dy in ((6, 2), (-6, 2), (0, 8), (0, -12), (6, -10), (-6, -10)):
+            artist = ax.annotate(text, points[index], xytext=(dx, dy), textcoords='offset points',
+                                 ha='left' if dx > 0 else 'right' if dx < 0 else 'center', fontsize=8.5, color=INK,
+                                 path_effects=[effects.withStroke(linewidth=2.5, foreground=SURFACE)])
+            box = artist.get_window_extent(renderer).expanded(1.15, 1.4)
+            hits = sum(box.contains(x, y) for x, y in others) + sum(box.overlaps(other) for other in taken)
+            if best is None or hits < best[0]:
+                if best is not None:
+                    best[1].remove()
+                best = (hits, artist, box)
+            else:
+                artist.remove()
+            if hits == 0:
+                break
+        taken.append(best[2])
+
+
+def plot_map(values, meta, rows, title):
+    from matplotlib.collections import PolyCollection
+    plt, size = catchment_figure(0, 17)
+    fig, axes = plt.subplots(1, 3, figsize=(size[0], 7.4), layout='constrained')
+    fig.get_layout_engine().set(h_pad=.15)
+    precipitation = np.array([values[p]['precipitation'] for p in rows])
+    share = np.array([100 * values[p]['snowfall'] / values[p]['precipitation'] if values[p]['precipitation'] else 0
+                      for p in rows])
+    temperature = np.array([values[p]['temperature'] for p in rows])
+    panels = [('Precipitation', precipitation, ramp(BLUE_RAMP), 'mm per year', plt.Normalize(0, precipitation.max())),
+              ('Snowfall share of precipitation', share, ramp(ORANGE_RAMP), '%',
+               plt.Normalize(0, max(10, 10 * np.ceil(share.max() / 10)))),
+              ('Mean air temperature', temperature, ramp(COLD_WARM), '°C', around_zero(temperature))]
+    lons = np.concatenate([ring[:, 0] for p in rows for ring in meta[p]['rings']])
+    lats = np.concatenate([ring[:, 1] for p in rows for ring in meta[p]['rings']])
+    for ax, (name, colours, cmap, unit, norm) in zip(axes, panels):
+        polygons = [ring for p in rows for ring in meta[p]['rings']]
+        shades = np.array([value for p, value in zip(rows, colours) for _ in meta[p]['rings']])
+        patches = PolyCollection(polygons, array=shades, cmap=cmap, norm=norm, edgecolor=SURFACE, linewidth=.5)
+        ax.add_collection(patches)
+        ax.scatter([meta[p]['lon'] for p in rows], [meta[p]['lat'] for p in rows], s=9, color=INK, zorder=3,
+                   linewidths=0)
+        ax.set_xlim(lons.min() - .6, lons.max() + .6)
+        ax.set_ylim(lats.min() - .3, lats.max() + .3)
+        ax.set_aspect(1 / np.cos(np.radians(lats.mean())))
+        ax.set_title(name, pad=12)
+        ax.grid(False)
+        ax.set_xticks([x for x in range(-180, 181, 4) if lons.min() <= x <= lons.max()])
+        ax.set_yticks([y for y in range(-90, 91, 4) if lats.min() <= y <= lats.max()])
+        ax.xaxis.set_major_formatter(lambda x, _: f'{abs(x):g}°{"W" if x < 0 else "E"}')
+        ax.yaxis.set_major_formatter(lambda y, _: f'{abs(y):g}°{"S" if y < 0 else "N"}')
+        ax.tick_params(length=0)
+        for spine in ax.spines.values():
+            spine.set_visible(False)
+        heat_bar(fig, patches, ax, unit)
+    fig.suptitle(title, x=.01, ha='left', fontsize=13, color=INK)
+    # Name the largest catchments and the wettest and driest one.
+    named = set(sorted(rows, key=lambda p: -meta[p]['area'])[:4]) | {rows[int(precipitation.argmax())],
+                                                                      rows[int(precipitation.argmin())]}
+    place_labels(axes[0], fig, np.array([(meta[p]['lon'], meta[p]['lat']) for p in rows]),
+                 [(rows.index(p), meta[p]['name']) for p in sorted(named, key=rows.index)])
+    return fig
+
+
+def plot_seasons(values, meta, rows, groups, title):
+    plt, size = catchment_figure(len(rows), 16)
+    fig = plt.figure(figsize=size, layout='constrained')
+    fig.get_layout_engine().set(h_pad=.15)
+    label_axis, *axes = fig.subplots(1, 4, width_ratios=[.35, 1, 1, 1])
+    precipitation = np.array([values[p]['months']['precipitation_mm'] for p in rows])
+    with np.errstate(invalid='ignore', divide='ignore'):
+        share = np.where(precipitation > 0, 100 * np.array([values[p]['months']['snowfall_mm'] for p in rows])
+                         / precipitation, 0)
+    temperature = np.array([values[p]['months']['tmean_c'] for p in rows])
+    panels = [('Precipitation', precipitation, ramp(BLUE_RAMP), 'mm per month',
+               plt.Normalize(0, np.nanpercentile(precipitation, 99))),
+              ('Snowfall share', share, ramp(ORANGE_RAMP), '% of precipitation', plt.Normalize(0, 100)),
+              ('Air temperature', temperature, ramp(COLD_WARM), '°C', around_zero(temperature))]
+    names = [meta[p]['name'] for p in rows]
+    for index, (ax, (name, grid, cmap, unit, norm)) in enumerate(zip(axes, panels)):
+        image = ax.imshow(grid, aspect='auto', cmap=cmap, norm=norm, interpolation='nearest')
+        ax.set_xticks(range(12), MONTH_LETTERS, fontsize=8.5)
+        ax.set_title(name, pad=8)
+        row_axis(ax, names if index == 0 else [''] * len(names), groups)
+        heat_bar(fig, image, ax, unit)
+    group_labels(label_axis, groups)
+    fig.suptitle(title, x=.01, ha='left', fontsize=13, color=INK)
+    return fig
+
+
+def plot_anomaly(series_by_project, meta, rows, groups, key, title):
+    counts = year_counts(series_by_project, key, water=True)
+    years = complete_years(counts, rows)
+    if len(years) < 2:
+        raise ValueError('The anomaly figure needs at least two water years complete for every catchment')
+    totals = np.zeros((len(rows), len(years)))
+    for i, project in enumerate(rows):
+        days, values = series_by_project[project][key]
+        year_of = np.array([water_year(day) for day in days])
+        totals[i] = [values[year_of == year].sum() for year in years]
+    anomaly = 100 * totals / totals.mean(axis=1, keepdims=True) - 100
+    plt, size = catchment_figure(len(rows), 9, years)
+    fig = plt.figure(figsize=size, layout='constrained')
+    label_axis, ax = fig.subplots(1, 2, width_ratios=[.4, 1])
+    limit = max(20, 10 * np.ceil(np.abs(anomaly).max() / 10))
+    from matplotlib.colors import TwoSlopeNorm
+    image = ax.imshow(anomaly, aspect='auto', cmap=ramp(COLD_WARM[::-1]), norm=TwoSlopeNorm(0, -limit, limit),
+                      interpolation='nearest')
+    ax.set_xticks(range(len(years)), [str(year) for year in years], fontsize=8.5, rotation=90)
+    ax.set_xlabel('Water year (October to September)')
+    ax.set_title(title, pad=8)
+    row_axis(ax, [meta[p]['name'] for p in rows], groups)
+    for j, year in enumerate(years):
+        expected = 366 if calendar.isleap(year) else 365   # the water year holds February of YEAR
+        for i, project in enumerate(rows):
+            if counts[year][project] < expected:
+                ax.plot(j, i, 'o', markersize=3, color=INK, markeredgecolor=SURFACE, markeredgewidth=.6)
+    heat_bar(fig, image, ax, f'% of the {span(years)} mean')
+    group_labels(label_axis, groups)
+    return fig
+
+
+def plot_catchments(kind, path, geojson, source, start, end):
+    """Load every catchment and draw one of CATCHMENT_KINDS."""
+    meta = catchments(geojson)
+    variables = ['precipitation_mm'] if kind == 'anomaly' else ['precipitation_mm', 'snowfall_mm', 'tmean_c']
+    series_by_project = load_many(path, variables, start, end, set(meta))
+    if source is None:
+        source = next((s for s in SOURCE_NAMES if any((s, 'precipitation_mm') in v for v in series_by_project.values())),
+                      None)
+    keys = [(source, variable) for variable in variables]
+    projects = [p for p, series in series_by_project.items() if all(key in series for key in keys)]
+    if not projects:
+        raise ValueError(f'No catchment in {path} has valid {SOURCE_NAMES.get(source, source)} values for {variables}')
+    rows, groups = arrange(projects, meta)
+    label = f'{len(rows)} catchments · {SOURCE_NAMES[source]}'
+    if kind == 'anomaly':
+        return plot_anomaly(series_by_project, meta, rows, groups, keys[0], f'Water-year precipitation anomaly · {label}')
+    years = complete_years(year_counts(series_by_project, keys[0]), rows)
+    if not years:
+        raise ValueError('No calendar year is complete for every catchment')
+    values = climate(series_by_project, source, rows, years)
+    if kind == 'map':
+        return plot_map(values, meta, rows, f'{label} · {span(years)}')
+    return plot_seasons(values, meta, rows, groups, f'Seasonal cycle · {label} · {span(years)}')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('input', type=Path, help='Working directory with source folders, or OUTPUT_full table')
-    parser.add_argument('--project', required=True, help='Catchment project_id, for example MICA')
-    parser.add_argument('--kind', choices=['overview', 'compare', 'wateryear'], default='overview')
+    parser.add_argument('--project', help='Catchment project_id, for example MICA (overview, compare, wateryear)')
+    parser.add_argument('--geojson', type=Path, help='Catchment polygons with id, name, lat and lon (map, seasons, anomaly)')
+    parser.add_argument('--kind', choices=['overview', 'compare', 'wateryear', *CATCHMENT_KINDS], default='overview')
     parser.add_argument('--variable', default='precipitation_mm',
                         help='Variable name without source prefix (compare, wateryear)')
     parser.add_argument('--source', default=None, choices=list(SOURCE_NAMES),
-                        help='Source for wateryear (default: AORC if available, else ERA5-Land, else ERA5)')
+                        help='Source for wateryear, map, seasons and anomaly (default: AORC if available, '
+                             'else ERA5-Land, else ERA5)')
     parser.add_argument('--start', type=date.fromisoformat)
     parser.add_argument('--end', type=date.fromisoformat)
     parser.add_argument('--resample', choices=['auto', 'D', 'W', 'M'], default='auto',
@@ -371,26 +701,34 @@ def main():
     parser.add_argument('--output', type=Path, help='PNG, PDF or SVG; default: figures/PROJECT_KIND[_VARIABLE].png')
     parser.add_argument('--dpi', type=int, default=170)
     args = parser.parse_args()
-    if args.kind == 'overview':
-        variables = {variable for _, keys in OVERVIEW for _, variable in keys}
+    if args.kind in CATCHMENT_KINDS:
+        if not args.geojson:
+            parser.error(f'--kind {args.kind} needs --geojson')
+        fig = plot_catchments(args.kind, args.input, args.geojson, args.source, args.start, args.end)
+        output = args.output or Path('figures') / f'catchments_{args.kind}.png'
     else:
-        variables = {args.variable}
-    series = load(args.input, args.project, variables, args.start, args.end)
-    if not series:
-        parser.error(f'No valid values for {args.project} in {args.input}')
-    days = [d for d, _ in series.values()]
-    span = f'{min(d[0] for d in days)} to {max(d[-1] for d in days)}'
-    if args.kind == 'overview':
-        rule = resolution(series, args.resample)
-        fig = plot_overview(series, args.project, rule, f'{args.project} · {span}')
-    elif args.kind == 'compare':
-        rule = resolution(series, args.resample)
-        fig = plot_compare(series, args.variable, rule, f'{args.project} · sources compared · {span}')
-    else:
-        source = args.source or next(s for s in SOURCE_NAMES if (s, args.variable) in series)
-        fig = plot_water_years(series, args.variable, source, f'{args.project} · water years · {span}')
-    output = args.output or Path('figures') / '_'.join(
-        [args.project, args.kind] + ([] if args.kind == 'overview' else [args.variable])).__add__('.png')
+        if not args.project:
+            parser.error(f'--kind {args.kind} needs --project')
+        if args.kind == 'overview':
+            variables = {variable for _, keys in OVERVIEW for _, variable in keys}
+        else:
+            variables = {args.variable}
+        series = load(args.input, args.project, variables, args.start, args.end)
+        if not series:
+            parser.error(f'No valid values for {args.project} in {args.input}')
+        days = [d for d, _ in series.values()]
+        period = f'{min(d[0] for d in days)} to {max(d[-1] for d in days)}'
+        if args.kind == 'overview':
+            rule = resolution(series, args.resample)
+            fig = plot_overview(series, args.project, rule, f'{args.project} · {period}')
+        elif args.kind == 'compare':
+            rule = resolution(series, args.resample)
+            fig = plot_compare(series, args.variable, rule, f'{args.project} · sources compared · {period}')
+        else:
+            source = args.source or next(s for s in SOURCE_NAMES if (s, args.variable) in series)
+            fig = plot_water_years(series, args.variable, source, f'{args.project} · water years · {period}')
+        output = args.output or Path('figures') / '_'.join(
+            [args.project, args.kind] + ([] if args.kind == 'overview' else [args.variable])).__add__('.png')
     output.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output, dpi=args.dpi)
     print(f'Wrote {output}')
