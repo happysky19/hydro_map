@@ -458,13 +458,14 @@ The destination is supplied through `--output`.
 
 ## Plots
 
-`research/plot_daily.py` draws one catchment from a delivery
-(`OUTPUT_full.csv`) or from a working directory while it is still downloading;
-it uses whatever years and months are complete. Gaps in the data break the
-lines instead of being bridged. Long periods are shown as weekly or monthly
-points (`--resample` chooses daily `D`, weekly `W` or monthly `M`; amounts are
-summed over complete periods, states averaged). Figures are written to
-`figures/` unless `--output` names a PNG, PDF or SVG file.
+`research/plot_daily.py` draws one catchment, or every catchment at once,
+from a delivery (`OUTPUT_full.csv`) or from a working directory while it is
+still downloading; it uses whatever years and months are complete. Gaps in the
+data break the lines instead of being bridged. Long periods are shown as
+weekly or monthly points (`--resample` chooses daily `D`, weekly `W` or
+monthly `M`; amounts are summed over complete periods, states averaged).
+Figures are written to `figures/` unless `--output` names a PNG, PDF or SVG
+file.
 
 ```bash
 python research/plot_daily.py outputs/catchment_daily_1996_2025.csv.work --project MICA
@@ -472,11 +473,27 @@ python research/plot_daily.py outputs/catchment_daily_1996_2025.csv.work --proje
 python research/plot_daily.py outputs/catchment_daily_1996_2025_full.csv --project BROWNLEE --kind compare --variable precipitation_mm --start 2015-10-01
 ```
 
+The kinds `map`, `seasons` and `anomaly` take every catchment in the input and
+need `--geojson` for the polygons, names and outlets. They use AORC unless
+`--source` says otherwise, and only years in which every catchment has at
+least 350 days of values. Rows are grouped by river system (upstream to
+downstream: Columbia in Canada; Kootenai, Flathead and Pend Oreille; Columbia
+in the US; Snake; Cascades), any other catchment following north to south.
+
+```bash
+python research/plot_daily.py outputs/catchment_daily_1996_2025.csv.work --kind map --geojson outputs/projects43_independent/dam_catchments.geojson
+python research/plot_daily.py outputs/catchment_daily_1996_2025.csv.work --kind seasons --geojson outputs/projects43_independent/dam_catchments.geojson
+python research/plot_daily.py outputs/catchment_daily_1996_2025.csv.work --kind anomaly --geojson outputs/projects43_independent/dam_catchments.geojson
+```
+
 | Kind | What it shows | What to look for |
 | --- | --- | --- |
 | `overview` (default) | Stacked panels on one time axis: precipitation split into rain and snow, daily mean air temperature with the daily minimum-maximum range and the 0 °C line, snow water equivalent, surface and root-zone soil moisture, actual and potential evapotranspiration, and the 0 °C level above sea level | Snow accumulates while temperature stays below 0 °C and melts as it rises; soil moisture should rise with melt and rain and fall while evapotranspiration is high; rain-on-snow appears as rain bars over a snowpack |
 | `compare` | One variable from every source that has it (AORC, ERA5-Land, ERA5) and, below, ERA5-Land minus AORC with its mean and correlation | A steady offset is a bias that can be corrected; a drifting or seasonal difference, or low correlation, means the sources disagree on timing |
 | `wateryear` | One variable for each water year (1 October to 30 September): running totals for daily amounts (precipitation, snowfall, snowmelt, evapotranspiration), daily values for states (snow water equivalent, soil moisture); earlier years in grey, their median dashed and the latest year highlighted | Whether the current year is wetter or drier, and its snowpack larger or smaller, than usual at the same date; the timing of peak snow water equivalent and melt-out |
+| `map` | Three maps of the catchment polygons: mean annual precipitation, snowfall share of precipitation and mean air temperature; outlets as dots, the largest, wettest and driest catchments named | The Cascades wettest, the Columbia plateau driest, the snowfall share rising with latitude and elevation; a catchment that breaks the regional pattern needs a look at its polygon and cells |
+| `seasons` | One row per catchment, one column per month: precipitation, snowfall share and air temperature averaged over the complete years | Every row filled is completeness; winter precipitation, a snow season from November to March and summer heat in the US reaches is the expected regime |
+| `anomaly` | Water-year precipitation of each catchment as a percentage of its own mean, one column per water year, blue wet and red dry; a dot marks a water year with missing days | Known wet and dry years (1997 and 2011 wet, 2001 and 2015 dry) should appear as whole columns, showing the catchments move together |
 
 `--start` and `--end` limit the period; `--source` selects the source for
 `wateryear`. Variable names are the column names without source prefix and
@@ -646,7 +663,7 @@ equivalent to the mm/day and MJ/m²/day amounts in the tables above.
 | `research/check_daily.py` | Check delivered values/QC, physical plausibility and AORC/ERA5-Land agreement; plot coverage and project time series |
 | `research/deliver_daily.py` | Write the requested-variable table and README from a checked full delivery |
 | `research/delivery_variables.py` | Requested columns: source, native or computed, definition and forecast counterparts |
-| `research/plot_daily.py` | Overview, source comparison and water-year plots for one catchment, from a delivery or a working directory |
+| `research/plot_daily.py` | Overview, source comparison and water-year plots for one catchment; map, seasonal-cycle and water-year anomaly plots for every catchment; from a delivery or a working directory |
 | `research/progress_daily.py` | Progress of a running or interrupted download: years, requests and months completed |
 
 For modeling, begin with AORC precipitation and temperature as meteorological
