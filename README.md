@@ -68,8 +68,8 @@ python research/plot_daily.py outputs/catchment_daily.csv.work --project MICA --
 ```
 
 `--kind compare` overlays the sources for one variable and `--kind wateryear`
-compares water years. `--kind map`, `seasons` and `anomaly` draw every
-catchment at once and take `--geojson` with the catchment polygons; see
+compares water years. `--kind map`, `seasons`, `anomaly`, `annual` and `event`
+draw every catchment at once and take `--geojson` with the catchment polygons; see
 [Plots](docs/data_pipeline.md#plots). For a 30-year run on a compute host, see
 [long runs](docs/data_pipeline.md#long-runs-on-a-compute-host).
 

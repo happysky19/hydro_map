@@ -473,8 +473,8 @@ python research/plot_daily.py outputs/catchment_daily_1996_2025.csv.work --proje
 python research/plot_daily.py outputs/catchment_daily_1996_2025_full.csv --project BROWNLEE --kind compare --variable precipitation_mm --start 2015-10-01
 ```
 
-The kinds `map`, `seasons` and `anomaly` take every catchment in the input and
-need `--geojson` for the polygons, names and outlets. They use AORC unless
+The kinds `map`, `seasons`, `anomaly`, `annual` and `event` take every
+catchment in the input and need `--geojson` for the polygons, names and outlets. They use AORC unless
 `--source` says otherwise, and only years in which every catchment has at
 least 350 days of values. Rows are grouped by river system (upstream to
 downstream: Columbia in Canada; Kootenai, Flathead and Pend Oreille; Columbia
@@ -484,6 +484,9 @@ in the US; Snake; Cascades), any other catchment following north to south.
 python research/plot_daily.py outputs/catchment_daily_1996_2025.csv.work --kind map --geojson outputs/projects43_independent/dam_catchments.geojson
 python research/plot_daily.py outputs/catchment_daily_1996_2025.csv.work --kind seasons --geojson outputs/projects43_independent/dam_catchments.geojson
 python research/plot_daily.py outputs/catchment_daily_1996_2025.csv.work --kind anomaly --geojson outputs/projects43_independent/dam_catchments.geojson
+python research/plot_daily.py outputs/catchment_daily_1996_2025.csv.work --kind annual --geojson outputs/projects43_independent/dam_catchments.geojson
+python research/plot_daily.py outputs/catchment_daily_1996_2025.csv.work --kind event --geojson outputs/projects43_independent/dam_catchments.geojson --variable precipitation_mm --start 1996-01-30 --end 1996-02-12
+python research/plot_daily.py outputs/catchment_daily_1996_2025.csv.work --kind event --geojson outputs/projects43_independent/dam_catchments.geojson --variable tmax_c --start 2021-06-20 --end 2021-07-05
 ```
 
 | Kind | What it shows | What to look for |
@@ -494,6 +497,8 @@ python research/plot_daily.py outputs/catchment_daily_1996_2025.csv.work --kind 
 | `map` | Three maps of the catchment polygons: mean annual precipitation, snowfall share of precipitation and mean air temperature; outlets as dots, the largest, wettest and driest catchments named | The Cascades wettest, the Columbia plateau driest, the snowfall share rising with latitude and elevation; a catchment that breaks the regional pattern needs a look at its polygon and cells |
 | `seasons` | One row per catchment, one column per month: precipitation, snowfall share and air temperature averaged over the complete years | Every row filled is completeness; winter precipitation, a snow season from November to March and summer heat in the US reaches is the expected regime |
 | `anomaly` | Water-year precipitation of each catchment as a percentage of its own mean, one column per water year, blue wet and red dry; a dot marks a water year with missing days | Known wet and dry years (1997 and 2011 wet, 2001 and 2015 dry) should appear as whole columns, showing the catchments move together |
+| `annual` | Annual precipitation as rain and snow, catchments sorted wettest first, with potential evapotranspiration (AORC) or actual evapotranspiration (ERA5-Land) as a marker | Where the marker falls inside the bar the catchment has water to spare; where it falls beyond, evaporative demand exceeds supply (the Columbia plateau and lower Snake) |
+| `event` | One variable day by day between `--start` and `--end`, one row per catchment: a flood (precipitation), a cold wave (minimum temperature), a heat wave (maximum temperature) | A documented event should appear on the right days in the right catchments, for example the February 1996 flood in the Cascades and lower Columbia and the January 2024 cold wave deepest in Canada and Montana |
 
 `--start` and `--end` limit the period; `--source` selects the source for
 `wateryear`. Variable names are the column names without source prefix and
