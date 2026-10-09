@@ -87,7 +87,8 @@ class CatchmentTests(unittest.TestCase):
                     if project == 'X' and day == date(2023, 6, 18):
                         continue   # one missing day must not drop the year
                     values = {'precipitation_mm': wet + wet * np.sin(index / 58), 'tmean_c': 5 + 12 * np.sin(index / 58),
-                              'snowfall_mm': wet / 2 if day.month in (11, 12, 1, 2, 3) else 0.}
+                              'snowfall_mm': wet / 2 if day.month in (11, 12, 1, 2, 3) else 0., 'pet_hargreaves_mm': 2.}
+                    values['rainfall_mm'] = values['precipitation_mm'] - values['snowfall_mm']
                     for variable, value in values.items():
                         writer.writerow(dict(date=day.isoformat(), source='aorc_v1.1', project_id=project,
                                              variable=variable, value=value, units='', expected_hours=24,
@@ -105,16 +106,21 @@ class CatchmentTests(unittest.TestCase):
         self.geojson = self.root / 'catchments.geojson'
         self.geojson.write_text(json.dumps(dict(type='FeatureCollection', features=features)))
 
-    def render(self, kind):
+    def render(self, kind, *arguments):
         output = self.root / f'{kind}.png'
-        argv = ['plot_daily.py', str(self.root), '--kind', kind, '--geojson', str(self.geojson), '--output', str(output)]
+        argv = ['plot_daily.py', str(self.root), '--kind', kind, '--geojson', str(self.geojson), '--output', str(output),
+                *arguments]
         with patch.object(sys, 'argv', argv), redirect_stdout(io.StringIO()):
             plot_daily.main()
         self.assertGreater(output.stat().st_size, 10000)
 
     def test_each_catchment_kind_renders(self):
-        for kind in plot_daily.CATCHMENT_KINDS:
+        for kind in ('map', 'seasons', 'anomaly', 'annual'):
             self.render(kind)
+        self.render('event', '--variable', 'tmean_c', '--start', '2023-01-10', '--end', '2023-02-03')
+        self.render('event', '--variable', 'precipitation_mm', '--start', '2022-11-01', '--end', '2022-11-10')
+        with self.assertRaises(SystemExit):
+            self.render('event', '--variable', 'tmean_c')
 
     def test_rows_follow_river_systems_then_latitude_and_short_names(self):
         meta = plot_daily.catchments(self.geojson)
