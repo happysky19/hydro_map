@@ -33,7 +33,8 @@ PLAUSIBLE = {
     'perennial_snow_area_pct': (0, 100),
     **{f'soil_moisture_layer{i}_m3m3': (0, .8) for i in range(1, 5)},
     'root_zone_soil_moisture_0_100cm_m3m3': (0, .8), 'cloud_cover_fraction': (0, 1),
-    'freezing_level_above_ground_m': (0, 6000), 'freezing_level_above_sea_level_m': (0, 7000),
+    # ERA5 GRIB packing stores 'no 0 degC level above ground' as -0.0002 m rather than 0.
+    'freezing_level_above_ground_m': (-.001, 6000), 'freezing_level_above_sea_level_m': (0, 7000),
 }
 # Mean-ratio comparisons are only meaningful for nonnegative quantities.
 SEASONS = {'DJF': (12, 1, 2), 'MAM': (3, 4, 5), 'JJA': (6, 7, 8), 'SON': (9, 10, 11)}
@@ -312,13 +313,13 @@ def screen_outliers(manifest, days, projects, columns, values, lookup):
                          'single day out of line with the days before and after')
             if not amount:
                 # Values are written at full precision, so five equal days are a stuck series;
-                # zero is exempt (no freezing level above ground, no PET in deep cold).
+                # zero is exempt (no freezing level above ground, stored as -0.0002 m; no PET in deep cold).
                 for p in range(len(projects)):
                     same = np.r_[False, np.abs(np.diff(x[:, p])) < 1e-9, False]
                     edges = np.flatnonzero(np.diff(same.astype(int)))
                     for begin, end in zip(edges[::2], edges[1::2]):
                         length = end - begin + 1
-                        if length >= 5 and x[begin, p] != 0:
+                        if length >= 5 and abs(x[begin, p]) > 1e-3:
                             flag('constant', j, p, int(begin), x[begin, p], length, length / 5,
                                  f'same value for {length} days')
 
@@ -681,6 +682,9 @@ def check_file(path, *, plots=True):
     kinds = ', '.join(f'{kind} {number:,}' for kind, number in sorted(flagged.items()))
     print(f"Review flags: {len(flags):,}" + (f" ({kinds}); ranked in {folder/'outliers.csv'}" if flags else ''),
           flush=True)
+    groups = Counter((row['kind'], row['source'], row['variable']) for row in flags)
+    for (kind, source, variable), number in groups.most_common(12):
+        print(f'  {kind} {source} {variable}: {number:,}', flush=True)
     return report
 
 

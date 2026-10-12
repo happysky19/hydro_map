@@ -125,6 +125,16 @@ class CheckDailyTests(unittest.TestCase):
                                  'aorc_v1.1: mean speed >= magnitude of mean vector',
                                  'era5_land_cds: root-zone thickness weighting'})
 
+    def test_packed_zero_freezing_level_is_not_below_ground(self):
+        column = _value_column('era5_cds', 'freezing_level_above_ground_m', 'm')
+        for row, quality in zip(self.rows, self.quality):
+            row[column] = -.0002   # how ERA5 GRIB packing stores a column below 0 degC
+            quality.update({column+'__qc': 'valid', column+'__valid_hours': 24,
+                            column+'__min_valid_area_fraction': 1})
+        self.save()
+        failed = [c['check'] for c in self.check()['checks'] if c['failed']]
+        self.assertEqual(failed, [])
+
     def test_hash_and_row_alignment_errors_stop_the_check(self):
         self.path.write_text(self.path.read_text()+'\n')
         with self.assertRaisesRegex(ValueError, 'hash'):
