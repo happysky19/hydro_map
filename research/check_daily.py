@@ -392,9 +392,14 @@ def screen_outliers(manifest, days, projects, columns, values, lookup):
                     continue
                 x = values[:, :, j]
                 for p, others in near.items():
-                    reference = np.nanmedian(x[:, others], axis=1)
+                    # Compare only on days all neighbours have a value: catchments differ in elevation,
+                    # so a median over two of them instead of three jumps (by kPa for pressure).
+                    block = x[:, others]
+                    complete = np.isfinite(block).all(axis=1)
+                    reference = np.where(complete, np.median(block, axis=1), np.nan)
                     if variable in AMOUNTS:
-                        score = np.where(x[:, p] >= 30, x[:, p] / (5 * (np.nanmax(x[:, others], axis=1) + 1)), 0)
+                        score = np.where(complete & (x[:, p] >= 30),
+                                         x[:, p] / (5 * (np.where(complete, block.max(axis=1), 0) + 1)), 0)
                     else:
                         score = np.zeros(len(days))
                         gaps = x[:, p] - reference
