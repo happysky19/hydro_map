@@ -12,8 +12,8 @@ area-weighted over the supplied local catchment. They are not dam-point
 values or totals over all upstream catchments. Empty values are missing, not zero.
 
 `OUTPUT.csv` holds the requested variables and `OUTPUT_README.md` explains
-each of them: source, native or computed, units, daily definition and the
-matching ECMWF IFS, NOAA GFS and WeatherNext 2 forecast fields. `OUTPUT_full.csv`
+each of them: source, native or computed, units, daily definition, limitations
+and the matching ECMWF IFS, NOAA GFS and WeatherNext 2 forecast fields. `OUTPUT_full.csv`
 holds every variable from every source; its `_qc` file, `.manifest.json` and
 `.checks/` directory belong with it. The manifest identifies each column's
 source, units and temporal statistic. To check an existing delivery and
@@ -230,9 +230,8 @@ The full table keeps both sources.
   A passing check is not proof of accurate weather, boundaries, reservoir
   operations or river discharge.
 
-- AORC and ERA5-Land are independent estimates of the shared quantities. The
-  README and `source_comparison.csv` give their bias, mean ratio and
-  correlation. A large difference is not by itself an error in either source;
+- AORC and ERA5-Land are independent estimates of the shared quantities.
+  `source_comparison.csv` gives their bias, mean ratio and correlation. A large difference is not by itself an error in either source;
   physically impossible values fail the plausibility checks instead.
 
 ### Review flags

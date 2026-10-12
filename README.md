@@ -37,7 +37,7 @@ This downloads AORC, ERA5-Land and ERA5, computes daily catchment statistics
 and derived variables, checks them, and writes the delivery:
 `catchment_daily.csv` holds the 25 requested variables in 28 columns (one
 source per variable; soil temperature in four layers), `catchment_daily_README.md` documents each column's source, whether
-it is native or computed, units, definition and matching forecast-model fields,
+it is native or computed, units, definition, limitations and matching forecast-model fields,
 and `catchment_daily_full.csv` holds all 62 variables with
 `catchment_daily_full_qc.csv` (per-value quality fields),
 `catchment_daily_full.csv.manifest.json` (units and provenance) and

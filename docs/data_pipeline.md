@@ -37,8 +37,8 @@ The same `--output` argument produces the delivery:
   temperature in its four layers, and `aorc_gap_filled`).
 - `outputs/catchment_daily_README.md`: for every requested column, its source,
   whether it is a native source field or computed here, units, daily
-  definition, matching ECMWF IFS / NOAA GFS / WeatherNext 2 forecast fields,
-  and the QC results of this delivery.
+  definition, the limitations of the data and the matching ECMWF IFS /
+  NOAA GFS / WeatherNext 2 forecast fields.
 - `outputs/catchment_daily_full.csv`: every variable, 64 columns (`date`,
   `project_id` and 62 source-qualified values, including the ERA5-Land
   counterparts of the AORC forcing used for cross-checks).
