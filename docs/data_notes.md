@@ -36,7 +36,9 @@ remain beside the full values file. This does not alter the inputs.
 | `variables.csv` | Per-project coverage, minimum, mean and maximum for every variable |
 | `qc_summary.csv` | Per-project counts of each variable's exact QC flag |
 | `source_comparison.csv` | Paired-day count, means, bias (ERA5-Land minus AORC), mean ratio for nonnegative quantities, MAE, RMSE and correlation by project and pooled |
-| `summary.json` | Input hashes, checker version, blank values by column with QC reasons, catchments with year-round SWE, and check results |
+| `summary.json` | Input hashes, checker version, blank values by column with QC reasons, catchments with year-round SWE, review-flag counts and check results |
+| `outliers.csv` | Values within the plausible ranges that are unusual and worth a look, most unusual first (see below) |
+| `outliers.pdf` | The 24 most unusual events, each with 30 days either side, the other source and the nearest catchments |
 
 Time-series plots show daily values for windows up to 366 days. Longer windows
 show monthly means of available valid daily values, including mean daily
@@ -217,6 +219,31 @@ column lists the filled columns of each row, and the README counts them.
   README and `source_comparison.csv` give their bias, mean ratio and
   correlation. A large difference is not by itself an error in either source;
   physically impossible values fail the plausibility checks instead.
+
+### Review flags
+
+A value can pass every plausibility bound and still be wrong, for example
+120 mm of rain in one catchment while its neighbours and the other source stay
+dry. `outliers.csv` lists such values for a person to judge; they do not fail
+the check and nothing is changed. `score` is 1 at the threshold and larger for
+more unusual values; `reference` is what the value was compared with.
+
+| Kind | Flagged when |
+| --- | --- |
+| `climatology` | Far from the catchment's own values for the same half-month and the two either side, across all years: more than 6 robust standard deviations for states, or above both 20 mm and three times the 99th percentile of wet days for amounts |
+| `spike` | One day out of line with both the day before and the day after, by more than 8 robust standard deviations of day-to-day change; air and soil temperature, soil moisture and surface pressure only |
+| `snow` | ERA5-Land SWE rises by more than two days of precipitation plus 15 mm, or falls by more than two days of snowmelt plus 20 mm |
+| `sources` | AORC and ERA5-Land differ far more than usual for that catchment and time of year, or one has at least 25 mm and five times the other |
+| `neighbours` | A catchment differs far more than usual from the median of its three nearest catchments (by outlet), or has at least 30 mm while none of them has a fifth of it |
+| `step` | The annual mean AORC minus ERA5-Land difference shifts lastingly from one year (at least three years either side), such as at a change of AORC input data |
+| `constant` | The same nonzero value on five or more consecutive days |
+
+Snow states are judged only by the `snow` rule: they accumulate over the
+season and stay at zero for months, so climatology and neighbours mislead.
+Statistics that need the seasonal cycle require at least a year of data. Start
+with the top of the list or `outliers.pdf`: a real storm, heat wave or cold
+outbreak usually appears in both sources and the neighbours, while a data
+problem is confined to one source, one catchment or one day.
 
 The checker verifies delivery hashes, matching keys and the complete daily
 calendar. It counts missing values separately from violated identities. Missing

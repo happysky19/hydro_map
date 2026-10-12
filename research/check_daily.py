@@ -9,6 +9,7 @@ from itertools import zip_longest
 import json
 from pathlib import Path
 import sys
+import warnings
 
 import numpy as np
 
@@ -217,6 +218,251 @@ def persistent_snow(manifest, days, projects, columns, values, lookup):
     return found
 
 
+# Review flags: values inside the physical limits that are unusual for their catchment, day,
+# other source or neighbours. A score of 1 is the threshold; flags are for inspection, not failures.
+AMOUNTS = {'precipitation_mm', 'rainfall_mm', 'snowfall_mm', 'snowmelt_mm'}
+# Snow states integrate the season and sit at zero for months: they are checked against snowfall
+# and melt instead of climatology, neighbours, spikes or runs of equal values.
+SNOW_STATES = {'snow_water_equivalent_mm', 'snow_depth_m', 'snow_cover_pct', 'snow_density_kgm3',
+               'perennial_snow_area_pct'}
+# Only slowly varying states can be judged by one day against the next; fluxes jump naturally.
+SMOOTH = {'tmean_c', 'tmin_c', 'tmax_c', 'wet_bulb_temperature_c', 'surface_pressure_pa'}
+STEP_MINIMUM = {'degC': .5, 'm/s': .3, 'W/m2': 5, 'kPa': .05, 'pct': 2}
+OUTLIER_FIELDS = ['rank', 'kind', 'source', 'variable', 'project_id', 'date', 'value', 'reference',
+                  'score', 'detail']
+
+
+def _spread(data, axis=0, floor=1e-9):
+    """Robust standard deviation: 1.4826 x MAD, or the 10-90% range for series that mostly sit at
+    one value (SWE at zero in summer), never below floor."""
+    median = np.nanmedian(data, axis=axis, keepdims=True)
+    mad = 1.4826 * np.nanmedian(np.abs(data - median), axis=axis)
+    low, high = np.nanpercentile(data, [10, 90], axis=axis)
+    return np.maximum(np.maximum(mad, (high - low) / 2.563), floor)
+
+
+def seasonal_windows(days):
+    """Half-month periods: the rows to judge, and the rows (that period and the two either side) to
+    judge them by, so a fast seasonal change does not make the end of a month look unusual."""
+    half = np.array([(d.month - 1) * 2 + (d.day > 15) for d in days])
+    for k in range(24):
+        judged = np.flatnonzero(half == k)
+        if len(judged):
+            yield judged, np.flatnonzero(np.isin(half, [(k - 1) % 24, k, (k + 1) % 24]))
+
+
+def neighbours(manifest, projects, count=3):
+    """Nearest catchments by outlet distance; empty when outlets lack coordinates."""
+    points = [manifest['project_metadata'][p] for p in projects]
+    if len(projects) <= count or any(not {'lat', 'lon'} <= set(m) for m in points):
+        return {}
+    lat, lon = (np.radians([float(m[key]) for m in points]) for key in ('lat', 'lon'))
+    angle = np.arccos(np.clip(np.sin(lat)[:, None] * np.sin(lat) +
+                              np.cos(lat)[:, None] * np.cos(lat) * np.cos(lon[:, None] - lon), -1, 1))
+    np.fill_diagonal(angle, np.inf)
+    return {p: np.argsort(angle[p])[:count] for p in range(len(projects))}
+
+
+def screen_outliers(manifest, days, projects, columns, values, lookup):
+    """Rank values that deserve a look; returns (rows, counts by kind)."""
+    years = np.array([d.year for d in days])
+    names = {index: key for key, index in lookup.items()}
+    rows = []
+    # Seasonal, cross-source and neighbour statistics need at least a year of days.
+    long_record = len(days) >= 365
+
+    def flag(kind, j, p, d, value, reference, score, detail):
+        source, variable = names[j]
+        rows.append(dict(kind=kind, source=source, variable=variable, project_id=projects[p],
+                         date=str(days[d]) if isinstance(d, (int, np.integer)) else d,
+                         value=round(float(value), 4), reference=round(float(reference), 4),
+                         score=round(float(score), 2), detail=detail))
+
+    # All-blank series and windows are skipped, not errors.
+    with np.errstate(all='ignore'), warnings.catch_warnings():
+        warnings.simplefilter('ignore', RuntimeWarning)
+        for j, (source, variable) in sorted(names.items()):
+            x = values[:, :, j]
+            if not np.isfinite(x).any() or variable in SNOW_STATES:
+                continue
+            amount = variable in AMOUNTS
+            # Unusual for the catchment and time of year.
+            for judged, window in seasonal_windows(days) if long_record else []:
+                block, base = x[judged], x[window]
+                if amount:
+                    wet = np.where(base > .1, base, np.nan)
+                    if not np.isfinite(wet).any():
+                        continue
+                    center = np.nanpercentile(wet, 99, axis=0)
+                    score = block / np.maximum(3 * center, 20)
+                else:
+                    center = np.nanmedian(base, axis=0)
+                    score = np.abs(block - center) / np.maximum(_spread(base), .1 * _spread(x)) / 6
+                for d, p in np.argwhere(score > 1):
+                    flag('climatology', j, p, judged[d], block[d, p], center[p], score[d, p],
+                         'far from this catchment\'s values for the time of year')
+            if (variable in SMOOTH or variable.startswith(('soil_', 'root_zone_'))) and len(days) >= 3:
+                # One day out of line with both neighbours in time.
+                middle = x[1:-1]
+                dev = middle - (x[:-2] + x[2:]) / 2
+                same_side = (middle - x[:-2]) * (middle - x[2:]) > 0
+                score = np.where(same_side, np.abs(dev) / np.maximum(_spread(dev), .05 * _spread(x)) / 8, 0)
+                for d, p in np.argwhere(score > 1):
+                    flag('spike', j, p, d + 1, middle[d, p], (x[d, p] + x[d + 2, p]) / 2, score[d, p],
+                         'single day out of line with the days before and after')
+            if not amount:
+                # Values are written at full precision, so five equal days are a stuck series;
+                # zero is exempt (no freezing level above ground, no PET in deep cold).
+                for p in range(len(projects)):
+                    same = np.r_[False, np.abs(np.diff(x[:, p])) < 1e-9, False]
+                    edges = np.flatnonzero(np.diff(same.astype(int)))
+                    for begin, end in zip(edges[::2], edges[1::2]):
+                        length = end - begin + 1
+                        if length >= 5 and x[begin, p] != 0:
+                            flag('constant', j, p, int(begin), x[begin, p], length, length / 5,
+                                 f'same value for {length} days')
+
+        land = SOURCES[1]
+        if all((land, v) in lookup for v in ('snow_water_equivalent_mm', 'precipitation_mm', 'snowmelt_mm')):
+            # Daily-mean SWE can rise by at most two days of precipitation and fall by two days of melt.
+            j = lookup[land, 'snow_water_equivalent_mm']
+            swe, rain, melt = (values[:, :, lookup[land, v]]
+                               for v in ('snow_water_equivalent_mm', 'precipitation_mm', 'snowmelt_mm'))
+            change = swe[1:] - swe[:-1]
+            gain = (change - rain[1:] - rain[:-1] - 5) / 10
+            loss = (-change - melt[1:] - melt[:-1] - 10) / 10
+            for d, p in np.argwhere(gain > 1):
+                flag('snow', j, p, d + 1, change[d, p], rain[d + 1, p] + rain[d, p], gain[d, p],
+                     'SWE rose more than two days of precipitation')
+            for d, p in np.argwhere(loss > 1):
+                flag('snow', j, p, d + 1, change[d, p], -(melt[d + 1, p] + melt[d, p]), loss[d, p],
+                     'SWE fell more than two days of snowmelt')
+
+        for variable in shared_variables(lookup) if long_record else []:
+            j = lookup[SOURCES[0], variable]
+            a, e = values[:, :, j], values[:, :, lookup[SOURCES[1], variable]]
+            units = manifest['columns'][columns[j]]['units']
+            if variable in AMOUNTS:
+                high, low = np.fmax(a, e), np.fmin(a, e)
+                score = np.where(high >= 25, high / (5 * (low + 1)), 0)
+                for d, p in np.argwhere(score > 1):
+                    flag('sources', j, p, d, a[d, p], e[d, p], score[d, p],
+                         'heavy in one source, light in the other (reference: ERA5-Land)')
+            else:
+                diff = a - e
+                floor = np.maximum(.1 * _spread(diff), 1e-6)
+                for judged, window in seasonal_windows(days):
+                    block, base = diff[judged], diff[window]
+                    score = np.abs(block - np.nanmedian(base, axis=0)) / np.maximum(_spread(base), floor) / 8
+                    for d, p in np.argwhere(score > 1):
+                        flag('sources', j, p, judged[d], a[judged[d], p], e[judged[d], p], score[d, p],
+                             'AORC and ERA5-Land differ far more than usual (reference: ERA5-Land)')
+            # A lasting shift in the annual mean difference, e.g. from a change of input data.
+            annual = np.array([[np.nanmean(diff_y) if np.isfinite(diff_y).sum() >= 300 else np.nan
+                                for diff_y in (a - e)[years == y].T] for y in np.unique(years)])
+            year_list = np.unique(years)
+            for p in range(len(projects)):
+                series = annual[:, p]
+                good = np.flatnonzero(np.isfinite(series))
+                if len(good) < 8:
+                    continue
+                best = (0, None, 0)
+                for k in range(3, len(good) - 2):
+                    before, after = series[good[:k]], series[good[k:]]
+                    shift = after.mean() - before.mean()
+                    noise = np.sqrt(before.var(ddof=1) / len(before) + after.var(ddof=1) / len(after))
+                    t = abs(shift) / max(noise, 1e-9)
+                    if t > best[0]:
+                        best = (t, good[k], shift)
+                t, k, shift = best
+                minimum = STEP_MINIMUM.get(units, .1 * abs(np.nanmean(a[:, p])))
+                if k is not None and t > 6 and abs(shift) > minimum:
+                    flag('step', j, p, f'{year_list[k]}', shift, minimum, t / 6,
+                         f'mean AORC minus ERA5-Land shifts by {shift:+.3g} {units} from {year_list[k]}')
+
+        near = neighbours(manifest, projects)
+        if near and long_record:
+            for j, (source, variable) in sorted(names.items()):
+                if variable in SNOW_STATES:
+                    continue
+                x = values[:, :, j]
+                for p, others in near.items():
+                    reference = np.nanmedian(x[:, others], axis=1)
+                    if variable in AMOUNTS:
+                        score = np.where(x[:, p] >= 30, x[:, p] / (5 * (np.nanmax(x[:, others], axis=1) + 1)), 0)
+                    else:
+                        score = np.zeros(len(days))
+                        gaps = x[:, p] - reference
+                        floor = max(.1 * float(_spread(gaps)), 1e-6)
+                        for judged, window in seasonal_windows(days):
+                            score[judged] = (np.abs(gaps[judged] - np.nanmedian(gaps[window]))
+                                             / max(float(_spread(gaps[window])), floor) / 8)
+                    for d in np.flatnonzero(np.nan_to_num(score) > 1):
+                        flag('neighbours', j, p, d, x[d, p], reference[d], score[d],
+                             'unlike the nearest catchments (reference: their median)')
+    rows.sort(key=lambda row: -row['score'])
+    for rank, row in enumerate(rows, 1):
+        row['rank'] = rank
+    return rows, dict(Counter(row['kind'] for row in rows))
+
+
+def plot_outliers(folder, manifest, days, projects, columns, values, lookup, rows, count=24):
+    """One panel per flagged event: 30 days either side, the other source and the neighbours."""
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    from matplotlib.backends.backend_pdf import PdfPages
+    from plot_daily import label
+
+    blue, orange, grey, ink = '#2a78d6', '#eb6834', '#898781', '#0b0b0b'
+    events, seen = [], set()
+    for row in rows:
+        key = (row['project_id'], row['variable'], row['date'][:7] if row['kind'] != 'step' else row['date'])
+        if key not in seen:
+            seen.add(key)
+            events.append(row)
+        if len(events) == count:
+            break
+    near = neighbours(manifest, projects)
+    index = {str(d): i for i, d in enumerate(days)}
+    with PdfPages(folder / 'outliers.pdf') as pdf:
+        for page in range(0, len(events), 6):
+            fig, axes = plt.subplots(3, 2, figsize=(12, 10), layout='constrained', squeeze=False)
+            for ax in axes.flat[len(events[page:page + 6]):]:
+                ax.axis('off')
+            for ax, row in zip(axes.flat, events[page:page + 6]):
+                p, variable = projects.index(row['project_id']), row['variable']
+                units = manifest['columns'][columns[lookup[row['source'], variable]]]['units']
+                name = manifest['project_metadata'][row['project_id']].get('name', row['project_id'])
+                ax.set_title(f"{name} · {label(variable)[0]} ({units}) · {row['date']} · {row['kind']}",
+                             fontsize=10, color=ink, loc='left')
+                ax.spines[['top', 'right']].set_visible(False)
+                ax.grid(alpha=.2)
+                if row['kind'] == 'step':
+                    a, e = (values[:, p, lookup[s, variable]] for s in SOURCES)
+                    year_list = sorted({d.year for d in days})
+                    yearly = [np.nanmean((a - e)[[d.year == y for d in days]]) for y in year_list]
+                    ax.bar(year_list, yearly, color=blue, width=.7)
+                    ax.axvline(int(row['date']) - .5, color=grey, lw=1)
+                    continue
+                center = index[row['date']]
+                window = slice(max(center - 30, 0), min(center + 31, len(days)))
+                span = days[window]
+                for source, color in zip(SOURCES, (blue, orange)):
+                    if (source, variable) in lookup:
+                        ax.plot(span, values[window, p, lookup[source, variable]], color=color, lw=1.6,
+                                label={'aorc_v1.1': 'AORC', 'era5_land_cds': 'ERA5-Land'}[source])
+                if p in near:
+                    ax.plot(span, np.nanmedian(values[window][:, near[p], lookup[row['source'], variable]], axis=1),
+                            color=grey, lw=1.2, label='Nearest catchments')
+                ax.plot(days[center], values[center, p, lookup[row['source'], variable]], 'o', ms=7,
+                        color=ink, mfc='none', mew=1.5)
+                ax.legend(frameon=False, fontsize=8)
+                ax.tick_params(axis='x', labelsize=8, rotation=30)
+            pdf.savefig(fig)
+            plt.close(fig)
+
+
 def write_csv(path, rows, columns):
     with path.open('w', newline='') as stream:
         writer = csv.DictWriter(stream, fieldnames=columns)
@@ -406,8 +652,13 @@ def check_file(path, *, plots=True):
     write_csv(folder/'checks.csv', [{**r, 'examples': json.dumps(r['examples'])} for r in checks],
               ['check', 'evaluated', 'failed', 'examples'])
     write_csv(folder/'source_comparison.csv', comparisons, list(comparison(np.array([]), np.array([]), '', '')))
+    flags, flagged = screen_outliers(manifest, days, projects, columns, values, lookup)
+    write_csv(folder/'outliers.csv', flags, OUTLIER_FIELDS)
+    (folder/'outliers.pdf').unlink(missing_ok=True)
     if plots:
         plot_delivery(folder, manifest, days, projects, columns, values, lookup)
+        if flags:
+            plot_outliers(folder, manifest, days, projects, columns, values, lookup, flags)
     report = dict(input_file=path.name, output_sha256=manifest['output_sha256'],
                   qc_output_sha256=manifest['qc_output_sha256'], checker_sha256=digest(Path(__file__)),
                   row_count=manifest['row_count'], project_count=len(projects), start=str(days[0]),
@@ -415,7 +666,7 @@ def check_file(path, *, plots=True):
                   missing_values=int(np.isnan(values).sum()), total_values=values.size,
                   missing_by_column={column: dict(missing=number, qc=dict(missing_qc.get(column, {})))
                                      for column, number in missing.items()},
-                  persistent_snow=snow, checks=checks, comparisons=comparisons, plots=plots,
+                  persistent_snow=snow, review_flags=flagged, checks=checks, comparisons=comparisons, plots=plots,
                   scope='Delivery integrity, physical plausibility and AORC/ERA5-Land agreement; '
                         'no independent observation validation.')
     (folder/'summary.json').write_text(json.dumps(report, indent=2, allow_nan=False)+'\n')
@@ -427,6 +678,9 @@ def check_file(path, *, plots=True):
     for item in snow:
         print(f"  Persistent snow: {item['source']} {item['project_id']} SWE never below "
               f"{item['minimum_swe_mm']:.0f} mm", flush=True)
+    kinds = ', '.join(f'{kind} {number:,}' for kind, number in sorted(flagged.items()))
+    print(f"Review flags: {len(flags):,}" + (f" ({kinds}); ranked in {folder/'outliers.csv'}" if flags else ''),
+          flush=True)
     return report
 
 

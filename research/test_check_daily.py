@@ -208,3 +208,67 @@ class CheckDailyTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class ReviewFlagTests(unittest.TestCase):
+    """Values inside the physical limits that should still be looked at are flagged; normal weather is not."""
+    def setUp(self):
+        import numpy as np
+        self.np = np
+        rng = np.random.default_rng(7)
+        self.days = [date(2010, 1, 1) + timedelta(days=i) for i in range(8 * 365)]
+        self.projects = ['A', 'B', 'C', 'D', 'E']
+        names = [('aorc_v1.1', 'tmean_c', 'degC'), ('era5_land_cds', 'tmean_c', 'degC'),
+                 ('aorc_v1.1', 'precipitation_mm', 'mm'), ('era5_land_cds', 'precipitation_mm', 'mm'),
+                 ('era5_land_cds', 'snowmelt_mm', 'mm'), ('era5_land_cds', 'snow_water_equivalent_mm', 'mm')]
+        self.columns = [f'{s}__{v}' for s, v, _ in names]
+        self.lookup = {(s, v): i for i, (s, v, _) in enumerate(names)}
+        self.manifest = dict(columns={c: dict(source=s, variable=v, units=u) for c, (s, v, u) in zip(self.columns, names)},
+                             project_metadata={p: dict(name=p, lat=50 + .3 * i, lon=-118 + .2 * i)
+                                               for i, p in enumerate(self.projects)})
+        shape = (len(self.days), len(self.projects))
+        doy = np.array([d.timetuple().tm_yday for d in self.days])[:, None]
+        noise = np.zeros((len(self.days), 1))
+        for d in range(1, len(self.days)):   # day-to-day persistence, as in real weather
+            noise[d] = .7 * noise[d - 1] + rng.normal(0, 2.1)
+        weather = -8 * np.cos(2 * np.pi * doy / 365) + noise
+        aorc_t = weather + rng.normal(0, .8, shape)
+        rain = rng.gamma(.6, 5, (len(self.days), 1)) * rng.uniform(.8, 1.2, shape)
+        cold = aorc_t < 0
+        swe, melt = np.zeros(shape), np.zeros(shape)
+        for d in range(1, len(self.days)):
+            melt[d] = np.where(cold[d], 0, np.minimum(swe[d - 1], np.maximum(aorc_t[d], 0) * 3))
+            swe[d] = swe[d - 1] + np.where(cold[d], rain[d], 0) - melt[d]
+        self.values = np.stack([aorc_t, aorc_t + .5 + rng.normal(0, .4, shape), rain,
+                                rain * .9 + rng.uniform(0, .3, shape), melt, swe], axis=2)
+
+    def screen(self):
+        from check_daily import screen_outliers
+        return screen_outliers(self.manifest, self.days, self.projects, self.columns, self.values, self.lookup)
+
+    def kinds(self, rows, project, variable, day=None):
+        return {r['kind'] for r in rows if r['project_id'] == project and r['variable'] == variable
+                and (day is None or r['date'] == day)}
+
+    def test_ordinary_weather_raises_no_flags(self):
+        rows, counts = self.screen()
+        self.assertEqual(counts, {}, rows[:5])
+
+    def test_each_kind_of_problem_is_found_and_ranked(self):
+        np, v, at = self.np, self.values, self.lookup
+        day = lambda text: self.days.index(date.fromisoformat(text))
+        v[day('2012-07-10'), 0, at['aorc_v1.1', 'tmean_c']] += 25               # one-day spike
+        v[day('2013-06-02'), 1, at['aorc_v1.1', 'precipitation_mm']] = 160      # storm in one source only
+        v[day('2014-02-01'):, 2, at['era5_land_cds', 'snow_water_equivalent_mm']] += 300   # SWE jump
+        v[day('2015-05-01'):day('2015-05-11'), 3, at['aorc_v1.1', 'tmean_c']] = 12.345      # stuck series
+        v[day('2015-01-01'):, 4, at['aorc_v1.1', 'tmean_c']] += 2                # input change
+        rows, counts = self.screen()
+        self.assertIn('spike', self.kinds(rows, 'A', 'tmean_c', '2012-07-10'))
+        self.assertIn('sources', self.kinds(rows, 'B', 'precipitation_mm', '2013-06-02'))
+        self.assertIn('neighbours', self.kinds(rows, 'B', 'precipitation_mm', '2013-06-02'))
+        self.assertIn('snow', self.kinds(rows, 'C', 'snow_water_equivalent_mm', '2014-02-01'))
+        self.assertIn('constant', self.kinds(rows, 'D', 'tmean_c', '2015-05-01'))
+        self.assertIn('step', self.kinds(rows, 'E', 'tmean_c', '2015'))
+        self.assertEqual([r['rank'] for r in rows], list(range(1, len(rows) + 1)))
+        self.assertTrue(all(r['score'] > 1 for r in rows))
+        self.assertEqual(sorted(r['score'] for r in rows)[::-1], [r['score'] for r in rows])

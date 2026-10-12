@@ -218,6 +218,12 @@ def readme_text(manifest, selected, files, missing, checks, gaps=None):
                       _table([[item['project_id'], item['source'], f"{item['minimum_swe_mm']:.0f}",
                                f"{item['mean_swe_mm']:.0f}"] for item in checks['persistent_snow']],
                              ['Project', 'Source', 'Minimum SWE (mm)', 'Mean SWE (mm)']), '']
+        flags = checks.get('review_flags')
+        if flags is not None:
+            counts = ', '.join(f'{kind} {number:,}' for kind, number in sorted(flags.items())) or 'none'
+            lines += [f"Values within the plausible ranges but unusual for their catchment, time of year, other "
+                      f"source or neighbouring catchments, listed for review in `{files['checks']}/outliers.csv` "
+                      f"(most unusual first; plots in `outliers.pdf`): {counts}.", '']
     else:
         lines += ['## Quality control', '', 'Automated checks did not complete; see the run log.', '']
     lines += ['## Catchments', '',

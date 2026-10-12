@@ -60,8 +60,10 @@ imply that every observation exists. No separate export command is needed.
 
 The `outputs/catchment_daily_full.csv.checks/` directory contains
 `coverage.png`, `source_comparison.png` (every quantity available from both
-AORC and ERA5-Land), `timeseries.pdf` (one page per project), numerical checks
-and per-variable QC summaries. See the [daily data notes](data_notes.md) for
+AORC and ERA5-Land), `timeseries.pdf` (one page per project), numerical checks,
+per-variable QC summaries, and `outliers.csv` with `outliers.pdf`: values within
+the plausible ranges that are unusual for their catchment, time of year, other
+source or neighbours, most unusual first. See the [daily data notes](data_notes.md) for
 measurement heights, signs, definitions and interpretation. To check an
 existing delivery and rebuild the requested table and README without
 downloading, run:
