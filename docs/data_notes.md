@@ -199,6 +199,9 @@ column lists the filled columns of each row, and the README counts them.
   not equal near-surface air temperature. Cold, dry conditions can have low
   downward thermal flux. [FAO explains sky emission and radiative frost](https://www.fao.org/4/y7223e/y7223e09.htm).
   Verify the original hourly values and support before judging a particular day.
+- ERA5 stores "no 0 °C level above ground" (the whole column below freezing) as
+  -0.0002 m rather than 0, an artifact of GRIB packing; the bound accepts values
+  down to -0.001 m and such values mean zero.
 - Incoming AORC longwave and ERA5-Land **net** longwave are different quantities.
   Negative net longwave, or even negative daily total net radiation in winter,
   can represent surface energy loss. They are not negative incoming sunlight.
