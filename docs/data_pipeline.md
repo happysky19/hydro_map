@@ -647,8 +647,9 @@ The values table contains **62 data variables**: 19 from AORC with
 `--derive`, 40 from ERA5-Land and 3 from ERA5. Together with `date` and
 `project_id`, the full table has 64 columns. Each variable has four fields in
 the separate QC table, which has 250 columns including the same two keys.
-The requested table holds the 25 requested variables in 28 columns (13 AORC,
-12 ERA5-Land and 3 ERA5); `research/delivery_variables.py` lists them with their forecast
+The requested table holds the 25 requested variables in 28 columns (10 AORC,
+15 ERA5-Land and 3 ERA5; wind comes from ERA5-Land because AORC changes wind
+source at the start of 2018); `research/delivery_variables.py` lists them with their forecast
 counterparts. Daily accumulated quantities use `mm` or `MJ/m2` in the
 machine-readable unit dictionary; the daily interval makes them numerically
 equivalent to the mm/day and MJ/m²/day amounts in the tables above.

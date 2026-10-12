@@ -88,6 +88,8 @@ class DownloadDailyTests(unittest.TestCase):
             requested = list(csv.DictReader(handle))
         self.assertEqual(len(requested[0]), 3 + len(REQUESTED))
         self.assertEqual(requested[0]['precipitation_mm'], rows[0]['aorc_v1_1__precipitation_mm'])
+        # AORC changes wind source in 2018, so the requested wind is ERA5-Land's.
+        self.assertEqual(requested[0]['wind_speed_ms'], rows[0]['era5_land_cds__wind_speed_m_s'])
         self.assertEqual(requested[0]['freezing_level_above_sea_level_m'],
                          rows[0]['era5_cds__freezing_level_above_sea_level_m'])
         readme = self.root / 'daily_README.md'

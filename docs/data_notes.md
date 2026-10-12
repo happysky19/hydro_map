@@ -184,12 +184,24 @@ also blank on 2024-06-17 because its last hour ends at 2024-06-18 00 UTC.
 
 These blanks stay blank in the full table. In the requested table they are
 filled from the same ERA5-Land quantity, adjusted to AORC's mean for that
-catchment and calendar month (a shift for temperatures, wind components and
-relative humidity; a ratio limited to 0.25-4 for precipitation, wind speed,
-shortwave radiation and vapor pressure deficit). Filled precipitation is split
+catchment and calendar month (a shift for temperatures and relative humidity;
+a ratio limited to 0.25-4 for precipitation, shortwave radiation and vapor
+pressure deficit). Filled precipitation is split
 with ERA5-Land's snow fraction so that rain plus snow still equals the total,
 and PET is recalculated from the filled temperatures. The `aorc_gap_filled`
 column lists the filled columns of each row, and the README counts them.
+
+AORC's 10 m wind changes source at the start of 2018, from NLDAS-2 (12 km,
+itself from the 32 km NARR reanalysis) to the 2.5 km URMA analysis, which is
+anchored to surface stations; no adjustment joins the two
+([AORC v1.1 methods](https://www.weather.gov/media/owp/operations/aorc_v1_1_methods.pdf),
+which give 2016 for the change). Relative to ERA5-Land, AORC wind speed at the
+43 catchments drops by about 1.5-3 m/s from 2018, and the checker's `step`
+flags show it in nearly every catchment. The requested table therefore takes
+wind speed and its components from ERA5-Land, which uses ERA5's 31 km 10 m
+wind throughout: consistent over time, but smooth and likely low in complex
+terrain ([Chen et al. 2024](https://rmets.onlinelibrary.wiley.com/doi/10.1002/joc.8339)).
+The full table keeps both sources.
 
 ## Interpret the checks
 

@@ -28,8 +28,8 @@ from meteorology import hargreaves_pet
 
 FILL_COLUMN = 'aorc_gap_filled'
 # Signed quantities are shifted by the mean difference; nonnegative ones scaled by the mean ratio.
-ADDITIVE = {'tmean_c', 'tmin_c', 'tmax_c', 'u_wind_ms', 'v_wind_ms', 'relative_humidity_pct'}
-RATIO = {'precipitation_mm', 'wind_speed_ms', 'shortwave_down_mean_wm2', 'vapor_pressure_deficit_kpa'}
+ADDITIVE = {'tmean_c', 'tmin_c', 'tmax_c', 'relative_humidity_pct'}
+RATIO = {'precipitation_mm', 'shortwave_down_mean_wm2', 'vapor_pressure_deficit_kpa'}
 RATIO_LIMITS = (.25, 4.)
 
 
@@ -82,9 +82,9 @@ def _gap_lines(gaps):
              f'AORC has no data for some hours (for example 2024-06-18 in the whole archive, and the '
              f'2026-01-01 00 UTC hour needed for 2025-12-31 precipitation). In the requested table, such a '
              f'blank AORC value is replaced by the same ERA5-Land quantity, adjusted to AORC for that '
-             f'catchment and calendar month over this delivery: temperatures, wind components and relative '
-             f'humidity are shifted by the mean difference; precipitation, wind speed, shortwave radiation and '
-             f'vapor pressure deficit are scaled by the mean ratio (limited to 0.25-4). Filled precipitation '
+             f'catchment and calendar month over this delivery: temperatures and relative humidity are shifted '
+             f'by the mean difference; precipitation, shortwave radiation and vapor pressure deficit are scaled '
+             f'by the mean ratio (limited to 0.25-4). Filled precipitation '
              f'is split into rain and snow with ERA5-Land\'s snow fraction, and PET is recalculated from the '
              f'filled temperatures. `{FILL_COLUMN}` lists the filled columns of each row; it is empty when '
              f'nothing was filled. The full table keeps these values blank.', '']
@@ -135,14 +135,20 @@ def readme_text(manifest, selected, files, missing, checks, gaps=None):
         'in Canada it follows NLDAS-2, and NOAA reports lower accuracy there because gauges are sparse. '
         'Precipitation and temperature are adjusted to gauge-based climatologies (PRISM, including a '
         'regional PRISM for the Canadian Columbia basin, and Livneh). Temperature comes from NLDAS-2 '
-        'until 2015 and from the URMA analysis from 2016. Humidity, pressure, radiation and wind are '
-        'model fields from NLDAS-2 (URMA from 2016 for humidity, pressure and longwave radiation). The '
-        'largest uncertainties are high-elevation and Canadian precipitation, and the source changes in '
-        '2002 and 2016 can shift long-term averages ([AORC v1.1 methods]'
+        'until 2015 and from the URMA analysis from 2016: adjusted to the earlier record by calendar '
+        'month in 2016-2017, used without that adjustment from 2018. Humidity, pressure and longwave '
+        'radiation follow URMA from 2016; shortwave radiation stays NLDAS-2. Wind changes from NLDAS-2 '
+        'to URMA at the start of 2018 in this record (the documentation gives 2016), also without '
+        'adjustment: relative to ERA5-Land, AORC wind speed at these catchments drops by about 1.5-3 m/s '
+        'from 2018, so the requested wind columns come from ERA5-Land. The largest uncertainties are '
+        'high-elevation and Canadian precipitation, and the source changes in 2002, 2016 and 2018 can '
+        'shift long-term averages ([AORC v1.1 methods]'
         '(https://www.weather.gov/media/owp/operations/aorc_v1_1_methods.pdf)).', '',
         'ERA5-Land and ERA5 are ECMWF reanalyses: physically consistent model estimates constrained by '
         'assimilated observations, available worldwide and without changes of source, but coarser than '
-        'AORC and with their own precipitation biases over mountains.', '',
+        'AORC and with their own precipitation biases over mountains. ERA5-Land wind is ERA5\'s 31 km '
+        '10 m wind interpolated to the ERA5-Land grid: consistent over time, but smooth, and likely low '
+        'in complex terrain ([Chen et al. 2024](https://rmets.onlinelibrary.wiley.com/doi/10.1002/joc.8339)).', '',
         '## Requested variables', '',
         f"{len({item['quantity'].split(' (')[0] for _, _, item in selected})} requested variables in "
         f"{len(selected)} columns, in the order of the request; soil temperature is given for the four "
@@ -244,7 +250,7 @@ def fill_aorc_gaps(values, land, projects, dates, latitudes):
     values/land map AORC variable names to arrays over rows (land may lack a variable).
     Returns {variable: boolean array of filled rows}; values are updated in place.
     Precipitation is split by ERA5-Land's snow fraction so rain + snow = total, and
-    temperature order, wind-speed magnitude and the RH range stay consistent.
+    temperature order and the RH range stay consistent.
     """
     months = np.array([day.month for day in dates])
     gaps = {variable: np.isnan(array) for variable, array in values.items()}
@@ -287,10 +293,6 @@ def fill_aorc_gaps(values, land, projects, dates, latitudes):
     if 'relative_humidity_pct' in values:
         rows = filled['relative_humidity_pct']
         values['relative_humidity_pct'][rows] = np.clip(values['relative_humidity_pct'][rows], 0, 100)
-    if {'wind_speed_ms', 'u_wind_ms', 'v_wind_ms'} <= set(values):
-        rows = filled['wind_speed_ms'] | filled['u_wind_ms'] | filled['v_wind_ms']
-        values['wind_speed_ms'][rows] = np.fmax(values['wind_speed_ms'],
-                                                np.hypot(values['u_wind_ms'], values['v_wind_ms']))[rows]
     if {'pet_hargreaves_mm', 'tmean_c', 'tmin_c', 'tmax_c'} <= set(values):
         for row in np.flatnonzero(gaps['pet_hargreaves_mm']):
             stats = [values[name][row] for name in ('tmean_c', 'tmin_c', 'tmax_c')]
