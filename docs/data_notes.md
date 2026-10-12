@@ -234,15 +234,20 @@ more unusual values; `reference` is what the value was compared with.
 | Kind | Flagged when |
 | --- | --- |
 | `climatology` | Far from the catchment's own values for the same half-month and the two either side, across all years: more than 6 robust standard deviations for states, or above both 20 mm and three times the 99th percentile of wet days for amounts |
-| `spike` | One day out of line with both the day before and the day after, by more than 8 robust standard deviations of day-to-day change; air and soil temperature, soil moisture and surface pressure only |
+| `spike` | One day out of line with both the day before and the day after, by more than 8 robust standard deviations of day-to-day change; air temperature, wet bulb and surface pressure only |
 | `snow` | ERA5-Land SWE rises by more than two days of precipitation plus 15 mm, or falls by more than two days of snowmelt plus 20 mm |
 | `sources` | AORC and ERA5-Land differ far more than usual for that catchment and time of year, or one has at least 25 mm and five times the other |
 | `neighbours` | A catchment differs far more than usual from the median of its three nearest catchments (by outlet), or has at least 30 mm while none of them has a fifth of it |
 | `step` | The annual mean AORC minus ERA5-Land difference shifts lastingly from one year (at least three years either side), such as at a change of AORC input data |
-| `constant` | The same nonzero value on five or more consecutive days |
+| `constant` | The same nonzero value of a weather variable on five or more consecutive days |
 
-Snow states are judged only by the `snow` rule: they accumulate over the
-season and stay at zero for months, so climatology and neighbours mislead.
+Snow states and the 0 °C level sit at a floor for long spells (zero snow; a
+0 °C level of zero, or at the terrain height above sea level, in cold air) and
+leave it in real events, so climatology, neighbours and runs of equal values
+mislead for them: snow is judged by the `snow` rule and the 0 °C level by its
+bounds. Soil variables are not judged day against day: rain makes a one-day
+jump in soil moisture, and deep soil changes by less than the stored precision
+for days.
 Statistics that need the seasonal cycle require at least a year of data. Start
 with the top of the list or `outliers.pdf`: a real storm, heat wave or cold
 outbreak usually appears in both sources and the neighbours, while a data

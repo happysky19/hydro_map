@@ -222,11 +222,14 @@ def persistent_snow(manifest, days, projects, columns, values, lookup):
 # Review flags: values inside the physical limits that are unusual for their catchment, day,
 # other source or neighbours. A score of 1 is the threshold; flags are for inspection, not failures.
 AMOUNTS = {'precipitation_mm', 'rainfall_mm', 'snowfall_mm', 'snowmelt_mm'}
-# Snow states integrate the season and sit at zero for months: they are checked against snowfall
-# and melt instead of climatology, neighbours, spikes or runs of equal values.
-SNOW_STATES = {'snow_water_equivalent_mm', 'snow_depth_m', 'snow_cover_pct', 'snow_density_kgm3',
-               'perennial_snow_area_pct'}
-# Only slowly varying states can be judged by one day against the next; fluxes jump naturally.
+# States that sit at a floor for long spells and leave it in real events: snow (zero for months,
+# checked against snowfall and melt instead) and the 0 degC level (zero, or the terrain height above
+# sea level, until a warm air mass arrives). Climatology, neighbours and runs of equal values
+# mislead for them; only the plausibility bounds apply.
+FLOORED = {'snow_water_equivalent_mm', 'snow_depth_m', 'snow_cover_pct', 'snow_density_kgm3',
+           'perennial_snow_area_pct', 'freezing_level_above_ground_m', 'freezing_level_above_sea_level_m'}
+# One day against the next only judges air temperature and pressure: rain makes a one-day jump in
+# soil moisture, and fluxes vary from day to day.
 SMOOTH = {'tmean_c', 'tmin_c', 'tmax_c', 'wet_bulb_temperature_c', 'surface_pressure_pa'}
 STEP_MINIMUM = {'degC': .5, 'm/s': .3, 'W/m2': 5, 'kPa': .05, 'pct': 2}
 OUTLIER_FIELDS = ['rank', 'kind', 'source', 'variable', 'project_id', 'date', 'value', 'reference',
@@ -284,7 +287,7 @@ def screen_outliers(manifest, days, projects, columns, values, lookup):
         warnings.simplefilter('ignore', RuntimeWarning)
         for j, (source, variable) in sorted(names.items()):
             x = values[:, :, j]
-            if not np.isfinite(x).any() or variable in SNOW_STATES:
+            if not np.isfinite(x).any() or variable in FLOORED:
                 continue
             amount = variable in AMOUNTS
             # Unusual for the catchment and time of year.
@@ -302,7 +305,7 @@ def screen_outliers(manifest, days, projects, columns, values, lookup):
                 for d, p in np.argwhere(score > 1):
                     flag('climatology', j, p, judged[d], block[d, p], center[p], score[d, p],
                          'far from this catchment\'s values for the time of year')
-            if (variable in SMOOTH or variable.startswith(('soil_', 'root_zone_'))) and len(days) >= 3:
+            if variable in SMOOTH and len(days) >= 3:
                 # One day out of line with both neighbours in time.
                 middle = x[1:-1]
                 dev = middle - (x[:-2] + x[2:]) / 2
@@ -311,9 +314,10 @@ def screen_outliers(manifest, days, projects, columns, values, lookup):
                 for d, p in np.argwhere(score > 1):
                     flag('spike', j, p, d + 1, middle[d, p], (x[d, p] + x[d + 2, p]) / 2, score[d, p],
                          'single day out of line with the days before and after')
-            if not amount:
-                # Values are written at full precision, so five equal days are a stuck series;
-                # zero is exempt (no freezing level above ground, stored as -0.0002 m; no PET in deep cold).
+            if not amount and not variable.startswith(('soil_', 'root_zone_')):
+                # Values are written at full precision, so five equal days of a weather variable are a
+                # stuck series; zero is exempt (no PET in deep cold). Deep soil changes by less than
+                # the stored precision for days.
                 for p in range(len(projects)):
                     same = np.r_[False, np.abs(np.diff(x[:, p])) < 1e-9, False]
                     edges = np.flatnonzero(np.diff(same.astype(int)))
@@ -384,7 +388,7 @@ def screen_outliers(manifest, days, projects, columns, values, lookup):
         near = neighbours(manifest, projects)
         if near and long_record:
             for j, (source, variable) in sorted(names.items()):
-                if variable in SNOW_STATES:
+                if variable in FLOORED:
                     continue
                 x = values[:, :, j]
                 for p, others in near.items():
@@ -683,8 +687,9 @@ def check_file(path, *, plots=True):
     print(f"Review flags: {len(flags):,}" + (f" ({kinds}); ranked in {folder/'outliers.csv'}" if flags else ''),
           flush=True)
     groups = Counter((row['kind'], row['source'], row['variable']) for row in flags)
-    for (kind, source, variable), number in groups.most_common(12):
-        print(f'  {kind} {source} {variable}: {number:,}', flush=True)
+    for kind in sorted(flagged):
+        largest = sorted(((n, s, v) for (k, s, v), n in groups.items() if k == kind), reverse=True)[:3]
+        print(f'  {kind}: ' + '; '.join(f'{s} {v} {n:,}' for n, s, v in largest), flush=True)
     return report
 
 

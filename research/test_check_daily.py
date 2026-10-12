@@ -230,7 +230,9 @@ class ReviewFlagTests(unittest.TestCase):
         self.projects = ['A', 'B', 'C', 'D', 'E']
         names = [('aorc_v1.1', 'tmean_c', 'degC'), ('era5_land_cds', 'tmean_c', 'degC'),
                  ('aorc_v1.1', 'precipitation_mm', 'mm'), ('era5_land_cds', 'precipitation_mm', 'mm'),
-                 ('era5_land_cds', 'snowmelt_mm', 'mm'), ('era5_land_cds', 'snow_water_equivalent_mm', 'mm')]
+                 ('era5_land_cds', 'snowmelt_mm', 'mm'), ('era5_land_cds', 'snow_water_equivalent_mm', 'mm'),
+                 ('era5_cds', 'freezing_level_above_ground_m', 'm'),
+                 ('era5_land_cds', 'soil_moisture_layer1_m3m3', 'm3/m3')]
         self.columns = [f'{s}__{v}' for s, v, _ in names]
         self.lookup = {(s, v): i for i, (s, v, _) in enumerate(names)}
         self.manifest = dict(columns={c: dict(source=s, variable=v, units=u) for c, (s, v, u) in zip(self.columns, names)},
@@ -249,8 +251,13 @@ class ReviewFlagTests(unittest.TestCase):
         for d in range(1, len(self.days)):
             melt[d] = np.where(cold[d], 0, np.minimum(swe[d - 1], np.maximum(aorc_t[d], 0) * 3))
             swe[d] = swe[d - 1] + np.where(cold[d], rain[d], 0) - melt[d]
+        # The 0 degC level stays at the ground in cold air and rises to kilometres in a warm spell;
+        # surface soil moisture jumps on a rainy day and dries out the next.
+        warm_spells = np.where(rng.random(shape) < .01, rng.uniform(1500, 3000, shape), 0)
+        freezing = np.where(aorc_t > 0, aorc_t * 150, 0) + np.where(aorc_t <= 0, warm_spells, 0)
+        surface = .25 + .1 * rain / (rain + 5)
         self.values = np.stack([aorc_t, aorc_t + .5 + rng.normal(0, .4, shape), rain,
-                                rain * .9 + rng.uniform(0, .3, shape), melt, swe], axis=2)
+                                rain * .9 + rng.uniform(0, .3, shape), melt, swe, freezing, surface], axis=2)
 
     def screen(self):
         from check_daily import screen_outliers
