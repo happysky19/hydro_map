@@ -96,6 +96,7 @@ class DownloadDailyTests(unittest.TestCase):
         readme = self.root / 'daily_README.md'
         self.assertIn('`snow_water_equivalent_mm`', readme.read_text())
         self.assertIn('HGT:0C isotherm', readme.read_text())
+        self.assertIn('| ECMWF AIFS |', readme.read_text())
         self.assertEqual(report['project_count'], 1)
         self.assertEqual(report['columns']['aorc_v1_1__wind_speed_m_s']['reference_height_m'], 10)
         self.assertEqual(report['columns']['era5_land_cds__tmean_degC']['reference_height_m'], 2)
