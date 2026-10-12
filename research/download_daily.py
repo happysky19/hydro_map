@@ -1,7 +1,7 @@
 """Download AORC, ERA5-Land and ERA5 and deliver aligned daily catchment tables.
 
-OUTPUT holds the requested variables; OUTPUT_full holds every variable with its
-_qc table, manifest and checks; OUTPUT_README.md documents both.
+OUTPUT holds the requested variables and OUTPUT_README.md describes them;
+OUTPUT_full holds every variable with its _qc table, manifest and checks.
 """
 
 import argparse
@@ -111,14 +111,14 @@ def run(geojson, start, end, output=None, *, work_dir=None, cache_dir=None,
     print(f"Quality fields: {full.with_name(report['qc_file'])}", flush=True)
     print(f'Units, quality definitions and routing notes: {full}.manifest.json', flush=True)
     print('[3/3] Check, plot and write the requested table and README', flush=True)
-    checks, problem = None, None
+    problem = None
     try:
         checks = check_file(full)
         if checks['failed_checks']:
             problem = f"{checks['failed_checks']} consistency checks failed; see {full}.checks"
     except Exception as error:
         problem = str(error)
-    delivery = write_delivery(full, output, companion(output, '_README', '.md'), checks)
+    delivery = write_delivery(full, output, companion(output, '_README', '.md'))
     print(f"Requested variables: {output} ({delivery['columns']} columns); notes: {delivery['readme']}", flush=True)
     if problem:
         raise DeliveryCheckError(f'Tables were saved to {output.parent}. Delivery checks need attention: '
