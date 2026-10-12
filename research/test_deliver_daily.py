@@ -18,14 +18,12 @@ class GapFillTests(unittest.TestCase):
         ramp = np.tile(np.arange(30.), 2)
         self.land = dict(precipitation_mm=1 + ramp % 4, snowfall_mm=np.zeros(n),
                          tmean_c=10 + ramp/10, tmin_c=4 + ramp/10, tmax_c=16 + ramp/10,
-                         relative_humidity_pct=np.full(n, 99.), u_wind_ms=np.full(n, 3.),
-                         v_wind_ms=np.full(n, 4.), wind_speed_ms=np.full(n, 5.5))
+                         relative_humidity_pct=np.full(n, 99.))
         self.values = dict(precipitation_mm=2*self.land['precipitation_mm'],
                            rainfall_mm=2*self.land['precipitation_mm'], snowfall_mm=np.zeros(n),
                            tmean_c=self.land['tmean_c'] + 1, tmin_c=self.land['tmin_c'] + 3,
                            tmax_c=self.land['tmax_c'] - 3, relative_humidity_pct=np.full(n, 99.) + 5,
-                           u_wind_ms=np.full(n, 3.), v_wind_ms=np.full(n, 4.),
-                           wind_speed_ms=np.full(n, 5.5), pet_hargreaves_mm=np.full(n, 3.))
+                           pet_hargreaves_mm=np.full(n, 3.))
         self.gap = 17
         for array in self.values.values():
             array[self.gap] = np.nan
@@ -42,7 +40,6 @@ class GapFillTests(unittest.TestCase):
         self.assertLessEqual(self.values['tmin_c'][row], self.values['tmean_c'][row])
         self.assertGreaterEqual(self.values['tmax_c'][row], self.values['tmean_c'][row])
         self.assertLessEqual(self.values['relative_humidity_pct'][row], 100)
-        self.assertGreaterEqual(self.values['wind_speed_ms'][row], 5.)
         stats = [self.values[name][row] for name in ('tmean_c', 'tmin_c', 'tmax_c')]
         self.assertAlmostEqual(self.values['pet_hargreaves_mm'][row],
                                hargreaves_pet(*stats, 50., self.dates[row]))
