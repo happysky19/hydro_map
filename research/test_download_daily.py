@@ -43,7 +43,7 @@ class DownloadDailyTests(unittest.TestCase):
         definitions = {name: (units, kind) for name, units, kind in FIELDS.values()}
         definitions.update(DERIVED_FIELDS)
         values = dict(temperature_c=5., precipitation_mm=1., rainfall_mm=.75, snowfall_mm=.25,
-                      wind_speed_ms=5., relative_humidity_pct=80., specific_humidity_kgkg=.004,
+                      wind_speed_ms=7., relative_humidity_pct=80., specific_humidity_kgkg=.004,
                       surface_pressure_pa=90000., shortwave_down_wm2=100., longwave_down_wm2=300.)
         result = {}
         for name, (units, kind) in definitions.items():
@@ -89,7 +89,8 @@ class DownloadDailyTests(unittest.TestCase):
         self.assertEqual(len(requested[0]), 3 + len(REQUESTED))
         self.assertEqual(requested[0]['precipitation_mm'], rows[0]['aorc_v1_1__precipitation_mm'])
         # AORC changes wind source in 2018, so the requested wind is ERA5-Land's.
-        self.assertEqual(requested[0]['wind_speed_ms'], rows[0]['era5_land_cds__wind_speed_m_s'])
+        self.assertEqual(requested[0]['wind_speed_m_s'], rows[0]['era5_land_cds__wind_speed_m_s'])
+        self.assertNotEqual(requested[0]['wind_speed_m_s'], rows[0]['aorc_v1_1__wind_speed_m_s'])
         self.assertEqual(requested[0]['freezing_level_above_sea_level_m'],
                          rows[0]['era5_cds__freezing_level_above_sea_level_m'])
         readme = self.root / 'daily_README.md'
