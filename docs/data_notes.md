@@ -13,7 +13,7 @@ values or totals over all upstream catchments. Empty values are missing, not zer
 
 `OUTPUT.csv` holds the requested variables and `OUTPUT_README.md` explains
 each of them: source, native or computed, units, daily definition, limitations
-and the matching ECMWF IFS, NOAA GFS and WeatherNext 2 forecast fields. `OUTPUT_full.csv`
+and the matching ECMWF IFS, ECMWF AIFS, NOAA GFS and WeatherNext 2 forecast fields. `OUTPUT_full.csv`
 holds every variable from every source; its `_qc` file, `.manifest.json` and
 `.checks/` directory belong with it. The manifest identifies each column's
 source, units and temporal statistic. To check an existing delivery and

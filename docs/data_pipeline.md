@@ -38,7 +38,7 @@ The same `--output` argument produces the delivery:
 - `outputs/catchment_daily_README.md`: for every requested column, its source,
   whether it is a native source field or computed here, units, daily
   definition, the limitations of the data and the matching ECMWF IFS /
-  NOAA GFS / WeatherNext 2 forecast fields.
+  ECMWF AIFS / NOAA GFS / WeatherNext 2 forecast fields.
 - `outputs/catchment_daily_full.csv`: every variable, 64 columns (`date`,
   `project_id` and 62 source-qualified values, including the ERA5-Land
   counterparts of the AORC forcing used for cross-checks).

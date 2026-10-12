@@ -174,18 +174,21 @@ def readme_text(manifest, selected, name, missing, gaps):
         '-0.0002 m, so small negative values mean 0.',
         *_gap_text(gaps), '',
         '## Matching forecast variables', '',
-        'Fields in operational forecasts that correspond to each column. ECMWF names are IFS open-data '
-        'parameters (0.25°) unless marked as full archive; GFS names are 0.25° GRIB2 `VARIABLE:level`; '
-        'WeatherNext 2 output is 6-hourly (2 m temperature, 10 m and 100 m wind, mean sea-level pressure, '
-        '6-hour precipitation and pressure-level fields).', '',
+        'Fields in operational forecasts that correspond to each column. IFS names are ECMWF open-data '
+        'parameters (0.25°) unless marked as full archive. AIFS names are ECMWF AIFS Single v2 open-data '
+        'parameters (0.25°, 6-hourly, operational since 12 May 2026; AIFS ENS v2 has the same fields); its '
+        'land output is limited to snow-cover fraction and the top two soil layers (0-28 cm). GFS names are '
+        '0.25° GRIB2 `VARIABLE:level`. WeatherNext 2 output is 6-hourly (2 m temperature, 10 m and 100 m '
+        'wind, mean sea-level pressure, 6-hour precipitation and pressure-level fields). ECMWF accumulations '
+        '(tp, ssrd) run from the forecast start, so daily amounts are differences between steps.', '',
         'To use a forecast with a model trained on this table, aggregate it the same way (same catchment '
         'polygons, UTC days, catchment means before daily statistics, same formulas for computed columns) '
         'and bias-correct it toward this table over a common past period, because every forecast model has '
-        'its own climatology. IFS is closest to the ERA5-Land and ERA5 columns, which come from the same '
-        'model family; the AORC columns need the correction most.', '',
-        _table([[item['quantity'], f'`{column}`', item['ifs'], item['gfs'], item['wn2'], item['note']]
+        'its own climatology. IFS and AIFS (trained on ERA5 and IFS analyses) are closest to the ERA5-Land '
+        'and ERA5 columns; the AORC columns need the correction most.', '',
+        _table([[item['quantity'], f'`{column}`', item['ifs'], item['aifs'], item['gfs'], item['wn2'], item['note']]
                 for column, _, item in selected],
-               ['Variable', 'Column', 'ECMWF IFS', 'NOAA GFS', 'WeatherNext 2', 'Note']), '',
+               ['Variable', 'Column', 'ECMWF IFS', 'ECMWF AIFS', 'NOAA GFS', 'WeatherNext 2', 'Note']), '',
         '## Catchments', '',
         _table([[identifier, props.get('name', ''), props.get('river', ''), props.get('country', ''),
                  _number(props.get('area_local', props.get('area')), 6)]
