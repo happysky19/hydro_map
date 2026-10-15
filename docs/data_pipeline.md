@@ -12,7 +12,8 @@ tailrace return. Its turbine inflow requires a separate operational diversion
 model. See [project outlets](project_outlets.md). For why AORC is the primary forcing and
 how other hydrological studies chose theirs, see
 [forcing used in hydrological practice](model_data_sources.md). Forecast hindcasts are planned in
-[forecast hindcasts](forecast_hindcast_plan.md).
+[forecast hindcasts](forecast_hindcast_plan.md), and their use in
+[using forecast data](forecast_use.md).
 
 ## One-command workflow
 

@@ -6,7 +6,8 @@ formulas) for leads of 1 to 180 days, with hindcasts long enough to bias-correct
 each system per catchment, calendar month and lead, to measure its skill, and to
 train or test inflow models on forecast inputs. Hindcasts are useful only where
 they overlap the historical table, 1996-2025: AORC for 2026 has not been
-released.
+released. How the forecasts would be used is in
+[using forecast data](forecast_use.md).
 
 ## Systems by lead time
 
