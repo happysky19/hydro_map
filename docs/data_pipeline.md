@@ -274,7 +274,9 @@ names the filled columns. `OUTPUT_check.csv` corrects each overlap year with a
 fit on the other years and compares the mean, MAE, 99th percentile and wet-day
 fraction (> 0.1 mm) with AORC, beside the uncorrected ERA5-Land. The mapping
 corrects distributions, not the timing of individual storms, so keep filled
-days out of model calibration.
+days out of model calibration. With `--raw` the blanks are filled with
+ERA5-Land as it is, for comparison or when no correction is wanted; the output
+and the check file are otherwise the same.
 
 To extend the earlier delivery, join the tables. The first file is kept whole;
 each later one adds only the dates after it, so 2022-2025 stay as delivered

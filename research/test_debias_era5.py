@@ -92,8 +92,26 @@ class DebiasTests(unittest.TestCase):
         with self.output.open() as stream:
             self.rows = list(csv.DictReader(stream))
 
-    def series(self, variable):
-        return np.array([float(row[variable]) if row[variable] else np.nan for row in self.rows])
+    def series(self, variable, rows=None):
+        return np.array([float(row[variable]) if row[variable] else np.nan for row in rows or self.rows])
+
+    def test_raw_fills_with_era5_land_as_it_is(self):
+        output = self.root / 'raw.csv'
+        with redirect_stdout(io.StringIO()):
+            debias_era5.run(self.aorc_path, self.era5_path, output, raw=True)
+        with output.open() as stream:
+            rows = list(csv.DictReader(stream))
+        filled = np.array([d.year == 2025 for d in self.dates])
+        for variable in debias_era5.MAPPED + ['snowfall_mm']:
+            np.testing.assert_allclose(self.series(variable, rows)[filled], self.land[variable][filled],
+                                       err_msg=variable)
+        pet = [hargreaves_pet(*stats, LATITUDES[p], d) for stats, p, d, f in zip(
+            zip(self.land['tmean_c'], self.land['tmin_c'], self.land['tmax_c']), self.projects, self.dates, filled) if f]
+        np.testing.assert_allclose(self.series('pet_hargreaves_mm', rows)[filled], pet)
+        kept = ~filled
+        kept[self.gap] = False
+        np.testing.assert_allclose(self.series('tmean_c', rows)[kept], self.truth['tmean_c'][kept])
+        self.assertEqual([row['aorc_gap_filled'] for row in rows], [row['aorc_gap_filled'] for row in self.rows])
 
     def test_aorc_is_kept_and_blanks_are_filled_and_flagged(self):
         names = [item['variable'] for item in REQUESTED if item['source'] == AORC]
