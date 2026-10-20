@@ -2,7 +2,7 @@
 
 from contextlib import redirect_stdout
 import csv
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 import gzip
 import io
 import json
@@ -19,7 +19,8 @@ import numpy as np
 from cds_fields import (root_zone_moisture, land_daily_fields, era_daily_fields, dewpoint_humidity,
                         ALL_FIELDS, LAND_STATES, LAND_ACCUMULATED, NETCDF_LOCK)
 from download_cds import (make_requests, accumulated_requests, read_response, process_day, run_pipeline,
-                          align_hours, prefetch)
+                          align_hours, prefetch, batch_requests)
+from arco_era5 import request_times
 from meteorology import humidity
 
 
@@ -124,6 +125,17 @@ class FieldTests(unittest.TestCase):
                           for r in requests], [('2024', 12, 31), ('2025', 12, 31), ('2026', 1, 1)])
         cost = max(len(r['fields'])*len(r['request']['month'])*len(r['request']['day'])*2 for r in requests)
         self.assertLess(cost, 12000)
+
+    def test_endpoints_stop_at_the_last_needed_day(self):
+        requests = accumulated_requests(date(2025, 1, 1), date(2026, 9, 30), [51, -121, 49, -119])
+        self.assertEqual([(r['request']['year'], r['request']['month'][-1], len(r['request']['day']))
+                          for r in requests], [('2025', '12', 31), ('2026', '09', 31), ('2026', '10', 1)])
+        self.assertEqual(requests[:1], accumulated_requests(date(2025, 1, 1), date(2025, 12, 31),
+                                                            [51, -121, 49, -119])[:1])
+        stamps = [stamp for r in requests for stamp in request_times(r['request'])]
+        self.assertEqual(max(stamps), datetime(2026, 10, 1, tzinfo=timezone.utc))
+        batch = batch_requests('era5-land', date(2026, 9, 29), date(2026, 9, 30), [51, -121, 49, -119], requests)
+        self.assertEqual([r['request']['month'][-1] for r in batch if r['kind'] == 'accumulated'], ['09', '10'])
 
 
 
