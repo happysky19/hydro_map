@@ -543,6 +543,26 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(sorted(record['provider'] for record in manifest.values()),
                          ['Copernicus Climate Data Store', 'Test copy'])
 
+    def test_requests_past_the_end_of_a_copy_go_to_the_cds(self):
+        class ShortCopy(FakeClient):
+            provider = 'Test copy'
+            def holds(self, request):
+                return request['day'] != ['01'] or request['month'] != ['01']
+            def retrieve(self, dataset, request, target):
+                assert self.holds(request), 'Copy asked for hours it does not hold'
+                super().retrieve(dataset, request, target)
+        copy, cds = ShortCopy(), FakeClient()
+        log = io.StringIO()
+        with redirect_stdout(log):
+            run_pipeline(*self.arguments, client=copy, cds_client=cds)
+        self.assertIn('1 requests are past the end of Test copy', log.getvalue())
+        self.assertEqual((copy.calls, cds.calls), (1, 1))
+        with gzip.open(self.root/'output/daily_2025-12.csv.gz', 'rt') as stream:
+            self.assertTrue(all(row['qc'] == 'valid' for row in csv.DictReader(stream)))
+        manifest = json.loads((self.root/'cache/requests.manifest.json').read_text())
+        self.assertEqual(sorted(record['provider'] for record in manifest.values()),
+                         ['Copernicus Climate Data Store', 'Test copy'])
+
     def test_blanks_also_in_the_cds_are_left_to_quality_control(self):
         copy, cds = BlankClient(['t2m'], 'Test copy'), BlankClient(['t2m'])
         with redirect_stdout(io.StringIO()):

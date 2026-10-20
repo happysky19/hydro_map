@@ -119,6 +119,10 @@ class EdhTests(unittest.TestCase):
 
     def test_hours_outside_the_store_are_refused(self):
         late = make_requests('era5-land', date(2026, 1, 2), self.area, date(2026, 1, 3))[0]
+        held = [*make_requests('era5-land', date(2025, 12, 30), self.area, date(2025, 12, 31)),
+                *make_requests('era5-land', date(2026, 1, 1), self.area)]
+        self.assertTrue(all(self.client.holds(spec['request']) for spec in held))
+        self.assertFalse(self.client.holds(late['request']))
         with self.assertRaisesRegex(ValueError, 'outside'):
             self.client.retrieve(late['dataset'], late['request'], self.root / 'late.nc')
 

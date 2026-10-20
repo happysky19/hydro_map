@@ -158,6 +158,13 @@ class EdhClient:
         """Delete cached raw chunks once their requests have been answered."""
         shutil.rmtree(self.chunk_dir, ignore_errors=True)
 
+    def holds(self, request):
+        """Whether every hour of a CDS request is on the store's time axis."""
+        self._load_metadata()
+        hours = [int((stamp - EPOCH).total_seconds()) // 3600 for stamp in request_times(request)]
+        valid_time = self.coordinates['valid_time']
+        return int(valid_time[0]) <= min(hours) and max(hours) <= int(valid_time[-1])
+
     def _positions(self, stamps):
         """Indexes of the requested hours on the store's time axis."""
         hours = np.array([int((stamp - EPOCH).total_seconds()) // 3600 for stamp in stamps])
