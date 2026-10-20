@@ -109,18 +109,26 @@ def accumulated_requests(start, end, area):
 
     Each request is the product of its months and days: a few unneeded dates are cheap,
     and the CDS skips impossible ones. Endpoints are small, so a year stays far below the
-    size limit while avoiding dozens of queued requests.
+    size limit while avoiding dozens of queued requests. A period ending within a month
+    gets that month as a separate request, so no request reaches past the last endpoint
+    into hours that may not exist yet.
     """
     needed = list(dates(start+timedelta(days=1), end+timedelta(days=1)))
+    last = needed[-1]
     result = []
     for year in sorted({day.year for day in needed}):
         within = [day for day in needed if day.year == year]
-        request = dict(variable=[v[0] for v in LAND_ACCUMULATED.values()], year=f'{year:04d}',
-                       month=sorted({f'{day.month:02d}' for day in within}),
-                       day=sorted({f'{day.day:02d}' for day in within}), time=['00:00'],
-                       area=area, data_format='netcdf', download_format='unarchived')
-        result.append(dict(kind='accumulated', dataset='reanalysis-era5-land', request=request,
-                           fields=list(LAND_ACCUMULATED)))
+        groups = [within]
+        if year == last.year and max(day.day for day in within) > last.day:
+            groups = [[day for day in within if day.month != last.month],
+                      [day for day in within if day.month == last.month]]
+        for group in filter(None, groups):
+            request = dict(variable=[v[0] for v in LAND_ACCUMULATED.values()], year=f'{year:04d}',
+                           month=sorted({f'{day.month:02d}' for day in group}),
+                           day=sorted({f'{day.day:02d}' for day in group}), time=['00:00'],
+                           area=area, data_format='netcdf', download_format='unarchived')
+            result.append(dict(kind='accumulated', dataset='reanalysis-era5-land', request=request,
+                               fields=list(LAND_ACCUMULATED)))
     return result
 
 
