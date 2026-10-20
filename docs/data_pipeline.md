@@ -246,6 +246,36 @@ meteorological calculations.
 The source-specific commands later in this guide are available for individual
 source checks; they are not additional steps after `download_daily.py`.
 
+### 2026: ERA5-Land corrected toward AORC
+
+The AORC archive ends at 2025-12-31 (no `2026.zarr` on 2026-10-20). For 2026,
+download ERA5-Land and ERA5 alone, from a few years before so that they overlap
+AORC, and map ERA5-Land onto AORC over the overlap:
+
+```bash
+python research/download_era5.py --geojson outputs/projects43_independent/dam_catchments.geojson --start 2022-01-01 --end 2026-09-30 --output outputs/era5_2022_2026.csv --work-dir /scratch/hydro/era5_2022_2026
+python research/debias_era5.py --aorc outputs/catchment_daily_1996_2025_full.csv --era5 outputs/era5_2022_2026.csv --output outputs/catchment_daily_2022_2026.csv
+```
+
+`download_era5.py` works from the latest month back, runs both products side by
+side and resumes like `download_daily.py`; `progress_daily.py` reads its
+working directory. Its table has the full-table layout without AORC columns.
+Requests for hours the Earth Data Hub does not hold yet go to the CDS queue.
+ERA5 after 2026-06-30 and the latest ERA5-Land months are preliminary (ERA5T,
+ERA5-Land-T) and may still be revised; download them again into a new working
+directory once the final data are out.
+
+`debias_era5.py` needs a full table with AORC (here the 1996-2025 delivery). It
+keeps AORC where it exists and fills the rest from ERA5-Land, quantile-mapped
+per catchment and calendar month on the overlap days (the month and the months
+either side). Precipitation is split with ERA5-Land's snow fraction and PET is
+recalculated. The output has the requested-table columns; `aorc_gap_filled`
+names the filled columns. `OUTPUT_check.csv` corrects each overlap year with a
+fit on the other years and compares the mean, MAE, 99th percentile and wet-day
+fraction (> 0.1 mm) with AORC, beside the uncorrected ERA5-Land. The mapping
+corrects distributions, not the timing of individual storms, so keep filled
+days out of model calibration.
+
 ## 1. Install
 
 Run commands from the repository root in an activated Python 3.10+ environment.
@@ -675,6 +705,8 @@ equivalent to the mm/day and MJ/m²/day amounts in the tables above.
 | `research/delivery_variables.py` | Requested columns: source, native or computed, definition and forecast counterparts |
 | `research/plot_daily.py` | Overview, source comparison and water-year plots for one catchment; map, seasonal-cycle and water-year anomaly plots for every catchment; from a delivery or a working directory |
 | `research/progress_daily.py` | Progress of a running or interrupted download: years, requests and months completed |
+| `research/download_era5.py` | ERA5-Land and ERA5 without AORC, latest months first, exported in the full-table layout |
+| `research/debias_era5.py` | Quantile-map ERA5-Land onto AORC, fill the AORC columns where AORC is blank, and check the fit year by year |
 
 For modeling, begin with AORC precipitation and temperature as meteorological
 forcing. Rain/snow partition and PET are calculated inputs with the method
