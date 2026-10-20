@@ -276,6 +276,14 @@ fraction (> 0.1 mm) with AORC, beside the uncorrected ERA5-Land. The mapping
 corrects distributions, not the timing of individual storms, so keep filled
 days out of model calibration.
 
+To extend the earlier delivery, join the tables. The first file is kept whole;
+each later one adds only the dates after it, so 2022-2025 stay as delivered
+and 2026 is appended. Columns, catchments and the run of dates must match:
+
+```bash
+python research/merge_daily.py outputs/catchment_daily_1996_2025.parquet outputs/catchment_daily_2022_2026.csv --output outputs/catchment_daily_1996_2026.parquet
+```
+
 ## 1. Install
 
 Run commands from the repository root in an activated Python 3.10+ environment.
@@ -707,6 +715,7 @@ equivalent to the mm/day and MJ/m²/day amounts in the tables above.
 | `research/progress_daily.py` | Progress of a running or interrupted download: years, requests and months completed |
 | `research/download_era5.py` | ERA5-Land and ERA5 without AORC, latest months first, exported in the full-table layout |
 | `research/debias_era5.py` | Quantile-map ERA5-Land onto AORC, fill the AORC columns where AORC is blank, and check the fit year by year |
+| `research/merge_daily.py` | Join requested tables (CSV or Parquet) into one period: earlier files kept, later ones only extend the dates |
 
 For modeling, begin with AORC precipitation and temperature as meteorological
 forcing. Rain/snow partition and PET are calculated inputs with the method
