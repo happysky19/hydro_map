@@ -278,6 +278,19 @@ days out of model calibration. With `--raw` the blanks are filled with
 ERA5-Land as it is, for comparison or when no correction is wanted; the output
 and the check file are otherwise the same.
 
+To see what the correction changes, plot AORC beside ERA5-Land before and after
+it (same inputs as `debias_era5.py`; corrected values in AORC years are fitted
+without that year):
+
+```bash
+python research/plot_debias.py --aorc outputs/catchment_daily_1996_2025_full.csv --era5 outputs/era5_2022_2026.csv --output-dir figures/debias
+```
+
+`timeseries.png` shows monthly means over all catchments, `monthly_bias.png`
+the difference from AORC by calendar month, `quantiles.png` the daily
+distributions, `catchments.png` the difference in each catchment, and
+`catchments.pdf` the monthly means of each catchment.
+
 To extend the earlier delivery, join the tables. The first file is kept whole;
 each later one adds only the dates after it, so 2022-2025 stay as delivered
 and 2026 is appended. Columns, catchments and the run of dates must match:
@@ -717,6 +730,7 @@ equivalent to the mm/day and MJ/m²/day amounts in the tables above.
 | `research/progress_daily.py` | Progress of a running or interrupted download: years, requests and months completed |
 | `research/download_era5.py` | ERA5-Land and ERA5 without AORC, latest months first, exported in the full-table layout |
 | `research/debias_era5.py` | Quantile-map ERA5-Land onto AORC, fill the AORC columns where AORC is blank, and check the fit year by year |
+| `research/plot_debias.py` | AORC beside ERA5-Land before and after quantile mapping: monthly series, seasonal and per-catchment differences, quantiles |
 | `research/merge_daily.py` | Join requested tables (CSV or Parquet) into one period: earlier files kept, later ones only extend the dates |
 
 For modeling, begin with AORC precipitation and temperature as meteorological

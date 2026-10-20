@@ -51,41 +51,48 @@ def truth(land, dates, projects):
     return a
 
 
+def write_inputs(root):
+    """ERA5-Land for 2022-2025 and AORC for 2022-2024 with one blank day, in two catchments, as full tables."""
+    days = [date(2022, 1, 1) + timedelta(days=i) for i in range((date(2025, 12, 31) - date(2022, 1, 1)).days + 1)]
+    keys = [(day, project) for day in days for project in sorted(LATITUDES)]
+    dates = [day for day, _ in keys]
+    projects = np.array([project for _, project in keys])
+    rng = np.random.default_rng(0)
+    n = len(keys)
+    season = np.cos(2 * np.pi * (np.array([d.timetuple().tm_yday for d in dates]) - 200) / 365)
+    tmean = 5 + 10 * season + rng.normal(0, 3, n)
+    precipitation = rng.gamma(.6, 5, n)
+    land = dict(tmean_c=tmean, tmin_c=tmean - 4 - np.abs(rng.normal(0, 1, n)),
+                tmax_c=tmean + 4 + np.abs(rng.normal(0, 1, n)),
+                relative_humidity_pct=np.clip(70 - 10 * season + rng.normal(0, 8, n), 6, 100),
+                shortwave_down_mean_wm2=np.clip(150 + 100 * season + rng.normal(0, 20, n), 5, None),
+                vapor_pressure_deficit_kpa=np.clip(.5 + .4 * season + rng.normal(0, .2, n), .01, None),
+                precipitation_mm=precipitation, snowfall_mm=np.where(tmean < 0, precipitation, 0.))
+    truth_values = truth(land, dates, projects)
+    overlap = np.array([d.year < 2025 for d in dates])
+    aorc = {v: np.where(overlap, values, np.nan) for v, values in truth_values.items()}
+    gap = keys.index(GAP)
+    for values in aorc.values():
+        values[gap] = np.nan
+    other = {(item['source'], item['variable']): float(i) for i, item in enumerate(REQUESTED)
+             if item['source'] != AORC}
+    era5 = {(LAND, v): values for v, values in land.items()}
+    era5.update({key: np.full(n, value) for key, value in other.items()})
+    aorc_path, era5_path = root / 'aorc_full.csv', root / 'era5.csv'
+    write_table(aorc_path, keys, {(AORC, v): values for v, values in aorc.items()},
+                [dict(metadata=dict(source_id=AORC, pet_centroid_latitudes=LATITUDES))])
+    write_table(era5_path, keys, era5)
+    return dict(keys=keys, dates=dates, projects=projects, land=land, truth=truth_values, gap=gap,
+                other=other, aorc_path=aorc_path, era5_path=era5_path)
+
+
 class DebiasTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
-        days = [date(2022, 1, 1) + timedelta(days=i) for i in range((date(2025, 12, 31) - date(2022, 1, 1)).days + 1)]
-        self.keys = [(day, project) for day in days for project in sorted(LATITUDES)]
-        dates = [day for day, _ in self.keys]
-        projects = np.array([project for _, project in self.keys])
-        rng = np.random.default_rng(0)
-        n = len(self.keys)
-        season = np.cos(2 * np.pi * (np.array([d.timetuple().tm_yday for d in dates]) - 200) / 365)
-        tmean = 5 + 10 * season + rng.normal(0, 3, n)
-        precipitation = rng.gamma(.6, 5, n)
-        self.land = dict(tmean_c=tmean, tmin_c=tmean - 4 - np.abs(rng.normal(0, 1, n)),
-                         tmax_c=tmean + 4 + np.abs(rng.normal(0, 1, n)),
-                         relative_humidity_pct=np.clip(70 - 10 * season + rng.normal(0, 8, n), 6, 100),
-                         shortwave_down_mean_wm2=np.clip(150 + 100 * season + rng.normal(0, 20, n), 5, None),
-                         vapor_pressure_deficit_kpa=np.clip(.5 + .4 * season + rng.normal(0, .2, n), .01, None),
-                         precipitation_mm=precipitation, snowfall_mm=np.where(tmean < 0, precipitation, 0.))
-        self.truth = truth(self.land, dates, projects)
-        self.dates, self.projects = dates, projects
-        overlap = np.array([d.year < 2025 for d in dates])
-        aorc = {v: np.where(overlap, values, np.nan) for v, values in self.truth.items()}
-        self.gap = self.keys.index(GAP)
-        for values in aorc.values():
-            values[self.gap] = np.nan
-        self.other = {(item['source'], item['variable']): float(i) for i, item in enumerate(REQUESTED)
-                      if item['source'] != AORC}
-        era5 = {(LAND, v): values for v, values in self.land.items()}
-        era5.update({key: np.full(n, value) for key, value in self.other.items()})
-        self.aorc_path, self.era5_path = self.root / 'aorc_full.csv', self.root / 'era5.csv'
-        write_table(self.aorc_path, self.keys, {(AORC, v): values for v, values in aorc.items()},
-                    [dict(metadata=dict(source_id=AORC, pet_centroid_latitudes=LATITUDES))])
-        write_table(self.era5_path, self.keys, era5)
+        for name, value in write_inputs(self.root).items():
+            setattr(self, name, value)
         self.output = self.root / 'daily.csv'
         with redirect_stdout(io.StringIO()):
             debias_era5.run(self.aorc_path, self.era5_path, self.output)

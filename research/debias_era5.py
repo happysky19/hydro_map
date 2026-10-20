@@ -36,6 +36,7 @@ from meteorology import hargreaves_pet
 
 
 MAPPED = sorted(ADDITIVE | RATIO)
+VARIABLES = [item['variable'] for item in REQUESTED if item['source'] == AORC]
 LEVELS = (np.arange(100) + .5) / 100
 MIN_DAYS = 60
 WET_MM = .1
@@ -136,6 +137,19 @@ def uncorrected(land, projects, dates, latitudes, target):
     return finish({v: subset[v] for v in MAPPED}, subset, projects[target], [dates[i] for i in target], latitudes)
 
 
+def held_out(aorc, land, projects, dates, latitudes):
+    """Corrected values on every row: a year with AORC is mapped with a fit on the other years."""
+    paired = np.flatnonzero(np.logical_and.reduce([np.isfinite(aorc[v]) & np.isfinite(land[v]) for v in MAPPED]))
+    years = np.array([day.year for day in dates])
+    result = {v: np.full(len(dates), np.nan) for v in VARIABLES}
+    for year in sorted(set(years)):
+        target = np.flatnonzero(years == year)
+        values = correct(aorc, land, projects, dates, latitudes, paired[years[paired] != year], target)
+        for v in VARIABLES:
+            result[v][target] = values[v]
+    return result
+
+
 def statistics(variable, project, a, r, c):
     """One check row from paired AORC, raw ERA5-Land and corrected values."""
     wet = lambda x: float(np.mean(x > WET_MM)) if variable == 'precipitation_mm' else ''
@@ -143,24 +157,18 @@ def statistics(variable, project, a, r, c):
             *np.percentile([a, r, c], 99, axis=1), wet(a), wet(r), wet(c)]
 
 
-def check(aorc, land, projects, dates, latitudes, variables, path):
+def check(aorc, land, projects, dates, latitudes, path):
     """Correct each overlap year with a fit on the others and compare with AORC."""
-    paired = np.flatnonzero(np.logical_and.reduce([np.isfinite(aorc[v]) & np.isfinite(land[v]) for v in MAPPED]))
-    years = np.array([dates[i].year for i in paired])
-    if len(set(years)) < 2:
+    held = np.flatnonzero(np.logical_and.reduce([np.isfinite(aorc[v]) & np.isfinite(land[v]) for v in MAPPED]))
+    years = {dates[i].year for i in held}
+    if len(years) < 2:
         print('Fewer than two overlap years; no check written', flush=True)
         return
-    held = np.concatenate([paired[years == year] for year in sorted(set(years))])
-    corrected = {v: [] for v in variables}
-    for year in sorted(set(years)):
-        values = correct(aorc, land, projects, dates, latitudes, paired[years != year], paired[years == year])
-        for v in variables:
-            corrected[v].append(values[v])
-    corrected = {v: np.concatenate(parts) for v, parts in corrected.items()}
+    corrected = held_out(aorc, land, projects, dates, latitudes)
     raw = uncorrected(land, projects, dates, latitudes, held)
     rows = []
-    for v in variables:
-        a, r, c = aorc[v][held], raw[v], corrected[v]
+    for v in VARIABLES:
+        a, r, c = aorc[v][held], raw[v], corrected[v][held]
         ok = np.isfinite(a) & np.isfinite(r) & np.isfinite(c)
         for project in [*sorted(set(projects[held])), 'ALL']:
             at = ok & ((projects[held] == project) if project != 'ALL' else True)
@@ -170,14 +178,18 @@ def check(aorc, land, projects, dates, latitudes, variables, path):
         writer = csv.writer(stream)
         writer.writerow(CHECK_COLUMNS)
         writer.writerows([[f'{x:.6g}' if isinstance(x, float) else x for x in row] for row in rows])
-    print(f'Check of {len(set(years))} overlap years ({min(years)}-{max(years)}): {path}', flush=True)
+    print(f'Check of {len(years)} overlap years ({min(years)}-{max(years)}): {path}', flush=True)
 
 
-def run(aorc_path, era5_path, output, raw=False):
-    aorc_path, era5_path, output = map(Path, (aorc_path, era5_path, output))
+def inputs(aorc_path, era5_path):
+    """Rows of the --era5 table with its requested columns, and AORC, ERA5-Land and PET latitudes on them.
+
+    Returns keys, columns ({(source, variable): full-table column}), data (column arrays), aorc and
+    land ({variable: array}), projects, dates and latitudes.
+    """
+    aorc_path, era5_path = Path(aorc_path), Path(era5_path)
     aorc_manifest, aorc_columns = load(aorc_path)
     era5_manifest, era5_columns = load(era5_path)
-    variables = [item['variable'] for item in REQUESTED if item['source'] == AORC]
     land_names = [*MAPPED, 'snowfall_mm']
     columns = {}
     for item in REQUESTED:
@@ -190,11 +202,11 @@ def run(aorc_path, era5_path, output, raw=False):
     other = [column for (source, _), column in columns.items() if source != AORC]
     keys, data = read(era5_path, era5_manifest, sorted({*other, *(era5_columns[LAND, v] for v in land_names)}))
     index = {key: i for i, key in enumerate(keys)}
-    aorc = {v: np.full(len(keys), np.nan) for v in variables}
+    aorc = {v: np.full(len(keys), np.nan) for v in VARIABLES}
     for record in table_rows(aorc_path, aorc_manifest['columns']):
         i = index.get((str(record['date']), record['project_id']))
         if i is not None:
-            for v in variables:
+            for v in VARIABLES:
                 value = record[columns[AORC, v]]
                 aorc[v][i] = math.nan if value is None or value == '' else float(value)
     land = {v: data[era5_columns[LAND, v]] for v in land_names}
@@ -204,16 +216,22 @@ def run(aorc_path, era5_path, output, raw=False):
                       if entry['metadata'].get('source_id') == AORC), {})
     if set(projects) - set(latitudes):
         raise ValueError('The AORC table lacks PET centroid latitudes for some projects')
-    values = {v: aorc[v].copy() for v in variables}
-    filled = {v: np.zeros(len(keys), bool) for v in variables}
-    target = np.flatnonzero(np.logical_or.reduce([np.isnan(aorc[v]) for v in variables]))
+    return keys, columns, data, aorc, land, projects, dates, latitudes
+
+
+def run(aorc_path, era5_path, output, raw=False):
+    output = Path(output)
+    keys, columns, data, aorc, land, projects, dates, latitudes = inputs(aorc_path, era5_path)
+    values = {v: aorc[v].copy() for v in VARIABLES}
+    filled = {v: np.zeros(len(keys), bool) for v in VARIABLES}
+    target = np.flatnonzero(np.logical_or.reduce([np.isnan(aorc[v]) for v in VARIABLES]))
     method = 'uncorrected ERA5-Land' if raw else 'quantile-mapped ERA5-Land'
     print(f'{len(keys):,} rows, {len(keys) - len(target):,} with complete AORC; '
           f'filling {len(target):,} with {method}', flush=True)
     if len(target):
         corrected = (uncorrected(land, projects, dates, latitudes, target) if raw
                      else correct(aorc, land, projects, dates, latitudes, np.arange(len(keys)), target))
-        for v in variables:
+        for v in VARIABLES:
             gap = np.isnan(aorc[v][target]) & np.isfinite(corrected[v])
             values[v][target[gap]] = corrected[v][gap]
             filled[v][target[gap]] = True
@@ -225,16 +243,16 @@ def run(aorc_path, era5_path, output, raw=False):
         for i, (day, project) in enumerate(keys):
             row = [values[variable][i] if source == AORC else data[columns[source, variable]][i]
                    for source, variable in columns]
-            flag = ';'.join(names[AORC, v] for v in variables if filled[v][i])
+            flag = ';'.join(names[AORC, v] for v in VARIABLES if filled[v][i])
             yield [day, project, *[blank if math.isnan(x) else x for x in row], flag or blank]
 
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary = output.with_name(output.name + '.part')
     _write(temporary, output, header, rows(), text_columns={FILL_COLUMN})
     temporary.replace(output)
-    counts = ', '.join(f'{names[AORC, v]} {int(filled[v].sum()):,}' for v in variables)
+    counts = ', '.join(f'{names[AORC, v]} {int(filled[v].sum()):,}' for v in VARIABLES)
     print(f'Wrote {output}; filled values: {counts}', flush=True)
-    check(aorc, land, projects, dates, latitudes, variables, companion(output, '_check', '.csv'))
+    check(aorc, land, projects, dates, latitudes, companion(output, '_check', '.csv'))
 
 
 def main():
