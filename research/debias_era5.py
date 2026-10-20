@@ -13,6 +13,9 @@ OUTPUT has the requested-table columns for the --era5 period, with
 aorc_gap_filled naming the filled columns of each row. OUTPUT_check.csv tests
 the method: each overlap year is corrected with a fit on the other years and
 compared with AORC, beside the uncorrected ERA5-Land.
+
+--raw fills with ERA5-Land as it is, without the mapping; rain, snow and PET are
+derived the same way.
 """
 
 import argparse
@@ -127,6 +130,12 @@ def correct(aorc, land, projects, dates, latitudes, train, target):
     return finish(values, subset, projects[target], [dates[i] for i in target], latitudes)
 
 
+def uncorrected(land, projects, dates, latitudes, target):
+    """ERA5-Land on the target rows as it is, finished like the corrected values."""
+    subset = {name: array[target] for name, array in land.items()}
+    return finish({v: subset[v] for v in MAPPED}, subset, projects[target], [dates[i] for i in target], latitudes)
+
+
 def statistics(variable, project, a, r, c):
     """One check row from paired AORC, raw ERA5-Land and corrected values."""
     wet = lambda x: float(np.mean(x > WET_MM)) if variable == 'precipitation_mm' else ''
@@ -148,8 +157,7 @@ def check(aorc, land, projects, dates, latitudes, variables, path):
         for v in variables:
             corrected[v].append(values[v])
     corrected = {v: np.concatenate(parts) for v, parts in corrected.items()}
-    raw = finish({v: land[v][held] for v in MAPPED}, {n: a[held] for n, a in land.items()},
-                 projects[held], [dates[i] for i in held], latitudes)
+    raw = uncorrected(land, projects, dates, latitudes, held)
     rows = []
     for v in variables:
         a, r, c = aorc[v][held], raw[v], corrected[v]
@@ -165,7 +173,7 @@ def check(aorc, land, projects, dates, latitudes, variables, path):
     print(f'Check of {len(set(years))} overlap years ({min(years)}-{max(years)}): {path}', flush=True)
 
 
-def run(aorc_path, era5_path, output):
+def run(aorc_path, era5_path, output, raw=False):
     aorc_path, era5_path, output = map(Path, (aorc_path, era5_path, output))
     aorc_manifest, aorc_columns = load(aorc_path)
     era5_manifest, era5_columns = load(era5_path)
@@ -199,9 +207,12 @@ def run(aorc_path, era5_path, output):
     values = {v: aorc[v].copy() for v in variables}
     filled = {v: np.zeros(len(keys), bool) for v in variables}
     target = np.flatnonzero(np.logical_or.reduce([np.isnan(aorc[v]) for v in variables]))
-    print(f'{len(keys):,} rows, {len(keys) - len(target):,} with complete AORC; filling {len(target):,}', flush=True)
+    method = 'uncorrected ERA5-Land' if raw else 'quantile-mapped ERA5-Land'
+    print(f'{len(keys):,} rows, {len(keys) - len(target):,} with complete AORC; '
+          f'filling {len(target):,} with {method}', flush=True)
     if len(target):
-        corrected = correct(aorc, land, projects, dates, latitudes, np.arange(len(keys)), target)
+        corrected = (uncorrected(land, projects, dates, latitudes, target) if raw
+                     else correct(aorc, land, projects, dates, latitudes, np.arange(len(keys)), target))
         for v in variables:
             gap = np.isnan(aorc[v][target]) & np.isfinite(corrected[v])
             values[v][target[gap]] = corrected[v][gap]
@@ -231,9 +242,10 @@ def main():
     parser.add_argument('--aorc', required=True, type=Path, help='Full table with AORC columns (download_daily.py)')
     parser.add_argument('--era5', required=True, type=Path, help='Table written by download_era5.py')
     parser.add_argument('--output', required=True, type=Path, help='Requested-variable table (.csv, .csv.gz or .parquet)')
+    parser.add_argument('--raw', action='store_true', help='Fill with ERA5-Land as it is, without quantile mapping')
     args = parser.parse_args()
     try:
-        run(args.aorc, args.era5, args.output)
+        run(args.aorc, args.era5, args.output, args.raw)
     except (ValueError, OSError) as error:
         print(f'Failed: {error}', file=sys.stderr)
         return 1
