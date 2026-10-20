@@ -568,16 +568,31 @@ def run_pipeline(geojson, product, output_dir, cache_dir, start, end, *, project
                 and daily_path.exists() and status.get('daily_sha256') == sha256(daily_path))
 
     def prefetch_year(year):
-        """Queue a calendar year's uncached requests together, so finished years are usable early."""
+        """Queue a calendar year's uncached requests together, so finished years are usable early.
+
+        Requests for hours that a copy does not hold yet go to the CDS.
+        """
+        nonlocal cds_client
         specs = {}
         for month_start, month_end in months:
             if month_start.year == year and not complete(month_start):
                 for first, last in date_chunks(month_start, month_end, batch_days):
                     for spec in batch_requests(product, first, last, area, endpoint_specs):
                         specs.setdefault(json_hash({key: spec[key] for key in ['dataset', 'request']}), spec)
-        prefetch(list(specs.values()), cache_dir, manifest, client, workers, lock=lock)
+        holds = getattr(client, 'holds', lambda request: True)
+        held, beyond = [], []
+        for spec in specs.values():
+            (held if holds(spec['request']) else beyond).append(spec)
+        prefetch(held, cache_dir, manifest, client, workers, lock=lock)
         # Providers that keep raw chunks while answering a year's requests release them here.
         getattr(client, 'release', lambda: None)()
+        if beyond:
+            print(f'{year}: {len(beyond)} requests are past the end of {client.provider}; '
+                  f'requesting them from the CDS', flush=True)
+            if cds_client is None:
+                import cdsapi
+                cds_client = cdsapi.Client(progress=False)
+            prefetch(beyond, cache_dir, manifest, cds_client, workers, lock=lock)
 
     def check_grid(record, label):
         """The first field fixes the grid and catchment weights; every later field must match it."""
