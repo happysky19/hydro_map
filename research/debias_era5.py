@@ -6,16 +6,17 @@
 download_era5.py table. Each AORC variable gets its own mapping per catchment
 and calendar month, fitted on the days both sources have in that month and the
 months either side. AORC is kept wherever it exists. Corrected precipitation is
-split with ERA5-Land's snow fraction, and PET is recalculated from the corrected
-temperatures.
+split into rain and snow by a curve of AORC's snow fraction against daily mean
+temperature, fitted for each catchment and applied to the corrected
+temperature, and PET is recalculated from the corrected temperatures.
 
 OUTPUT has the requested-table columns for the --era5 period, with
 aorc_gap_filled naming the filled columns of each row. OUTPUT_check.csv tests
 the method: each overlap year is corrected with a fit on the other years and
 compared with AORC, beside the uncorrected ERA5-Land.
 
---raw fills with ERA5-Land as it is, without the mapping; rain, snow and PET are
-derived the same way.
+--raw fills with ERA5-Land as it is, without the mapping, with its own rain and
+snow; PET is recalculated from its temperatures.
 """
 
 import argparse
@@ -40,6 +41,7 @@ VARIABLES = [item['variable'] for item in REQUESTED if item['source'] == AORC]
 LEVELS = (np.arange(100) + .5) / 100
 MIN_DAYS = 60
 WET_MM = .1
+CENTRES, WIDTHS = np.arange(-6, 6.01, .1), np.arange(.2, 4.01, .1)
 CHECK_COLUMNS = ['variable', 'project_id', 'days', 'aorc_mean', 'era5_land_mean', 'corrected_mean',
                  'era5_land_mae', 'corrected_mae', 'aorc_p99', 'era5_land_p99', 'corrected_p99',
                  'aorc_wet_days', 'era5_land_wet_days', 'corrected_wet_days']
@@ -96,11 +98,44 @@ def mapped(v, xq, yq, ratio):
     return result
 
 
-def finish(values, land, projects, dates, latitudes):
-    """Rain and snow, ordered temperatures, RH within 0-100 % and PET from the given values."""
-    with np.errstate(divide='ignore', invalid='ignore'):
-        fraction = np.where(land['precipitation_mm'] > 0,
-                            np.clip(land['snowfall_mm'] / land['precipitation_mm'], 0, 1), 0.)
+def snow_fraction(temperature, centre, width):
+    return 1 / (1 + np.exp((temperature - centre) / width))
+
+
+def fit_phase(aorc, projects, rows):
+    """Per catchment, the logistic curve of AORC's snow fraction against daily mean temperature.
+
+    Returns {project: (centre, width)} in degC: half the precipitation falls as snow at the
+    centre. The fit weights each wet day by its precipitation, so large events count most.
+    """
+    p, s, t = (aorc[name][rows] for name in ('precipitation_mm', 'snowfall_mm', 'tmean_c'))
+    wet = (p > WET_MM) & np.isfinite(s) & np.isfinite(t)
+    centre, width = (grid.ravel() for grid in np.meshgrid(CENTRES, WIDTHS, indexing='ij'))
+    curves = {}
+    for project in np.unique(projects[rows]):
+        at = wet & (projects[rows] == project)
+        if at.sum() < MIN_DAYS:
+            raise ValueError(f'{project}: {at.sum()} wet days with AORC; need {MIN_DAYS} for the snow fraction')
+        fraction = np.clip(s[at] / p[at], 0, 1)
+        error = (p[at] * (snow_fraction(t[at], centre[:, None], width[:, None]) - fraction) ** 2).sum(axis=1)
+        best = np.argmin(error)
+        curves[project] = centre[best], width[best]
+    return curves
+
+
+def finish(values, land, projects, dates, latitudes, phase=None):
+    """Rain and snow, ordered temperatures, RH within 0-100 % and PET from the given values.
+
+    Snow is the precipitation times the phase curve of the catchment at the daily mean
+    temperature, or without curves, times ERA5-Land's own snow fraction.
+    """
+    if phase is None:
+        with np.errstate(divide='ignore', invalid='ignore'):
+            fraction = np.where(land['precipitation_mm'] > 0,
+                                np.clip(land['snowfall_mm'] / land['precipitation_mm'], 0, 1), 0.)
+    else:
+        centre, width = np.array([phase[project] for project in projects]).reshape(-1, 2).T
+        fraction = snow_fraction(values['tmean_c'], centre, width)
     values['snowfall_mm'] = values['precipitation_mm'] * fraction
     values['rainfall_mm'] = values['precipitation_mm'] - values['snowfall_mm']
     values['tmin_c'] = np.fmin(values['tmin_c'], values['tmean_c'])
@@ -128,7 +163,8 @@ def correct(aorc, land, projects, dates, latitudes, train, target):
             result[at] = mapped(x[target[at]], *maps[key], variable in RATIO)
         values[variable] = result
     subset = {name: array[target] for name, array in land.items()}
-    return finish(values, subset, projects[target], [dates[i] for i in target], latitudes)
+    return finish(values, subset, projects[target], [dates[i] for i in target], latitudes,
+                  fit_phase(aorc, projects, train))
 
 
 def uncorrected(land, projects, dates, latitudes, target):

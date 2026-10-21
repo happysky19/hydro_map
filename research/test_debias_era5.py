@@ -37,14 +37,14 @@ def write_table(path, keys, values, inputs=()):
 
 
 def truth(land, dates, projects):
-    """AORC as a known function of ERA5-Land: offsets, ratios and no drizzle below 1 mm."""
+    """AORC as a known function of ERA5-Land: offsets, ratios, no drizzle below 1 mm, and snow
+    below 1 degC of its own temperature, where ERA5-Land snows below 0 degC of its own."""
     a = dict(tmean_c=land['tmean_c'] + 2, tmin_c=land['tmin_c'] + 1, tmax_c=land['tmax_c'] + 3,
              relative_humidity_pct=land['relative_humidity_pct'] - 5,
              shortwave_down_mean_wm2=.9 * land['shortwave_down_mean_wm2'],
              vapor_pressure_deficit_kpa=1.2 * land['vapor_pressure_deficit_kpa'],
              precipitation_mm=np.where(land['precipitation_mm'] < 1, 0., 1.3 * land['precipitation_mm']))
-    snow = np.where(land['precipitation_mm'] > 0, land['snowfall_mm'] / land['precipitation_mm'], 0.)
-    a['snowfall_mm'] = a['precipitation_mm'] * snow
+    a['snowfall_mm'] = np.where(a['tmean_c'] < 1, a['precipitation_mm'], 0.)
     a['rainfall_mm'] = a['precipitation_mm'] - a['snowfall_mm']
     a['pet_hargreaves_mm'] = np.array([hargreaves_pet(*s, LATITUDES[p], d) for s, p, d in zip(
         zip(a['tmean_c'], a['tmin_c'], a['tmax_c']), projects, dates)])
@@ -147,6 +147,10 @@ class DebiasTests(unittest.TestCase):
         self.assertAlmostEqual(np.mean(total > .1), np.mean(true > .1), delta=.02)
         self.assertLess(np.mean(np.abs(total - true)), .05)
         self.assertGreater(np.mean(self.land['precipitation_mm'][filled] > .1), np.mean(true > .1) + .1)
+        true_snow = self.truth['snowfall_mm'][filled].sum()
+        self.assertAlmostEqual(snow.sum(), true_snow, delta=.03 * true_snow)
+        land_fraction = self.land['snowfall_mm'][filled] / self.land['precipitation_mm'][filled]
+        self.assertGreater((total * land_fraction).sum(), 1.1 * true_snow)
         np.testing.assert_allclose(self.series('pet_hargreaves_mm')[filled],
                                    self.truth['pet_hargreaves_mm'][filled], rtol=1e-6)
 
