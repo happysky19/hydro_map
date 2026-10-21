@@ -268,7 +268,10 @@ directory once the final data are out.
 `debias_era5.py` needs a full table with AORC (here the 1996-2025 delivery). It
 keeps AORC where it exists and fills the rest from ERA5-Land, quantile-mapped
 per catchment and calendar month on the overlap days (the month and the months
-either side). Precipitation is split with ERA5-Land's snow fraction and PET is
+either side). Precipitation is split into rain and snow by a logistic curve of
+AORC's snow fraction against daily mean temperature, fitted for each catchment
+and applied to the corrected temperature; ERA5-Land's own split puts about 10%
+more of the 2022-2025 precipitation into snow than AORC's wet-bulb rule. PET is
 recalculated. The output has the requested-table columns; `aorc_gap_filled`
 names the filled columns. `OUTPUT_check.csv` corrects each overlap year with a
 fit on the other years and compares the mean, MAE, 99th percentile and wet-day
