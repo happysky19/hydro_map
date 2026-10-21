@@ -21,16 +21,21 @@ import sys
 import numpy as np
 
 from debias_era5 import WET_MM, held_out, inputs, uncorrected
-from plot_daily import AXIS, GRID, INK, INK_SECONDARY, LABELS, MUTED, SERIES, date_axis, setup, style
+from plot_daily import AXIS, GRID, INK, INK_SECONDARY, LABELS, SERIES, SURFACE, setup, style
 
 
 PANELS = ['precipitation_mm', 'snowfall_mm', 'pet_hargreaves_mm', 'tmean_c', 'tmin_c', 'tmax_c',
           'shortwave_down_mean_wm2', 'relative_humidity_pct', 'vapor_pressure_deficit_kpa']
 AMOUNTS = {'precipitation_mm', 'snowfall_mm', 'pet_hargreaves_mm'}
+TEMPERATURES = ['tmean_c', 'tmin_c', 'tmax_c']
+ROOT_AXES = {'precipitation_mm', 'snowfall_mm'}
 DUMBBELLS = ['precipitation_mm', 'tmin_c', 'tmean_c', 'tmax_c']
 NAMES = ['AORC', 'ERA5-Land', 'ERA5-Land corrected']
 COLORS = dict(zip(NAMES, SERIES))
+WIDTHS = {'AORC': 3, 'ERA5-Land': 1.5, 'ERA5-Land corrected': 1.5}
 LEVELS = np.r_[np.arange(1, 100), 99.5, 99.9]
+SHADE, BAND = '#efeee9', '#f5f4f0'
+HEADER = 1.
 
 
 def heading(variable):
@@ -61,77 +66,111 @@ def mean_by(index, values, size):
         return np.where(count > 0, total / count, np.nan)
 
 
-def legend(fig, names=NAMES):
+def frame(plt, shape, size, title, note, names, *, dots=False, left=.7, bottom=.55, hspace=.5, wspace=.22,
+          **kwargs):
+    """Panels below a header band holding the title, a one-line note and the legend; margins in inches."""
     from matplotlib.lines import Line2D
-    handles = [Line2D([], [], color=COLORS[name], linewidth=2) for name in names]
-    fig.legend(handles, names, loc='upper right', ncol=len(names), bbox_to_anchor=(.995, .995))
+    width, height = size
+    fig, axes = plt.subplots(*shape, figsize=size, **kwargs)
+    fig.subplots_adjust(left=left / width, right=1 - .25 / width, bottom=bottom / height,
+                        top=1 - HEADER / height, hspace=hspace, wspace=wspace)
+    fig.text(.25 / width, 1 - .36 / height, title, fontsize=14, fontweight='bold', color=INK, va='center')
+    fig.text(.25 / width, 1 - .66 / height, note, fontsize=9.5, color=INK_SECONDARY, va='center')
+    handles = [Line2D([], [], color=COLORS[name], marker='o', linestyle='', markersize=7) if dots
+               else Line2D([], [], color=COLORS[name], linewidth=WIDTHS[name]) for name in names]
+    fig.legend(handles, names, loc='center right', bbox_to_anchor=(1 - .2 / width, 1 - .36 / height),
+               ncol=len(names), handlelength=2.4, columnspacing=1.6, fontsize=9.5)
+    return fig, axes
 
 
-def series_figure(plt, sources, x, end, title):
-    fig, axes = plt.subplots(3, 3, figsize=(13, 8.4), sharex=True)
+def year_axis(ax, first, last):
+    import matplotlib.dates as mdates
+    ax.xaxis.set_major_locator(mdates.YearLocator())
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y'))
+    ax.xaxis.set_minor_locator(mdates.MonthLocator((4, 7, 10)))
+    ax.tick_params(which='minor', length=2, color=AXIS)
+    ax.set_xlim(first, last)
+
+
+def series_figure(plt, sources, x, end, title, note):
+    fig, axes = frame(plt, (3, 3), (13, 8.4), title, note, NAMES, hspace=.3, sharex=True)
+    first, last = date(x[0].year, x[0].month, 1), x[-1] + timedelta(days=16)
     for ax, variable in zip(axes.flat, PANELS):
-        for name in ('ERA5-Land', 'ERA5-Land corrected', 'AORC'):
-            ax.plot(x, sources[name][variable], color=COLORS[name])
-        ax.axvline(end, color=AXIS, linewidth=1, linestyle=(0, (4, 3)))
+        ax.axvspan(end, last, color=SHADE, linewidth=0, zorder=0)
+        for name in NAMES:
+            ax.plot(x, sources[name][variable], color=COLORS[name], linewidth=WIDTHS[name])
         style(ax, *heading(variable))
-        date_axis(ax)
-    axes.flat[0].annotate('AORC ends', (end, 1), xycoords=('data', 'axes fraction'), xytext=(4, -2),
-                          textcoords='offset points', va='top', fontsize=8, color=MUTED)
-    legend(fig)
-    fig.suptitle(title, x=.01, ha='left', fontsize=12, color=INK)
-    fig.tight_layout(rect=(0, 0, 1, .95))
+        year_axis(ax, first, last)
     return fig
 
 
-def plot_bias_by_month(plt, sources, paired, months):
-    fig, axes = plt.subplots(3, 3, figsize=(13, 8.4), sharex=True)
+def plot_bias_by_month(plt, sources, paired, months, note):
+    fig, axes = frame(plt, (3, 3), (13, 8.4), 'ERA5-Land minus AORC by calendar month', note, NAMES[1:],
+                      hspace=.3, sharex=True)
     for ax, variable in zip(axes.flat, PANELS):
         a = sources['AORC'][variable]
+        ax.axhline(0, color=INK_SECONDARY, linewidth=1, zorder=1)
         for name in NAMES[1:]:
             e = sources[name][variable]
             values = [difference(a[rows], e[rows], variable)
                       for rows in (paired[months[paired] == month] for month in range(1, 13))]
-            ax.plot(range(1, 13), values, color=COLORS[name], marker='o', markersize=4)
-        ax.axhline(0, color=AXIS, linewidth=1)
+            ax.plot(range(1, 13), values, color=COLORS[name], linewidth=2, marker='o', markersize=5.5,
+                    markeredgecolor=SURFACE, markeredgewidth=1, zorder=2)
         ax.set_xticks(range(1, 13), list('JFMAMJJASOND'))
+        ax.set_xlim(.5, 12.5)
         style(ax, LABELS[variable][0], difference_units(variable))
-    legend(fig, NAMES[1:])
-    fig.suptitle('ERA5-Land minus AORC by calendar month, days with AORC', x=.01, ha='left', fontsize=12, color=INK)
-    fig.tight_layout(rect=(0, 0, 1, .95))
+    shared = [axes.flat[PANELS.index(variable)] for variable in TEMPERATURES]
+    low = min(ax.get_ylim()[0] for ax in shared)
+    high = max(ax.get_ylim()[1] for ax in shared)
+    for ax in shared:
+        ax.set_ylim(low, high)
     return fig
 
 
-def plot_quantiles(plt, sources, paired):
-    fig, axes = plt.subplots(3, 3, figsize=(12, 11))
+def root_axes(ax, high):
+    """Square-root axes, so the many small daily amounts are not squeezed against zero."""
+    from matplotlib.ticker import FixedLocator
+    functions = (lambda v: np.sqrt(np.maximum(v, 0)), np.square)
+    ticks = [t for t in (0, 1, 5, 10, 20, 50, 100, 200, 500) if t <= high]
+    for axis, scale in ((ax.xaxis, ax.set_xscale), (ax.yaxis, ax.set_yscale)):
+        scale('function', functions=functions)
+        axis.set_major_locator(FixedLocator(ticks))
+
+
+def plot_quantiles(plt, sources, paired, note):
+    fig, axes = frame(plt, (3, 3), (12.5, 13), 'Daily values: ERA5-Land quantiles against AORC', note,
+                      NAMES[1:], left=.85, bottom=.75, hspace=.42, wspace=.3)
     for ax, variable in zip(axes.flat, PANELS):
-        a = sources['AORC'][variable][paired]
-        reference = np.percentile(a, LEVELS)
-        low, high = reference.min(), reference.max()
-        for name in NAMES[1:]:
-            values = np.percentile(sources[name][variable][paired], LEVELS)
-            ax.plot(reference, values, color=COLORS[name], marker='o', markersize=2.5)
-            low, high = min(low, values.min()), max(high, values.max())
-        pad = .03 * (high - low)
-        ax.plot([low - pad, high + pad], [low - pad, high + pad], color=AXIS, linewidth=1, linestyle=(0, (4, 3)))
-        ax.set_xlim(low - pad, high + pad)
-        ax.set_ylim(low - pad, high + pad)
-        ax.set_aspect('equal')
+        reference = np.percentile(sources['AORC'][variable][paired], LEVELS)
+        curves = {name: np.percentile(sources[name][variable][paired], LEVELS) for name in NAMES[1:]}
+        low = min(reference.min(), *(c.min() for c in curves.values()))
+        high = max(reference.max(), *(c.max() for c in curves.values()))
+        if variable in ROOT_AXES:
+            low, high = 0, high * 1.04
+        else:
+            low, high = low - .03 * (high - low), high + .03 * (high - low)
+        ax.plot([low, high], [low, high], color=AXIS, linewidth=1.2, linestyle=(0, (4, 3)), zorder=1)
+        for name, values in curves.items():
+            ax.plot(reference, values, color=COLORS[name], linewidth=2, zorder=2)
+        if variable in ROOT_AXES:
+            root_axes(ax, high)
+        ax.set_xlim(low, high)
+        ax.set_ylim(low, high)
+        ax.set_box_aspect(1)
         style(ax, *heading(variable))
-        ax.set_xlabel('AORC')
+        ax.grid(axis='x', color=GRID, linewidth=.6)
+        ax.set_xlabel('AORC', fontsize=8.5)
         if variable == 'precipitation_mm':
             wet = [np.mean(sources[name][variable][paired] > WET_MM) for name in NAMES]
-            text = '\n'.join(f'{name} {share:.0%}' for name, share in zip(NAMES, wet))
-            ax.text(.04, .96, f'Days over {WET_MM:g} mm\n{text}', transform=ax.transAxes, va='top',
-                    fontsize=8, color=INK_SECONDARY)
-    axes.flat[0].set_ylabel('ERA5-Land')
-    legend(fig, NAMES[1:])
-    fig.suptitle('Quantiles of daily values (1st to 99.9th percentile), days with AORC', x=.01, ha='left',
-                 fontsize=12, color=INK)
-    fig.tight_layout(rect=(0, 0, 1, .96))
+            lines = [f'Days over {WET_MM:g} mm'] + [f'{name}  {share:.0%}' for name, share in zip(NAMES, wet)]
+            ax.text(.05, .95, '\n'.join(lines), transform=ax.transAxes, va='top', fontsize=8.5,
+                    color=INK_SECONDARY, linespacing=1.5)
+    for ax in axes[:, 0]:
+        ax.set_ylabel('ERA5-Land', fontsize=8.5)
     return fig
 
 
-def plot_catchments(plt, sources, paired, projects):
+def plot_catchments(plt, sources, paired, projects, note):
     names = sorted(set(projects[paired]))
     values = {}
     for project in names:
@@ -142,24 +181,24 @@ def plot_catchments(plt, sources, paired, projects):
                                                              sources[name][variable][rows], variable)
     names.sort(key=lambda project: values['ERA5-Land', DUMBBELLS[0], project])
     y = np.arange(len(names))
-    fig, axes = plt.subplots(1, len(DUMBBELLS), figsize=(13, 1.4 + .21 * len(names)), sharey=True)
+    fig, axes = frame(plt, (1, len(DUMBBELLS)), (13, 1.6 + .23 * len(names)),
+                      'ERA5-Land minus AORC in each catchment', note, NAMES[1:], dots=True, left=1.65,
+                      wspace=.12, sharey=True)
     for ax, variable in zip(axes, DUMBBELLS):
+        for row in y[::2]:
+            ax.axhspan(row - .5, row + .5, color=BAND, linewidth=0, zorder=0)
         raw = np.array([values['ERA5-Land', variable, p] for p in names])
         fixed = np.array([values['ERA5-Land corrected', variable, p] for p in names])
-        ax.hlines(y, raw, fixed, color=GRID, linewidth=2)
-        ax.scatter(raw, y, s=22, color=COLORS['ERA5-Land'], zorder=3)
-        ax.scatter(fixed, y, s=22, color=COLORS['ERA5-Land corrected'], zorder=3)
-        ax.axvline(0, color=AXIS, linewidth=1)
+        ax.axvline(0, color=INK_SECONDARY, linewidth=1, zorder=1)
+        ax.hlines(y, raw, fixed, color=AXIS, linewidth=1.5, zorder=2)
+        for name, points in (('ERA5-Land', raw), ('ERA5-Land corrected', fixed)):
+            ax.scatter(points, y, s=34, color=COLORS[name], edgecolor=SURFACE, linewidth=.8, zorder=3)
         style(ax, LABELS[variable][0], difference_units(variable))
-        ax.grid(axis='x', color=GRID, linewidth=.6)
         ax.grid(axis='y', visible=False)
-    axes[0].set_yticks(y, names, fontsize=7.5)
-    axes[0].set_ylim(-.8, len(names) - .2)
-    from matplotlib.lines import Line2D
-    handles = [Line2D([], [], color=COLORS[name], marker='o', linestyle='', markersize=6) for name in NAMES[1:]]
-    fig.legend(handles, NAMES[1:], loc='upper right', ncol=2, bbox_to_anchor=(.995, .999))
-    fig.suptitle('ERA5-Land minus AORC in each catchment, days with AORC', x=.01, ha='left', fontsize=12, color=INK)
-    fig.tight_layout(rect=(0, 0, 1, 1 - .5 / (1.4 + .21 * len(names))))
+        ax.grid(axis='x', color=GRID, linewidth=.6)
+    axes[0].set_yticks(y, names, fontsize=8, color=INK_SECONDARY)
+    axes[0].tick_params(axis='y', length=0)
+    axes[0].set_ylim(len(names) - .5, -.5)
     return fig
 
 
@@ -177,27 +216,37 @@ def run(aorc_path, era5_path, output_dir):
     first, count = stamp.min(), stamp.max() - stamp.min() + 1
     x = [date((first + i) // 12, (first + i) % 12 + 1, 15) for i in range(count)]
     end = max(dates[i] for i in every if np.isfinite(aorc['precipitation_mm'][i])) + timedelta(days=1)
-    span = f'{dates[0]:%Y-%m} to {dates[-1]:%Y-%m}'
+    names = sorted(set(projects))
+    years = sorted({dates[i].year for i in paired})
+    overlap = f'{years[0]}-{years[-1]}'
+    fitted = 'Corrected ERA5-Land in a year with AORC is fitted without that year. Grey: no AORC.'
     plt = setup()
     from matplotlib.backends.backend_pdf import PdfPages
     overall = {name: {v: mean_by(stamp - first, source[v], count) for v in PANELS} for name, source in sources.items()}
     figures = {
-        'timeseries.png': series_figure(plt, overall, x, end, f'Monthly means over all catchments, {span}'),
-        'monthly_bias.png': plot_bias_by_month(plt, sources, paired, months),
-        'quantiles.png': plot_quantiles(plt, sources, paired),
-        'catchments.png': plot_catchments(plt, sources, paired, projects),
+        'timeseries.png': series_figure(plt, overall, x, end, f'Monthly means, {dates[0]:%Y-%m} to {dates[-1]:%Y-%m}',
+                                        f'Mean of {len(names)} catchments. {fitted}'),
+        'monthly_bias.png': plot_bias_by_month(
+            plt, sources, paired, months, f'Days with AORC, {overlap}, all catchments. Precipitation as % of the '
+            'AORC total, other variables in their own units; on the dark line there is no difference.'),
+        'quantiles.png': plot_quantiles(
+            plt, sources, paired, f'1st to 99.9th percentile of daily values, days with AORC, {overlap}, all '
+            'catchments. On the dashed line the distributions agree; precipitation and snowfall on '
+            'square-root axes.'),
+        'catchments.png': plot_catchments(
+            plt, sources, paired, projects, f'Days with AORC, {overlap}. Precipitation as % of the AORC total. '
+            'Sorted by the uncorrected precipitation difference.'),
     }
     for name, fig in figures.items():
-        fig.savefig(output_dir / name, dpi=150)
+        fig.savefig(output_dir / name, dpi=200)
         plt.close(fig)
-    names = sorted(set(projects))
     index = np.searchsorted(names, projects) * count + stamp - first
     by_project = {name: {v: mean_by(index, source[v], len(names) * count).reshape(len(names), count)
                          for v in PANELS} for name, source in sources.items()}
     with PdfPages(output_dir / 'catchments.pdf') as pdf:
         for i, project in enumerate(names):
             fig = series_figure(plt, {name: {v: values[v][i] for v in PANELS} for name, values in by_project.items()},
-                                x, end, f'{project}: monthly means, {span}')
+                                x, end, f'{project}: monthly means', fitted)
             pdf.savefig(fig)
             plt.close(fig)
     print(f'Wrote {", ".join([*figures, "catchments.pdf"])} to {output_dir}', flush=True)
