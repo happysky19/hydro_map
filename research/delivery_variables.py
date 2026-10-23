@@ -2,6 +2,7 @@
 
 REQUESTED follows the requested variable table (category, variable) in order.
 Each entry selects one column of the full export without changing its values;
+an AORC entry reads the ERA5-Land column instead in a delivery made without AORC;
 soil temperature keeps the four ERA5-Land layers. Forecast names are parameter
 short names in ECMWF IFS open data (0.25 deg), ECMWF AIFS Single v2 open data
 (0.25 deg, 6-hourly; AIFS ENS v2 has the same fields), NOAA GFS 0.25 deg GRIB2
@@ -10,6 +11,11 @@ short names in ECMWF IFS open data (0.25 deg), ECMWF AIFS Single v2 open data
 
 AORC, LAND, ERA5 = 'aorc_v1.1', 'era5_land_cds', 'era5_cds'
 SOURCE_NAMES = {AORC: 'AORC', LAND: 'ERA5-Land', ERA5: 'ERA5'}
+# ERA5-Land fields behind the AORC columns for catchments north of AORC's coverage (53°N).
+LAND_ORIGIN = {'precipitation_mm': 'native tp', 'rainfall_mm': 'computed from tp - sf', 'snowfall_mm': 'native sf',
+               'tmean_c': 'native t2m', 'tmax_c': 'computed from t2m', 'tmin_c': 'computed from t2m',
+               'relative_humidity_pct': 'computed from t2m, d2m', 'vapor_pressure_deficit_kpa': 'computed from t2m, d2m',
+               'shortwave_down_mean_wm2': 'native ssrd', 'pet_hargreaves_mm': 'computed from Tmean/Tmin/Tmax'}
 NOT_AVAILABLE = 'not available'
 DERIVE = 'derive from T, humidity and pressure as here'
 SEASONAL = ('Mean of 24 hourly catchment means over seasonal-snow cells; ERA5-Land cells holding '
