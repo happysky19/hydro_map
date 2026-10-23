@@ -147,6 +147,32 @@ Explicit shared groups remain available for other configurations, but are not
 used by this example. A declared group still produces duplicate project rows
 for one forcing area, which must be counted once in a water balance.
 
+## Peace River projects
+
+`configs/peace.yaml` adds BC Hydro's W.A.C. Bennett (Williston Reservoir), Peace
+Canyon and Site C (John Horgan Dam) projects. The Peace drains to the Arctic
+through the Mackenzie, so its basins are in the HydroSHEDS Arctic region (`ar`),
+not in the North America files used for the Columbia. `hydro-map download`
+fetches flow rasters for `na` only; download the Arctic files and pass them to
+`build`:
+
+```bash
+hydro-map build configs/peace.yaml --source data/hydrosheds_ar/hybas_ar_lev12_v1c/hybas_ar_lev12_v1c.shp --flow-direction data/hydrosheds_ar/hyd_ar_dir_15s/hyd_ar_dir_15s.tif --flow-accumulation data/hydrosheds_ar/hyd_ar_aca_15s/hyd_ar_aca_15s.tif --output outputs/projects_peace/dam_catchments.geojson
+```
+
+The files are `hybas_ar_lev12_v1c.zip` from the HydroBASINS standard
+downloads and `hyd_ar_dir_15s.zip`, `hyd_ar_aca_15s.zip` from the HydroSHEDS
+v1 DIR and ACA downloads. The basins lie south of 60°N, where HydroSHEDS uses
+the same SRTM-based elevation as in the Columbia.
+
+The reference points are the facility coordinates supplied for this project:
+the G.M. Shrum, Peace Canyon and Site C powerhouses. Each outlet is the nearest
+15s main-stem cell, 0.2-0.8 km from its reference. Local areas are 72,054 km2
+for Bennett, 684 km2 for Peace Canyon and 14,403 km2 for Site C (87,141 km2 at
+Site C in total). Site C filled
+in 2024 and has been fully in service since August 2025, so its observed inflow
+record is short.
+
 ## Area and topology
 
 A total catchment contains all cells draining to the group's cutoff. A local

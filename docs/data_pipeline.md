@@ -701,6 +701,39 @@ terrain height when the column is below freezing. This is the requested
 "0°C isotherm elevation". Both are defined at every cell and hour, so daily
 means are never blank because of a cold or inverted profile.
 
+### ERA5-Land for the Peace River catchments
+
+AORC covers 25-53°N and does not reach the BC Hydro projects on the Peace River
+(54-58°N, `configs/peace.yaml`). For those catchments ERA5-Land also supplies
+the AORC variables: `--primary era5-land` downloads ERA5-Land and ERA5 only,
+and the requested table takes precipitation, rainfall, snowfall, temperature,
+relative humidity, VPD and shortwave radiation from ERA5-Land. PET uses the same
+Hargreaves formula with the ERA5-Land temperature statistics and the catchment
+centroid latitude recorded in the full table's manifest. ERA5-Land precipitation
+is the 24-hour total ending at 24 UTC, its snowfall is the model's snowfall and
+rainfall the rest, and temperature and humidity are at 2 m.
+
+```bash
+python research/download_daily.py --geojson outputs/projects_peace/dam_catchments.geojson --start 1996-01-01 --end 2026-09-30 --primary era5-land --output outputs/peace_daily_1996_2026.parquet
+```
+
+To combine this delivery with the Columbia delivery for the same dates, merge
+the two requested tables. A table with its `_full` table and manifest beside it
+is described by that manifest; one without, such as a delivery extended with
+`merge_daily.py`, is taken as an AORC delivery. The merged table comes with a
+README, a column manifest and the combined catchment polygons:
+
+```bash
+python research/merge_deliveries.py outputs/catchment_daily_1996_2026.parquet outputs/peace_daily_1996_2026.parquet --output outputs/catchment_daily_46_1996_2026.parquet --geojson outputs/projects43_independent/dam_catchments.geojson outputs/projects_peace/dam_catchments.geojson
+```
+
+The map, seasonal, anomaly and annual figures of every catchment can then be
+drawn from the merged table in one command:
+
+```bash
+python research/plot_daily.py outputs/catchment_daily_46_1996_2026.parquet --geojson outputs/catchment_daily_46_1996_2026_catchments.geojson --kind report --output-dir figures/report
+```
+
 The values table contains **62 data variables**: 19 from AORC with
 `--derive`, 40 from ERA5-Land and 3 from ERA5. Together with `date` and
 `project_id`, the full table has 64 columns. Each variable has four fields in
@@ -718,6 +751,7 @@ equivalent to the mm/day and MJ/m²/day amounts in the tables above.
 | --- | --- |
 | `research/download_daily.py` | One command for all three sources, daily processing, resume, checks and the final delivery |
 | `research/download_aorc.py` | Retrieve native AORC fields and calculate polygon series; `--derive` enables diagnostics |
+| `research/merge_deliveries.py` | Merge the requested tables of separate deliveries (for example Columbia and Peace) into one table, README and catchment GeoJSON |
 | `research/meteorology.py` | Humidity, wet bulb, rain/snow partition, wind speed and Hargreaves PET formulas |
 | `research/aggregate_daily.py` | Aggregate hourly polygon series with explicit UTC timing and coverage rules |
 | `research/download_cds.py` | Retrieve ERA5-Land/ERA5, calculate polygon statistics and write monthly daily files |
