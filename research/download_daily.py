@@ -2,6 +2,8 @@
 
 OUTPUT holds the requested variables and OUTPUT_README.md describes them;
 OUTPUT_full holds every variable with its _qc table, manifest and checks.
+With --primary era5-land (catchments north of AORC's 53°N limit), ERA5-Land
+also supplies the AORC variables.
 """
 
 import argparse
@@ -31,7 +33,7 @@ class DeliveryCheckError(RuntimeError):
 
 def run(geojson, start, end, output=None, *, work_dir=None, cache_dir=None,
         max_download_gb=2000, workers=16, chunk_days=14, cds_client=None, newest_first=True,
-        cds_workers=3, keep_chunks=False, era5_source='arco', land_source='edh'):
+        cds_workers=3, keep_chunks=False, era5_source='arco', land_source='edh', primary='aorc'):
     """Run the three sources concurrently, then export, check and deliver.
 
     A failed source does not stop the others; repeating the command resumes every
@@ -55,7 +57,9 @@ def run(geojson, start, end, output=None, *, work_dir=None, cache_dir=None,
     if any(feature['properties']['part'] != 'local'
            for feature in json.loads(geojson.read_text())['features']):
         raise ValueError('The combined workflow requires local catchments for every source')
-    if shutil.which('zstd') is None:
+    if primary not in ('aorc', 'era5-land'):
+        raise ValueError('The primary source is aorc or era5-land')
+    if primary == 'aorc' and shutil.which('zstd') is None:
         raise ValueError('Install the zstd command-line decoder and add it to PATH')
     # Fail on missing credentials before starting the potentially large AORC read.
     clients = {}
@@ -80,23 +84,26 @@ def run(geojson, start, end, output=None, *, work_dir=None, cache_dir=None,
     if land_source == 'edh' and cds_client is None:
         from edh_era5_land import EdhClient
         land_client = EdhClient(cache_dir / 'cds' / 'edh_chunks')
-    folders = [work_dir / name for name in ('aorc', 'era5-land', 'era5')]
+    names = ('aorc', 'era5-land', 'era5') if primary == 'aorc' else ('era5-land', 'era5')
+    folders = [work_dir / name for name in names]
     order = 'newest first' if newest_first else 'oldest first'
     print(f'{len(polygons)} projects; {(end-start).days+1} UTC days, {order}; working files: {work_dir}', flush=True)
-    print(f'[1/3] AORC, ERA5-Land and ERA5 in parallel (AORC transfer ceiling {max_download_gb:g} GB)', flush=True)
-    sources = {
-        'AORC': lambda: download_aorc.run(argparse.Namespace(
-            geojson=geojson, start=start, end=end, output_dir=folders[0],
+    sources = {}
+    if primary == 'aorc':
+        print(f'[1/3] AORC, ERA5-Land and ERA5 in parallel (AORC transfer ceiling {max_download_gb:g} GB)', flush=True)
+        sources['AORC'] = lambda: download_aorc.run(argparse.Namespace(
+            geojson=geojson, start=start, end=end, output_dir=work_dir / 'aorc',
             cache_dir=cache_dir / 'aorc', projects=None, variables=download_aorc.VARIABLES,
             derive=True, workers=workers, max_download_gb=max_download_gb, cache_only=False,
-            refresh_incomplete=False, keep_chunks=keep_chunks, newest_first=newest_first)),
-        **{label: (lambda product=product, folder=folder: download_cds.run_pipeline(
-               geojson, product, folder, cache_dir / 'cds', start, end, chunk_days=chunk_days,
+            refresh_incomplete=False, keep_chunks=keep_chunks, newest_first=newest_first))
+    else:
+        print('[1/3] ERA5-Land and ERA5 in parallel; ERA5-Land also supplies the AORC variables', flush=True)
+    sources.update({label: (lambda product=product: download_cds.run_pipeline(
+               geojson, product, work_dir / product, cache_dir / 'cds', start, end, chunk_days=chunk_days,
                client=land_client if product == 'era5-land' else clients[product],
                cds_client=clients['era5-land'],
                workers=cds_workers, newest_first=newest_first, era5_source=era5_source, land_source=land_source))
-           for label, product, folder in [('ERA5-Land', 'era5-land', folders[1]), ('ERA5', 'era5', folders[2])]},
-    }
+           for label, product in [('ERA5-Land', 'era5-land'), ('ERA5', 'era5')]})
     with ThreadPoolExecutor(max_workers=len(sources)) as pool:
         futures = {label: pool.submit(task) for label, task in sources.items()}
     failures = [(label, future.exception()) for label, future in futures.items() if future.exception()]
@@ -156,6 +163,9 @@ def main():
                         help='Download from the start date forward (default: latest data first)')
     parser.add_argument('--chunk-days', type=int, default=14,
                         help='Days per CDS request batch (1–31; default: 14)')
+    parser.add_argument('--primary', choices=['aorc', 'era5-land'], default='aorc',
+                        help='Source of the AORC variables: AORC (default) or, for catchments north of '
+                             "AORC's 53°N limit, ERA5-Land")
     args = parser.parse_args()
     try:
         run(**vars(args))

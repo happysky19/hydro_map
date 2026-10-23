@@ -20,6 +20,8 @@ import re
 import sqlite3
 import tempfile
 
+from shapely.geometry import shape
+
 from aggregate_daily import DAILY_FIELDS
 
 
@@ -364,6 +366,9 @@ def export_daily(geojson, input_dirs, start, end, output):
                   project_count=len(projects), catchment_part=next(iter(parts)),
                   geometry_file=geojson.name, geometry_sha256=geo_hash,
                   project_metadata=projects, geometry_metadata=doc.get('metadata', {}),
+                  # Hargreaves PET for catchments without an AORC run uses the same polygon centroids.
+                  pet_centroid_latitudes={feature['properties']['id']: shape(feature['geometry']).centroid.y
+                                          for feature in doc['features']},
                   columns=columns, qc_columns=qc_columns, inputs=inputs,
                   missing_policy='Null value and missing_record QC for absent observations within verified period coverage; incomplete manifest coverage is rejected',
                   exporter_sha256=digest(__file__))

@@ -1,10 +1,12 @@
 """Write the requested-variable table and its README from a verified full daily export.
 
-The requested table copies selected columns of the full values table. Where an
-AORC value is blank (a source gap), it is filled from the same ERA5-Land
-quantity adjusted to AORC's mean for that catchment and calendar month, and the
-row's `aorc_gap_filled` column names every filled column. The full table is
-never filled. The README describes the requested table: every column's source,
+The requested table copies selected columns of the full values table. A
+delivery without AORC (catchments north of AORC's coverage, 53°N) takes the AORC
+columns from ERA5-Land and computes PET from its temperatures. Where an AORC
+value is blank (a source gap), it is filled from the same ERA5-Land quantity
+adjusted to AORC's mean for that catchment and calendar month, and the row's
+`aorc_gap_filled` column names every filled column. The full table is never
+filled. The README describes the requested table: every column's source,
 whether it is a native source field or calculated here, its units and daily
 definition, the limitations of the data and the matching operational forecast
 fields.
@@ -22,8 +24,8 @@ import tempfile
 import numpy as np
 
 from check_daily import table_rows
-from delivery_variables import AORC, ERA5, LAND, REQUESTED, SOURCE_NAMES
-from export_daily import _write, digest
+from delivery_variables import AORC, ERA5, LAND, LAND_ORIGIN, REQUESTED, SOURCE_NAMES
+from export_daily import _value_column, _write, digest
 from meteorology import hargreaves_pet
 
 
@@ -43,11 +45,21 @@ def companion(path, tag, suffix=None):
 
 
 def requested_columns(manifest):
-    """Map requested column names to full-table columns; every requested field must exist."""
+    """Map requested column names to full-table columns; every requested field must exist.
+
+    Without AORC columns the AORC entries read ERA5-Land; PET, which ERA5-Land lacks,
+    has no full-table column (None) and is computed from the ERA5-Land temperatures.
+    """
     by_variable = {(info.get('source'), info.get('variable')): column
                    for column, info in manifest['columns'].items()}
+    has_aorc = any(source == AORC for source, _ in by_variable)
     selected = []
     for item in REQUESTED:
+        if item['source'] == AORC and not has_aorc:
+            item = dict(item, source=LAND, replaces=AORC)
+            if (LAND, item['variable']) not in by_variable and item['variable'] == 'pet_hargreaves_mm':
+                selected.append((_value_column(LAND, item['variable'], 'mm/day').split('__', 1)[1], None, item))
+                continue
         column = by_variable.get((item['source'], item['variable']))
         if column is None:
             raise ValueError(f"Full delivery lacks {item['source']}/{item['variable']}")
@@ -76,12 +88,21 @@ def _units(info):
     return 'mm/day' if amount else info['units']
 
 
+def column_units(manifest, full):
+    """Units of a requested column; a column computed here (full is None) is PET in mm/day."""
+    return 'mm/day' if full is None else _units(manifest['columns'][full])
+
+
 def _gap_text(gaps):
     if not gaps['counts']:
         return []
     dates = gaps['dates']
     when = ', '.join(dates) if len(dates) <= 20 else f'{len(dates)} dates from {dates[0]} to {dates[-1]}'
     counts = ', '.join(f'`{name}` {count:,}' for name, count in gaps['counts'].items())
+    if gaps.get('generic'):
+        return [f'- Where AORC has no data ({when}), the AORC columns are filled from ERA5-Land corrected toward '
+                f'AORC for that catchment and calendar month. `{FILL_COLUMN}` names the filled columns of each row. '
+                f'Filled project-days: {counts}.']
     return [f'- AORC has missing hours on {when}. There, the AORC value is replaced by the same '
             'ERA5-Land quantity, shifted (temperature, relative humidity) or scaled (precipitation, '
             "shortwave radiation, VPD) to AORC's mean for that catchment and calendar month; filled "
@@ -89,11 +110,28 @@ def _gap_text(gaps):
             f'`{FILL_COLUMN}` names the filled columns of each row. Filled project-days: {counts}.']
 
 
-def readme_text(manifest, selected, name, missing, gaps):
+def _names(projects, identifiers):
+    order = sorted(identifiers, key=lambda i: (-float(projects[i].get('lat', 0)), i))   # north to south
+    names = [projects[i].get('name', i).split(' (')[0] for i in order]
+    return ', '.join(names[:-1]) + ' and ' + names[-1] if len(names) > 1 else names[0]
+
+
+def readme_text(manifest, selected, name, missing, gaps, primary=None):
+    """primary maps AORC and ERA5-Land to the catchments whose AORC columns they supply."""
     start, end = manifest['start'], manifest['end']
     projects = manifest['project_metadata']
+    role = lambda item: item.get('replaces', item['source'])
+    if primary is None:
+        primary = {item['source']: sorted(projects) for _, _, item in selected if role(item) == AORC}
+    north = primary.get(LAND, [])
+    both = AORC in primary and LAND in primary
+    primary_name = ' or '.join(SOURCE_NAMES[source] for source in (AORC, LAND) if source in primary)
     used = lambda source: ', '.join(dict.fromkeys(item['quantity'].split(' (')[0]
-                                                  for _, _, item in selected if item['source'] == source))
+                                                  for _, _, item in selected if role(item) == source))
+    origin = lambda item: (item['origin'] if role(item) != AORC or LAND not in primary
+                           else LAND_ORIGIN.get(item['variable'], item['origin']) if not both
+                           else f"{item['origin']} (ERA5-Land: {LAND_ORIGIN[item['variable']]})"
+                           if LAND_ORIGIN.get(item['variable'], item['origin']) != item['origin'] else item['origin'])
     blanks = ', '.join(f'`{column}` {count:,}' for column, count in missing.items() if count)
     if name.endswith('.parquet'):
         reading = f"Read it with `pandas.read_parquet('{name}')`; `date` is a date column and blank values are nulls."
@@ -119,53 +157,65 @@ def readme_text(manifest, selected, name, missing, gaps):
         'it is empty otherwise.',
         f"- Blank values: {blanks or 'none'}.", '',
         '## Sources', '',
-        _table([['AORC v1.1', 'NOAA Office of Water Prediction', 'Analysis of observations',
-                 'Hourly, 30 arc-seconds (about 1 km)', used(AORC)],
-                ['ERA5-Land', 'ECMWF (Copernicus)', 'Land reanalysis', 'Hourly, 0.1° (about 9 km)', used(LAND)],
+        _table([*([['AORC v1.1', 'NOAA Office of Water Prediction', 'Analysis of observations',
+                    'Hourly, 30 arc-seconds (about 1 km)',
+                    used(AORC) + (f' (all catchments except {_names(projects, north)})' if both else '')]]
+                  if AORC in primary else []),
+                ['ERA5-Land', 'ECMWF (Copernicus)', 'Land reanalysis', 'Hourly, 0.1° (about 9 km)',
+                 used(LAND) + (f'; {used(AORC).lower()} for {_names(projects, north)}' if north else '')],
                 ['ERA5', 'ECMWF (Copernicus)', 'Atmospheric reanalysis', 'Hourly, 0.25° (about 31 km)', used(ERA5)]],
                ['Source', 'Producer', 'Type', 'Grid', 'Used for']), '',
-        '- **AORC** (Analysis of Record for Calibration) is the forcing NOAA uses to calibrate the National '
-        'Water Model. It combines NLDAS-2, the URMA analysis and, over the United States, NEXRAD Stage IV '
-        'radar-gauge precipitation, adjusted to the PRISM and Livneh gauge climatologies '
-        '([methods](https://www.weather.gov/media/owp/operations/aorc_v1_1_methods.pdf)). '
-        'Read from the AORC v1.1 Zarr archive on AWS.',
+        *(['- **AORC** (Analysis of Record for Calibration) is the forcing NOAA uses to calibrate the National '
+           'Water Model. It combines NLDAS-2, the URMA analysis and, over the United States, NEXRAD Stage IV '
+           'radar-gauge precipitation, adjusted to the PRISM and Livneh gauge climatologies '
+           '([methods](https://www.weather.gov/media/owp/operations/aorc_v1_1_methods.pdf)). '
+           'Read from the AORC v1.1 Zarr archive on AWS.'] if AORC in primary else []),
         '- **ERA5-Land** reruns the land component of ERA5 at 0.1°, driven by ERA5 weather with temperature '
         'adjusted for elevation. Read from the Copernicus Climate Data Store or its copy on the Destination '
-        'Earth Data Hub.',
+        'Earth Data Hub.' + (f" For {_names(projects, north)}, which {'lies' if len(north) == 1 else 'lie'} "
+                             "north of AORC's coverage (53°N), "
+                             'ERA5-Land also supplies the AORC variables: precipitation is its 24-hour total, '
+                             'snowfall is its snowfall and rainfall the rest, temperature and humidity are at 2 m, '
+                             'and PET uses the same Hargreaves formula with ERA5-Land temperature.' if north else ''),
         '- **ERA5** is the ECMWF global atmospheric reanalysis. Read from the Copernicus Climate Data Store or '
         'the ARCO-ERA5 copy on Google Cloud.', '',
         '## Variables', '',
         f"{len({item['quantity'].split(' (')[0] for _, _, item in selected})} variables in {len(selected)} "
         'columns; soil temperature is given for the four ERA5-Land layers. "Native" means the source field '
-        '(units converted only); "computed" means calculated here from native fields as described. AORC '
-        'precipitation sums the hour-ending amounts 01-24 UTC; ERA5-Land amounts and fluxes use the '
-        '24 hours ending at 24 UTC.', '',
-        _table([[item['category'], item['quantity'], f'`{column}`', _units(manifest['columns'][full]),
-                 SOURCE_NAMES[item['source']], item['origin'], item['definition']]
+        '(units converted only); "computed" means calculated here from native fields as described. '
+        + ('AORC precipitation sums the hour-ending amounts 01-24 UTC; ' if AORC in primary else '')
+        + 'ERA5-Land amounts and fluxes use the 24 hours ending at 24 UTC.', '',
+        _table([[item['category'], item['quantity'], f'`{column}`', column_units(manifest, full),
+                 primary_name if role(item) == AORC else SOURCE_NAMES[item['source']], origin(item),
+                 item['definition']]
                 for column, full, item in selected],
                ['Category', 'Variable', 'Column', 'Units', 'Source', 'Native or computed', 'Daily definition']), '',
         '## Limitations', '',
-        '- AORC is an estimate built from observations, not a measurement. Over the United States its '
-        'precipitation follows the Stage IV radar-gauge analyses from 2002; over Canada it follows NLDAS-2, '
-        'and NOAA reports lower accuracy there because gauges are sparse. Precipitation at high elevation is '
-        'the least certain.',
-        '- AORC changes its inputs over time and does not make the record homogeneous. Temperature, humidity, '
-        'pressure and longwave radiation switch from NLDAS-2 to URMA in 2016, and temperature is adjusted to '
-        'the earlier record only in 2016-2017. Means and trends across 2016-2018 can include these changes, '
-        'also in rainfall, snowfall, relative humidity, VPD and PET, which are computed from them. AORC wind '
-        'changes source at the start of 2018 and drops by about 1.5-3 m/s at these catchments, so wind is '
-        'taken from ERA5-Land.',
+        *(['- AORC is an estimate built from observations, not a measurement. Over the United States its '
+           'precipitation follows the Stage IV radar-gauge analyses from 2002; over Canada it follows NLDAS-2, '
+           'and NOAA reports lower accuracy there because gauges are sparse. Precipitation at high elevation is '
+           'the least certain.',
+           '- AORC changes its inputs over time and does not make the record homogeneous. Temperature, humidity, '
+           'pressure and longwave radiation switch from NLDAS-2 to URMA in 2016, and temperature is adjusted to '
+           'the earlier record only in 2016-2017. Means and trends across 2016-2018 can include these changes, '
+           'also in rainfall, snowfall, relative humidity, VPD and PET, which are computed from them. AORC wind '
+           'changes source at the start of 2018 and drops by about 1.5-3 m/s at these catchments, so wind is '
+           'taken from ERA5-Land.'] if AORC in primary else []),
         '- ERA5-Land and ERA5 are model reanalyses on 9 km and 31 km grids and smooth out valleys and ridges. '
         "ERA5-Land wind is ERA5's 31 km wind interpolated to the finer grid and is likely too low in complex "
         'terrain ([Chen et al. 2024](https://rmets.onlinelibrary.wiley.com/doi/10.1002/joc.8339)).',
         '- Snow, soil moisture, soil temperature and actual evapotranspiration are ERA5-Land model output '
-        'driven by ERA5 precipitation, not by AORC, so they do not close a water balance with the AORC '
-        "precipitation. Absolute soil moisture depends on the model's soil properties; changes and anomalies "
+        'driven by ERA5 precipitation' + (', not by AORC, so they do not close a water balance with the AORC '
+                                          'precipitation' if AORC in primary else '')
+        + ". Absolute soil moisture depends on the model's soil properties; changes and anomalies "
         'are more reliable than levels.',
         '- Glacier cells in ERA5-Land carry permanent deep snow. SWE and snow depth leave out cells holding at '
         'least 5 m water equivalent all day; snowmelt includes them.',
-        '- Rainfall and snowfall are split from AORC precipitation by a wet-bulb threshold of 0.5 °C in each '
-        'cell and hour; precipitation phase is not observed.',
+        ('- Rainfall and snowfall are split from AORC precipitation by a wet-bulb threshold of 0.5 °C in each '
+         'cell and hour; precipitation phase is not observed.' if AORC in primary else
+         "- Rainfall and snowfall are ERA5-Land's modelled snowfall and the remaining precipitation.")
+        + (f" For {_names(projects, north)} they are ERA5-Land's modelled snowfall and the remaining "
+           'precipitation.' if both else ''),
         '- Daily maximum and minimum temperature are extremes of the hourly catchment-mean series, so they are '
         'milder than station or grid-cell extremes.',
         '- PET uses Hargreaves-Samani, which depends only on temperature and extraterrestrial radiation and is '
@@ -185,7 +235,7 @@ def readme_text(manifest, selected, name, missing, gaps):
         'polygons, UTC days, catchment means before daily statistics, same formulas for computed columns) '
         'and bias-correct it toward this table over a common past period, because every forecast model has '
         'its own climatology. IFS and AIFS (trained on ERA5 and IFS analyses) are closest to the ERA5-Land '
-        'and ERA5 columns; the AORC columns need the correction most.', '',
+        'and ERA5 columns' + ('; the AORC columns need the correction most.' if AORC in primary else '.'), '',
         _table([[item['quantity'], f'`{column}`', item['ifs'], item['aifs'], item['gfs'], item['wn2'], item['note']]
                 for column, _, item in selected],
                ['Variable', 'Column', 'ECMWF IFS', 'ECMWF AIFS', 'NOAA GFS', 'WeatherNext 2', 'Note']), '',
@@ -274,7 +324,7 @@ def write_delivery(full_output, requested_output, readme):
     aorc = {item['variable']: column for _, column, item in selected if item['source'] == AORC}
     counterparts = {variable: by_variable[LAND, variable] for variable in [*aorc, 'snowfall_mm']
                     if (LAND, variable) in by_variable}
-    columns = {column for _, column, _ in selected} | set(counterparts.values())
+    columns = {column for _, column, _ in selected if column} | set(counterparts.values())
     keys, data = [], {column: [] for column in columns}
     for record in table_rows(full_output, manifest['columns']):
         keys.append((str(record['date']), record['project_id']))
@@ -284,12 +334,22 @@ def write_delivery(full_output, requested_output, readme):
     dates = [date.fromisoformat(day) for day, _ in keys]
     projects = np.array([project for _, project in keys])
     latitudes = next((entry['metadata'].get('pet_centroid_latitudes') or {} for entry in manifest.get('inputs', [])
-                      if entry['metadata'].get('source_id') == AORC), {})
+                      if entry['metadata'].get('source_id') == AORC), None) or manifest.get('pet_centroid_latitudes', {})
     values = {variable: data[column] for variable, column in aorc.items()}
     filled = fill_aorc_gaps(values, {variable: data[column] for variable, column in counterparts.items()},
                             projects, dates, latitudes)
     names = {item['variable']: name for name, _, item in selected if item['source'] == AORC}
     flags = [';'.join(names[variable] for variable in aorc if filled[variable][row]) for row in range(len(keys))]
+    # Without AORC, PET is the same Hargreaves estimate from the ERA5-Land temperature statistics.
+    computed = {}
+    for name, column, item in selected:
+        if column is None:
+            statistics = [data[by_variable[LAND, variable]] for variable in ('tmean_c', 'tmin_c', 'tmax_c')]
+            if set(projects) - set(latitudes):
+                raise ValueError('PET needs catchment centroid latitudes; export the full table again')
+            computed[name] = np.array([hargreaves_pet(*stats, latitudes[project], day)
+                                       if all(math.isfinite(value) for value in stats) else math.nan
+                                       for stats, project, day in zip(zip(*statistics), projects, dates)])
     filled_counts = {names[variable]: int(rows.sum()) for variable, rows in filled.items() if rows.any()}
     filled_dates = sorted({keys[row][0] for row, flag in enumerate(flags) if flag})
     parquet = requested_output.suffix == '.parquet'
@@ -299,7 +359,7 @@ def write_delivery(full_output, requested_output, readme):
         for row, (day, project) in enumerate(keys):
             output = []
             for name, column, _ in selected:
-                value = data[column][row]
+                value = data[column][row] if column else computed[name][row]
                 if math.isnan(value):
                     missing[name] += 1
                     value = None if parquet else ''
