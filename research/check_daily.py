@@ -95,7 +95,7 @@ def load_delivery(path):
             raise ValueError('Values and QC row counts differ from the manifest')
         d, p = divmod(i, len(projects))
         key = (str(days[d]), projects[p])
-        if any((r['date'], r['project_id']) != key for r in (row, quality)):
+        if any((str(r['date']), r['project_id']) != key for r in (row, quality)):   # parquet dates are date objects
             raise ValueError(f'Values/QC keys do not align in date/project order at row {i+1}')
         for j, column in enumerate(columns):
             value = _number(row[column])

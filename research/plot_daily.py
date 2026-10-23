@@ -1,8 +1,9 @@
 """Plot daily catchment series from a delivery or from source folders still downloading.
 
 INPUT is either a working directory holding aorc/, era5-land/ and era5/ source
-folders (completed years or months are plotted while the rest downloads), or a
-full delivery table with its manifest (OUTPUT_full.csv).
+folders (completed years or months are plotted while the rest downloads), a
+full delivery table with its manifest (OUTPUT_full.csv), or a merged requested
+table with its manifest (from merge_deliveries.py).
 
 Kinds:
   overview   precipitation as rain and snow, air temperature, snow water
@@ -27,6 +28,7 @@ and outlets; only years complete for every catchment are used):
              first
   event      one variable (--variable) day by day between --start and --end,
              one row per catchment, for example a flood or a cold wave
+  report     map, seasons, anomaly and annual as PNG files in --output-dir
 """
 
 import argparse
@@ -41,10 +43,11 @@ import numpy as np
 
 
 AORC, LAND, ERA5 = 'aorc_v1.1', 'era5_land_cds', 'era5_cds'
-SOURCE_NAMES = {AORC: 'AORC', LAND: 'ERA5-Land', ERA5: 'ERA5'}
+DELIVERED = 'delivered'   # a merged requested table, one source per column
+SOURCE_NAMES = {AORC: 'AORC', LAND: 'ERA5-Land', ERA5: 'ERA5', DELIVERED: 'Delivered table'}
 # Categorical slots in fixed order: one colour per source wherever sources are compared.
 SERIES = ['#2a78d6', '#eb6834', '#1baf7a']
-SOURCE_COLORS = dict(zip(SOURCE_NAMES, SERIES))
+SOURCE_COLORS = {AORC: SERIES[0], LAND: SERIES[1], ERA5: SERIES[2], DELIVERED: SERIES[0]}
 INK, INK_SECONDARY, MUTED, GRID, AXIS, SURFACE = '#0b0b0b', '#52514e', '#898781', '#e1e0d9', '#c3c2b7', '#fcfcfb'
 AMOUNTS = {'precipitation_mm', 'rainfall_mm', 'snowfall_mm', 'snowmelt_mm',
            'actual_evapotranspiration_mm', 'pet_hargreaves_mm'}
@@ -113,9 +116,15 @@ def load_many(path, variables, start=None, end=None, projects=None):
     else:
         from check_daily import table_rows
         manifest = json.loads(Path(str(path) + '.manifest.json').read_text())
-        columns = {column: (info['source'], info['variable']) for column, info in manifest['columns'].items()
-                   if info.get('variable') in wanted}
-        for row in table_rows(path, manifest['columns']):
+        if 'requested_columns' in manifest:
+            names = manifest['requested_columns']
+            columns = {name: (DELIVERED, info['variable']) for name, info in names.items() if info['variable'] in wanted}
+            layout = ['date', 'project_id', *names, manifest['fill_column']]
+        else:
+            columns = {column: (info['source'], info['variable']) for column, info in manifest['columns'].items()
+                       if info.get('variable') in wanted}
+            layout = manifest['columns']
+        for row in table_rows(path, layout):
             day = date.fromisoformat(str(row['date']))
             for column, (source, variable) in columns.items():
                 keep(row['project_id'], source, variable, day, row[column])
@@ -383,6 +392,7 @@ CATCHMENT_KINDS = ('map', 'seasons', 'anomaly', 'annual', 'event')
 # Rows of the catchment figures, upstream to downstream within each river system. Catchments
 # not listed here follow, north to south.
 GROUPS = [
+    ('Peace', ['WAC_BENNETT', 'PEACE_CANYON', 'SITE_C']),
     ('Columbia, Canada', ['MICA', 'REVELSTOKE', 'HUGH_KEENLEYSIDE', 'DUNCAN', 'KOOTENAY_CANAL', 'CORRA_LINN',
                           'BRILLIANT', 'SEVEN_MILE', 'WANETA']),
     ('Kootenai, Flathead,\nPend Oreille', ['LIBBY', 'HUNGRY_HORSE', 'KERR', 'NOXON_RAPIDS', 'CABINET_GORGE',
@@ -773,7 +783,8 @@ def main():
     parser.add_argument('input', type=Path, help='Working directory with source folders, or OUTPUT_full table')
     parser.add_argument('--project', help='Catchment project_id, for example MICA (overview, compare, wateryear)')
     parser.add_argument('--geojson', type=Path, help='Catchment polygons with id, name, lat and lon (map, seasons, anomaly)')
-    parser.add_argument('--kind', choices=['overview', 'compare', 'wateryear', *CATCHMENT_KINDS], default='overview')
+    parser.add_argument('--kind', choices=['overview', 'compare', 'wateryear', *CATCHMENT_KINDS, 'report'],
+                        default='overview')
     parser.add_argument('--variable', default='precipitation_mm',
                         help='Variable name without source prefix (compare, wateryear, event)')
     parser.add_argument('--source', default=None, choices=list(SOURCE_NAMES),
@@ -784,8 +795,19 @@ def main():
     parser.add_argument('--resample', choices=['auto', 'D', 'W', 'M'], default='auto',
                         help='Daily, weekly or monthly points (overview, compare); auto picks by span')
     parser.add_argument('--output', type=Path, help='PNG, PDF or SVG; default: figures/PROJECT_KIND[_VARIABLE].png')
+    parser.add_argument('--output-dir', type=Path, default=Path('figures/report'), help='Folder for --kind report')
     parser.add_argument('--dpi', type=int, default=170)
     args = parser.parse_args()
+    if args.kind == 'report':
+        if not args.geojson:
+            parser.error('--kind report needs --geojson')
+        args.output_dir.mkdir(parents=True, exist_ok=True)
+        for kind in ('map', 'seasons', 'anomaly', 'annual'):
+            fig = plot_catchments(kind, args.input, args.geojson, args.source, args.variable, args.start, args.end)
+            output = args.output_dir / f'catchments_{kind}.png'
+            fig.savefig(output, dpi=args.dpi)
+            print(f'Wrote {output}')
+        return
     if args.kind in CATCHMENT_KINDS:
         if not args.geojson:
             parser.error(f'--kind {args.kind} needs --geojson')

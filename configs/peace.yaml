@@ -1,0 +1,58 @@
+# BC Hydro projects on the Peace River (Mackenzie basin, HydroSHEDS Arctic region).
+# Reference points are the facility coordinates supplied for this project (powerhouses).
+# Grid cells are the nearest HydroSHEDS 15s main-stem cells to those points.
+dataset:
+  region: ar
+  level: 12
+  version: "1c"
+  include_virtual_connections: false
+  delineation: outlet_cell
+
+projects:
+  - id: WAC_BENNETT
+    name: "W.A.C. Bennett"
+    kind: "storage"
+    note: "Williston Reservoir; G.M. Shrum generating station"
+    owner: "BC Hydro"
+    river: "Peace"
+    country: CA
+    outlet:
+      hybas_id: 8120333210
+      lon: -122.196471
+      lat: 56.014509
+      source: "facility coordinates supplied for this project, 2026-10-23"
+      reference: "G.M. Shrum generating station"
+      grid_lon: -122.2020833333
+      grid_lat: 56.0145833333
+      grid_reference: "HydroSHEDS v1.1 15s main-stem cell nearest to the reference (0.35 km); 71,709 km2 upstream area"
+  - id: PEACE_CANYON
+    name: "Peace Canyon"
+    kind: "run-of-river"
+    owner: "BC Hydro"
+    river: "Peace"
+    country: CA
+    outlet:
+      hybas_id: 8120333130
+      lon: -121.994939
+      lat: 55.982492
+      source: "facility coordinates supplied for this project, 2026-10-23"
+      reference: "Peace Canyon generating station"
+      grid_lon: -121.9937500000
+      grid_lat: 55.9812500000
+      grid_reference: "HydroSHEDS v1.1 15s main-stem cell nearest to the reference (0.16 km); 72,390 km2 upstream area"
+  - id: SITE_C
+    name: "Site C (John Horgan Dam)"
+    kind: "run-of-river"
+    note: "Reservoir filled in 2024; fully in service from August 2025"
+    owner: "BC Hydro"
+    river: "Peace"
+    country: CA
+    outlet:
+      hybas_id: 8120332200
+      lon: -120.913049
+      lat: 56.190423
+      source: "facility coordinates supplied for this project, 2026-10-23"
+      reference: "Site C powerhouse, on the south bank"
+      grid_lon: -120.9020833333
+      grid_lat: 56.1937500000
+      grid_reference: "HydroSHEDS v1.1 15s main-stem cell nearest to the reference (0.77 km); 86,723 km2 upstream area"
