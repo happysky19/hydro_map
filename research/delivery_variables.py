@@ -16,6 +16,12 @@ LAND_ORIGIN = {'precipitation_mm': 'native tp', 'rainfall_mm': 'computed from tp
                'tmean_c': 'native t2m', 'tmax_c': 'computed from t2m', 'tmin_c': 'computed from t2m',
                'relative_humidity_pct': 'computed from t2m, d2m', 'vapor_pressure_deficit_kpa': 'computed from t2m, d2m',
                'shortwave_down_mean_wm2': 'native ssrd', 'pet_hargreaves_mm': 'computed from Tmean/Tmin/Tmax'}
+# AORC precipitation over these catchments, mostly in Canada, drops far below other years from late 2007
+# to 2017 while snow courses show no drop, so debias_era5.py replaces their AORC columns on every day by
+# ERA5-Land mapped onto AORC over REFERENCE, when AORC follows the Livneh gauge climatology.
+REPLACED = ('MICA', 'REVELSTOKE', 'HUGH_KEENLEYSIDE', 'DUNCAN', 'CORRA_LINN', 'KOOTENAY_CANAL', 'BRILLIANT',
+            'SEVEN_MILE', 'WANETA', 'LIBBY')
+REFERENCE = ('1996-01-01', '2006-12-31')
 NOT_AVAILABLE = 'not available'
 DERIVE = 'derive from T, humidity and pressure as here'
 SEASONAL = ('Mean of 24 hourly catchment means over seasonal-snow cells; ERA5-Land cells holding '

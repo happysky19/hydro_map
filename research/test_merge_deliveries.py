@@ -90,6 +90,30 @@ class MergeTests(unittest.TestCase):
         manifest = json.loads((aorc.root / 'merged' / 'all.parquet.manifest.json').read_text())
         self.assertEqual(manifest['primary_sources'], {'aorc_v1.1': ['A'], 'era5_land_cds': ['B']})
 
+    def test_a_replaced_catchment_is_named_and_left_out_of_the_fill_counts(self):
+        from unittest import mock
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+        from deliver_daily import FILL_COLUMN
+        aorc, north = self.deliveries()
+        joined = aorc.root / 'joined' / 'columbia_1996_2026.parquet'   # every row flagged, as from debias_era5.py
+        joined.parent.mkdir()
+        table = pq.read_table(aorc.root / 'columbia.parquet')
+        flags = pa.array(['precipitation_mm;tmean_degC'] * table.num_rows, pa.string())
+        pq.write_table(table.set_column(table.column_names.index(FILL_COLUMN), FILL_COLUMN, flags), joined)
+        output = aorc.root / 'merged' / 'all.parquet'
+        with mock.patch.object(merge_deliveries, 'REPLACED', ('A',)):
+            merge_deliveries.merge([joined, north.root / 'peace.csv'], output, [aorc.geojson, north.geojson])
+        readme = companion(output, '_README', '.md').read_text()
+        self.assertIn('mapped onto AORC for', readme)
+        self.assertIn('every AORC column therefore holds ERA5-Land quantile-mapped onto AORC of 1996-2006', readme)
+        self.assertNotIn('Filled project-days', readme)
+        manifest = json.loads((aorc.root / 'merged' / 'all.parquet.manifest.json').read_text())
+        self.assertEqual(manifest['aorc_replaced'], {'catchments': ['A'], 'fitted_on': ['1996-01-01', '2006-12-31']})
+        merge_deliveries.merge([aorc.root / 'columbia.parquet', north.root / 'peace.csv'],
+                               aorc.root / 'plain.parquet', [aorc.geojson, north.geojson])
+        self.assertNotIn('quantile-mapped onto AORC of', (aorc.root / 'plain_README.md').read_text())
+
     def test_overlapping_catchments_are_refused(self):
         aorc, _ = self.deliveries()
         with self.assertRaisesRegex(ValueError, 'already in another input'):

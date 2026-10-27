@@ -3,8 +3,10 @@
     python research/merge_daily.py outputs/catchment_daily_1996_2025.parquet outputs/catchment_daily_2022_2026.csv --output outputs/catchment_daily_1996_2026.parquet
 
 The files need the same columns in the same order and the same catchments on
-every date, and the dates must run on without a gap. CSV and Parquet inputs can
-be mixed; the output format follows its suffix.
+every date, and the dates must run on without a gap. A REPLACED catchment
+(delivery_variables.py) must have its AORC replaced by debias_era5.py, every
+row flagged, in all the files or in none. CSV and Parquet inputs can be mixed;
+the output format follows its suffix.
 """
 
 import argparse
@@ -15,6 +17,7 @@ from pathlib import Path
 import sys
 
 from deliver_daily import FILL_COLUMN
+from delivery_variables import REPLACED
 from export_daily import _write
 
 
@@ -52,7 +55,7 @@ def merge(paths, output):
     for path, (names, _) in zip(paths, tables):
         if names != header:
             raise ValueError(f'{path.name}: columns differ from {paths[0].name}')
-    added = []
+    added, flagged = [], {}
 
     def rows():
         day, projects, expected = None, [], None
@@ -72,11 +75,18 @@ def merge(paths, output):
                             raise ValueError(f'{path.name}: catchments on {day} differ from the first date')
                     day, projects = current, []
                 projects.append(row[1])
+                if row[1] in REPLACED:
+                    flagged.setdefault(row[1], {}).setdefault(path.name, set()).add(bool(row[-1]))
                 count += 1
                 yield row
             added.append((path.name, count, start))
         if expected is not None and projects != expected:
             raise ValueError(f'Catchments on {day} differ from the first date')
+        for project, files in sorted(flagged.items()):
+            replaced = [name for name, kinds in files.items() if kinds == {True}]
+            if replaced and len(replaced) < len(files):
+                raise ValueError(f'{project}: AORC is replaced in {", ".join(replaced)} only; '
+                                 'write every file with debias_era5.py')
 
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary = output.with_name(output.name + '.part')

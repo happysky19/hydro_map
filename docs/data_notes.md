@@ -203,6 +203,27 @@ wind throughout: consistent over time, but smooth and likely low in complex
 terrain ([Chen et al. 2024](https://rmets.onlinelibrary.wiley.com/doi/10.1002/joc.8339)).
 The full table keeps both sources.
 
+AORC precipitation over the catchments mostly in British Columbia drops from
+late 2007 to 2017. At Mica the November-March total averages 237 mm in
+2008-2017 against 700 mm in 1997-2007 and 529 mm in 2018-2025, while ERA5-Land
+stays at 410-435 mm. Read straight from the AORC Zarr archive, with every hour
+present, the Kinbasket area gets about 10 mm a month in December 2009 and
+January 2010 against 200-250 mm in other winters. The 1 April snow water
+equivalent of eight snow courses and pillows in the Mica basin
+([CanSWE](https://doi.org/10.5194/essd-13-4603-2021)) shows no drop. Until 2015
+AORC's precipitation over Canada is NLDAS-2 with its monthly totals adjusted to
+the Livneh gauge climatology; from 2016 it follows the CPC gauge analysis and
+CaPA without that adjustment
+([Fall et al. 2023](https://doi.org/10.1111/1752-1688.13143)). Relative to
+ERA5-Land, AORC winter precipitation falls by two thirds to three quarters at
+Mica and Revelstoke, by half at Hugh Keenleyside and Duncan, and by about
+10-30% at Kootenay Canal, Brilliant, Seven Mile, Corra Linn, Waneta and Libby.
+For these ten catchments (`REPLACED` in `research/delivery_variables.py`)
+`debias_era5.py` replaces every AORC column on every day by ERA5-Land
+quantile-mapped onto AORC of 1996-2006; see the
+[pipeline guide](data_pipeline.md#aorc-replaced-in-the-canadian-catchments).
+The full table keeps AORC.
+
 ## Interpret the checks
 
 - **15.5 MJ/m²/day of downward longwave is about 179.4 W/m².** That conversion

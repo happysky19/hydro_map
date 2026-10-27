@@ -24,7 +24,7 @@ import tempfile
 import numpy as np
 
 from check_daily import table_rows
-from delivery_variables import AORC, ERA5, LAND, LAND_ORIGIN, REQUESTED, SOURCE_NAMES
+from delivery_variables import AORC, ERA5, LAND, LAND_ORIGIN, REFERENCE, REQUESTED, SOURCE_NAMES
 from export_daily import _value_column, _write, digest
 from meteorology import hargreaves_pet
 
@@ -116,8 +116,9 @@ def _names(projects, identifiers):
     return ', '.join(names[:-1]) + ' and ' + names[-1] if len(names) > 1 else names[0]
 
 
-def readme_text(manifest, selected, name, missing, gaps, primary=None):
-    """primary maps AORC and ERA5-Land to the catchments whose AORC columns they supply."""
+def readme_text(manifest, selected, name, missing, gaps, primary=None, replaced=()):
+    """primary maps AORC and ERA5-Land to the catchments whose AORC columns they supply; replaced
+    lists the AORC catchments whose AORC columns hold mapped ERA5-Land on every day."""
     start, end = manifest['start'], manifest['end']
     projects = manifest['project_metadata']
     role = lambda item: item.get('replaces', item['source'])
@@ -125,7 +126,9 @@ def readme_text(manifest, selected, name, missing, gaps, primary=None):
         primary = {item['source']: sorted(projects) for _, _, item in selected if role(item) == AORC}
     north = primary.get(LAND, [])
     both = AORC in primary and LAND in primary
-    primary_name = ' or '.join(SOURCE_NAMES[source] for source in (AORC, LAND) if source in primary)
+    others = [*north, *replaced]
+    primary_name = ' or '.join(SOURCE_NAMES[source] for source in (AORC, LAND)
+                               if source in primary or (source == LAND and replaced))
     used = lambda source: ', '.join(dict.fromkeys(item['quantity'].split(' (')[0]
                                                   for _, _, item in selected if role(item) == source))
     origin = lambda item: (item['origin'] if role(item) != AORC or LAND not in primary
@@ -153,16 +156,18 @@ def readme_text(manifest, selected, name, missing, gaps, primary=None):
         'for each variable.',
         '- Column names end with their units: `mm` is a daily amount (mm/day), `W_m2` a daily mean flux, '
         'and `degC`, `kPa`, `m3_m3`, `m_s`, `m`, `pct` (%) and `fraction` (0-1) are as written.',
-        f'- `{FILL_COLUMN}` lists the columns of that row filled where AORC has no data (see Limitations); '
-        'it is empty otherwise.',
+        f'- `{FILL_COLUMN}` lists the columns of that row filled where AORC has no data'
+        + (' or is replaced' if replaced else '') + ' (see Limitations); it is empty otherwise.',
         f"- Blank values: {blanks or 'none'}.", '',
         '## Sources', '',
         _table([*([['AORC v1.1', 'NOAA Office of Water Prediction', 'Analysis of observations',
                     'Hourly, 30 arc-seconds (about 1 km)',
-                    used(AORC) + (f' (all catchments except {_names(projects, north)})' if both else '')]]
+                    used(AORC) + (f' (all catchments except {_names(projects, others)})' if others else '')]]
                   if AORC in primary else []),
                 ['ERA5-Land', 'ECMWF (Copernicus)', 'Land reanalysis', 'Hourly, 0.1° (about 9 km)',
-                 used(LAND) + (f'; {used(AORC).lower()} for {_names(projects, north)}' if north else '')],
+                 used(LAND) + (f'; {used(AORC).lower()} for {_names(projects, north)}' if north else '')
+                 + (f"; {'the same' if north else used(AORC).lower()} mapped onto AORC for "
+                    f'{_names(projects, replaced)}' if replaced else '')],
                 ['ERA5', 'ECMWF (Copernicus)', 'Atmospheric reanalysis', 'Hourly, 0.25° (about 31 km)', used(ERA5)]],
                ['Source', 'Producer', 'Type', 'Grid', 'Used for']), '',
         *(['- **AORC** (Analysis of Record for Calibration) is the forcing NOAA uses to calibrate the National '
@@ -222,6 +227,16 @@ def readme_text(manifest, selected, name, missing, gaps, primary=None):
         'not calibrated for these catchments.',
         '- Freezing level above ground is 0 when ERA5 finds no 0 °C level; ERA5 stores this as about '
         '-0.0002 m, so small negative values mean 0.',
+        *([f'- From late 2007 to 2017 AORC precipitation over {_names(projects, replaced)} falls well below '
+            'other years, in winter to about a third in the northern catchments, while snow courses and snow '
+            "pillows in the Mica basin show no drop. Until 2015 AORC's Canadian precipitation is NLDAS-2 "
+            'adjusted to the Livneh gauge climatology; from 2016 it follows gauge analyses without that '
+            'adjustment. In these catchments every AORC column therefore holds ERA5-Land quantile-mapped onto '
+            f'AORC of {REFERENCE[0][:4]}-{REFERENCE[1][:4]} for that catchment and calendar month, on every day. '
+            "Precipitation is split into rain and snow by AORC's snow fraction against daily mean temperature "
+            'over the same years, and PET is recomputed from the mapped temperatures. The levels and seasonal '
+            'cycle follow AORC of those years; the day-to-day and year-to-year changes follow ERA5-Land. '
+            f'`{FILL_COLUMN}` names these columns on every row of these catchments.'] if replaced else []),
         *_gap_text(gaps), '',
         '## Matching forecast variables', '',
         'Fields in operational forecasts that correspond to each column. IFS names are ECMWF open-data '
