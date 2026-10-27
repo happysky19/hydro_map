@@ -246,6 +246,35 @@ meteorological calculations.
 The source-specific commands later in this guide are available for individual
 source checks; they are not additional steps after `download_daily.py`.
 
+### AORC replaced in the Canadian catchments
+
+From late 2007 to 2017 AORC precipitation over Mica, Revelstoke, Hugh
+Keenleyside, Duncan, Corra Linn, Kootenay Canal, Brilliant, Seven Mile, Waneta
+and Libby, which lie mostly in British Columbia, falls well below other years
+while snow courses show no drop ([data notes](data_notes.md)). In these
+catchments (`REPLACED` in `research/delivery_variables.py`) `debias_era5.py`
+replaces every AORC column on every row, also where AORC exists, by ERA5-Land
+quantile-mapped onto AORC of `REFERENCE` (1996-2006). The mapping is fitted on
+the AORC and ERA5-Land columns of the `--aorc` full table over those dates, so
+`--era5` need not cover them; rain and snow and PET follow as for the 2026
+fill below. `aorc_gap_filled` names the replaced columns on every row. The
+other catchments keep AORC, and the full table is not changed.
+
+Write the whole 1996-2025 period from the full table, then 2026 as below, and
+join them:
+
+```bash
+python research/debias_era5.py --aorc outputs/catchment_daily_1996_2025_full.csv --era5 outputs/catchment_daily_1996_2025_full.csv --output outputs/catchment_daily_1996_2025_mapped.parquet
+python research/plot_debias.py --aorc outputs/catchment_daily_1996_2025_full.csv --era5 outputs/catchment_daily_1996_2025_full.csv --output-dir figures/debias_1996_2025
+```
+
+Elsewhere AORC gaps are filled as in the 2026 table. `OUTPUT_check.csv`
+compares the replaced catchments with AORC in 1996-2006 only, each year fitted
+on the others; `catchments.pdf` shows their AORC beside the corrected ERA5-Land
+over the whole period. `merge_daily.py` refuses to join a table in which these
+catchments are replaced with one in which they are not, and
+`merge_deliveries.py` names them in the README.
+
 ### 2026: ERA5-Land corrected toward AORC
 
 The AORC archive ends at 2025-12-31 (no `2026.zarr` on 2026-10-20). For 2026,
@@ -266,9 +295,10 @@ ERA5-Land-T) and may still be revised; download them again into a new working
 directory once the final data are out.
 
 `debias_era5.py` needs a full table with AORC (here the 1996-2025 delivery). It
-keeps AORC where it exists and fills the rest from ERA5-Land, quantile-mapped
-per catchment and calendar month on the overlap days (the month and the months
-either side). Precipitation is split into rain and snow by a logistic curve of
+keeps AORC where it exists, except in the replaced catchments above, and fills
+the rest from ERA5-Land, quantile-mapped per catchment and calendar month on
+the overlap days (the month and the months either side). Precipitation is
+split into rain and snow by a logistic curve of
 AORC's snow fraction against daily mean temperature, fitted for each catchment
 and applied to the corrected temperature; ERA5-Land's own split puts about 10%
 more of the 2022-2025 precipitation into snow than AORC's wet-bulb rule. PET is
@@ -294,12 +324,12 @@ the difference from AORC by calendar month, `quantiles.png` the daily
 distributions, `catchments.png` the difference in each catchment, and
 `catchments.pdf` the monthly means of each catchment.
 
-To extend the earlier delivery, join the tables. The first file is kept whole;
-each later one adds only the dates after it, so 2022-2025 stay as delivered
+To extend the 1996-2025 table, join the tables. The first file is kept whole;
+each later one adds only the dates after it, so 2022-2025 stay as in the first
 and 2026 is appended. Columns, catchments and the run of dates must match:
 
 ```bash
-python research/merge_daily.py outputs/catchment_daily_1996_2025.parquet outputs/catchment_daily_2022_2026.csv --output outputs/catchment_daily_1996_2026.parquet
+python research/merge_daily.py outputs/catchment_daily_1996_2025_mapped.parquet outputs/catchment_daily_2022_2026.csv --output outputs/catchment_daily_1996_2026.parquet
 ```
 
 ## 1. Install
@@ -766,7 +796,7 @@ equivalent to the mm/day and MJ/m²/day amounts in the tables above.
 | `research/plot_daily.py` | Overview, source comparison and water-year plots for one catchment; map, seasonal-cycle and water-year anomaly plots for every catchment; from a delivery or a working directory |
 | `research/progress_daily.py` | Progress of a running or interrupted download: years, requests and months completed |
 | `research/download_era5.py` | ERA5-Land and ERA5 without AORC, latest months first, exported in the full-table layout |
-| `research/debias_era5.py` | Quantile-map ERA5-Land onto AORC, fill the AORC columns where AORC is blank, and check the fit year by year |
+| `research/debias_era5.py` | Quantile-map ERA5-Land onto AORC, fill the AORC columns where AORC is blank or replaced, and check the fit year by year |
 | `research/plot_debias.py` | AORC beside ERA5-Land before and after quantile mapping: monthly series, seasonal and per-catchment differences, quantiles |
 | `research/merge_daily.py` | Join requested tables (CSV or Parquet) into one period: earlier files kept, later ones only extend the dates |
 

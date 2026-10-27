@@ -54,6 +54,21 @@ class MergeTests(unittest.TestCase):
         self.assertIsNone(january[0]['precipitation_mm'])
         self.assertEqual(january[0]['aorc_gap_filled'], 'precipitation_mm')
 
+    def test_a_replaced_catchment_must_be_replaced_in_every_file(self):
+        from unittest import mock
+        new = self.root / 'new.csv'
+        table(new, date(2026, 1, 1), date(2026, 1, 31), 2., flag='precipitation_mm')
+        output = self.root / 'merged.parquet'
+        with mock.patch('merge_daily.REPLACED', ('A',)):
+            with self.assertRaisesRegex(ValueError, 'A: AORC is replaced in new.csv only'):
+                merge([self.old, new], output)
+            self.assertFalse(output.exists())
+            replaced = self.root / 'replaced.parquet'
+            table(replaced, date(2025, 11, 1), date(2025, 12, 31), 1., flag='precipitation_mm')
+            with redirect_stdout(io.StringIO()):
+                merge([replaced, new], output)
+        self.assertEqual(pq.read_table(output).num_rows, 2 * (61 + 31))
+
     def test_csv_output(self):
         new = self.root / 'new.parquet'
         table(new, date(2026, 1, 1), date(2026, 1, 2), 2.)

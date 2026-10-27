@@ -24,7 +24,7 @@ import shutil
 import tempfile
 
 from deliver_daily import FILL_COLUMN, column_units, companion, readme_text, requested_columns
-from delivery_variables import AORC, LAND
+from delivery_variables import AORC, LAND, REFERENCE, REPLACED
 from export_daily import digest
 
 
@@ -110,9 +110,13 @@ def merge(inputs, output, geojsons):
                     raise ValueError(f'{name}: units differ between {path.name} and {other.name}')
     table = pa.concat_tables(tables).sort_by([('date', 'ascending'), ('project_id', 'ascending')])
     missing = Counter({name: table[name].null_count for name in names})
+    catchments, fills = table['project_id'].to_pylist(), table[FILL_COLUMN].to_pylist()
+    # debias_era5.py flags every row of a catchment whose AORC columns it replaces.
+    unflagged = {project for project, flags in zip(catchments, fills) if not flags}
+    replaced = sorted((set(REPLACED) & set(primary.get(AORC, []))) - unflagged)
     filled, filled_dates = Counter(), set()
-    for day, flags in zip(table['date'].to_pylist(), table[FILL_COLUMN].to_pylist()):
-        if flags:
+    for day, project, flags in zip(table['date'].to_pylist(), catchments, fills):
+        if flags and project not in replaced:
             filled.update(flags.split(';'))
             filled_dates.add(day.isoformat())
     merged = dict(start=dates[0].isoformat(), end=dates[1].isoformat(), row_count=table.num_rows,
@@ -121,7 +125,7 @@ def merge(inputs, output, geojsons):
     # for example), so the README describes the filled values without naming one method.
     readme = readme_text(merged, selected, output.name, missing,
                          dict(counts={name: filled[name] for name in names if filled[name]},
-                              dates=sorted(filled_dates), generic=True), primary=primary)
+                              dates=sorted(filled_dates), generic=True), primary=primary, replaced=replaced)
     output.parent.mkdir(parents=True, exist_ok=True)
     targets = {'table': output, 'readme': companion(output, '_README', '.md'),
                'manifest': Path(str(output) + '.manifest.json'),
@@ -141,6 +145,7 @@ def merge(inputs, output, geojsons):
         record = dict(schema_version=1, kind='requested_table', output_file=output.name,
                       output_sha256=digest(staged['table']), start=merged['start'], end=merged['end'], day='UTC',
                       row_count=table.num_rows, project_metadata=merged['project_metadata'], primary_sources=primary,
+                      **(dict(aorc_replaced=dict(catchments=replaced, fitted_on=list(REFERENCE))) if replaced else {}),
                       fill_column=FILL_COLUMN,
                       requested_columns={name: dict(variable=item['variable'], units=column_units(manifest, full),
                                                     source=item['source'])

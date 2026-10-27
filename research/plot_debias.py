@@ -4,7 +4,9 @@
 
 Inputs are those of debias_era5.py. Corrected ERA5-Land in a year with AORC is
 mapped with a fit on the other years, so it is compared with AORC out of sample;
-later years use a fit on every AORC year, as in the delivered table.
+later years use a fit on every AORC year, as in the delivered table. The
+catchments whose AORC is replaced are fitted on, and compared with, AORC over
+the reference dates only.
 
   timeseries.png    monthly means over all catchments
   monthly_bias.png  difference from AORC by calendar month, days with AORC only
@@ -20,7 +22,8 @@ import sys
 
 import numpy as np
 
-from debias_era5 import WET_MM, held_out, inputs, uncorrected
+from debias_era5 import WET_MM, fitting, held_out, inputs, uncorrected
+from delivery_variables import REFERENCE, REPLACED
 from plot_daily import AXIS, GRID, INK, INK_SECONDARY, LABELS, SERIES, SURFACE, setup, style
 
 
@@ -205,11 +208,17 @@ def plot_catchments(plt, sources, paired, projects, note):
 def run(aorc_path, era5_path, output_dir):
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    _, _, _, aorc, land, projects, dates, latitudes = inputs(aorc_path, era5_path)
-    every = np.arange(len(dates))
-    sources = {'AORC': aorc, 'ERA5-Land': uncorrected(land, projects, dates, latitudes, every),
-               'ERA5-Land corrected': held_out(aorc, land, projects, dates, latitudes)}
-    paired = np.flatnonzero(np.logical_and.reduce(
+    keys, _, _, aorc, land, projects, dates, latitudes = inputs(aorc_path, era5_path)
+    count = len(keys)
+    corrected = held_out(aorc, land, projects, dates, latitudes, fitting(projects, count))
+    projects, dates = projects[:count], dates[:count]
+    every = np.arange(count)
+    sources = {'AORC': {v: values[:count] for v, values in aorc.items()},
+               'ERA5-Land': uncorrected(land, projects, dates, latitudes, every),
+               'ERA5-Land corrected': {v: values[:count] for v, values in corrected.items()}}
+    start, stop = (date.fromisoformat(day) for day in REFERENCE)
+    trusted = ~np.isin(projects, REPLACED) | np.array([start <= day <= stop for day in dates])
+    paired = np.flatnonzero(trusted & np.logical_and.reduce(
         [np.isfinite(source[v]) for source in sources.values() for v in PANELS]))
     months = np.array([day.month for day in dates])
     stamp = np.array([day.year * 12 + day.month - 1 for day in dates])

@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 import numpy as np
 
@@ -172,6 +173,76 @@ class DebiasTests(unittest.TestCase):
                     [dict(metadata=dict(source_id=AORC, pet_centroid_latitudes=LATITUDES))])
         with self.assertRaisesRegex(ValueError, 'days with both sources'), redirect_stdout(io.StringIO()):
             debias_era5.run(self.aorc_path, self.era5_path, self.root / 'short.csv')
+
+
+class ReplaceTests(unittest.TestCase):
+    """A REPLACED catchment takes mapped ERA5-Land on every row, fitted on the --aorc table's REFERENCE dates."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        for name, value in write_inputs(self.root).items():
+            setattr(self, name, value)
+        for target, value in (('REPLACED', ('A',)), ('REFERENCE', ('2022-01-01', '2023-12-31'))):
+            patcher = mock.patch.object(debias_era5, target, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        # A full table whose AORC for A drops in 2024, and an ERA5-Land table from 2023 only.
+        years = np.array([d.year for d in self.dates])
+        self.broken = (self.projects == 'A') & (years == 2024)
+        aorc = {v: np.where(years < 2025, values, np.nan) for v, values in self.truth.items()}
+        for v in ('precipitation_mm', 'rainfall_mm', 'snowfall_mm'):
+            aorc[v] = np.where(self.broken, .3 * aorc[v], aorc[v])
+        self.aorc_path = self.root / 'full.csv'
+        write_table(self.aorc_path, self.keys, {**{(AORC, v): values for v, values in aorc.items()},
+                                                **{(LAND, v): values for v, values in self.land.items()}},
+                    [dict(metadata=dict(source_id=AORC, pet_centroid_latitudes=LATITUDES))])
+        self.rows_used = years >= 2023
+        keys = [key for key, used in zip(self.keys, self.rows_used) if used]
+        other = {key: np.full(len(keys), value) for key, value in self.other.items()}
+        self.era5_path = self.root / 'era5_2023.csv'
+        write_table(self.era5_path, keys, {**{(LAND, v): values[self.rows_used] for v, values in self.land.items()},
+                                           **other})
+        self.output = self.root / 'replaced.csv'
+        with redirect_stdout(io.StringIO()):
+            debias_era5.run(self.aorc_path, self.era5_path, self.output)
+        with self.output.open() as stream:
+            self.rows = list(csv.DictReader(stream))
+
+    def series(self, variable):
+        return np.array([float(row[variable]) if row[variable] else np.nan for row in self.rows])
+
+    def test_every_row_of_the_replaced_catchment_is_mapped_and_flagged(self):
+        names = [item['variable'] for item in REQUESTED if item['source'] == AORC]
+        projects = self.projects[self.rows_used]
+        years = np.array([d.year for d in self.dates])[self.rows_used]
+        self.assertEqual(len(self.rows), int(self.rows_used.sum()))
+        flags = np.array([row['aorc_gap_filled'] for row in self.rows])
+        self.assertTrue(np.all(flags[projects == 'A'] == ';'.join(names)))
+        np.testing.assert_array_equal(flags[projects == 'B'] != '', years[projects == 'B'] == 2025)
+        truth = {v: values[self.rows_used] for v, values in self.truth.items()}
+        for variable in ('tmean_c', 'tmin_c', 'tmax_c', 'shortwave_down_mean_wm2'):
+            np.testing.assert_allclose(self.series(variable), truth[variable], rtol=1e-6, atol=1e-6, err_msg=variable)
+        broken = (projects == 'A') & (years == 2024)
+        total, true = self.series('precipitation_mm')[broken], truth['precipitation_mm'][broken]
+        self.assertAlmostEqual(total.sum(), true.sum(), delta=.03 * true.sum())
+        np.testing.assert_allclose(self.series('rainfall_mm') + self.series('snowfall_mm'), self.series('precipitation_mm'))
+        kept = (projects == 'B') & (years < 2025)
+        np.testing.assert_allclose(self.series('precipitation_mm')[kept], truth['precipitation_mm'][kept])
+
+    def test_check_uses_the_reference_dates_of_the_replaced_catchment(self):
+        with self.output.with_name('replaced_check.csv').open() as stream:
+            rows = {(row['variable'], row['project_id']): row for row in csv.DictReader(stream)}
+        self.assertEqual(int(rows['tmean_c', 'A']['days']), 730)
+        self.assertEqual(int(rows['tmean_c', 'B']['days']), 731)
+        self.assertLess(float(rows['tmean_c', 'A']['corrected_mae']), .01)
+
+    def test_an_aorc_table_without_era5_land_is_refused(self):
+        write_table(self.aorc_path, self.keys, {(AORC, v): values for v, values in self.truth.items()},
+                    [dict(metadata=dict(source_id=AORC, pet_centroid_latitudes=LATITUDES))])
+        with self.assertRaisesRegex(ValueError, 'no ERA5-Land columns'), redirect_stdout(io.StringIO()):
+            debias_era5.run(self.aorc_path, self.era5_path, self.root / 'refused.csv')
 
 
 if __name__ == '__main__':
