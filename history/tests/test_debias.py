@@ -1,0 +1,231 @@
+"""Quantile mapping recovers a known ERA5-Land to AORC relation and fills only where AORC is blank."""
+
+from contextlib import redirect_stdout
+import csv
+from datetime import date, timedelta
+import io
+import json
+from pathlib import Path
+import tempfile
+import unittest
+from unittest import mock
+
+import numpy as np
+
+from catchment_history import debias
+from catchment_history.delivery_variables import AORC, LAND, REQUESTED
+from catchment_history.export import digest
+from catchment_history.meteorology import hargreaves_pet
+
+
+LATITUDES = {'A': 50., 'B': 45.}
+GAP = (date(2023, 6, 18), 'A')
+
+
+def write_table(path, keys, values, inputs=()):
+    """A full table and manifest; values maps (source, variable) to arrays over keys."""
+    names = {key: f"{key[0].replace('.', '_')}__{key[1]}" for key in values}
+    with path.open('w', newline='') as stream:
+        writer = csv.writer(stream)
+        writer.writerow(['date', 'project_id', *names.values()])
+        for i, (day, project) in enumerate(keys):
+            writer.writerow([day.isoformat(), project, *['' if np.isnan(v[i]) else repr(float(v[i]))
+                                                         for v in values.values()]])
+    columns = {'date': {}, 'project_id': {}, **{name: dict(source=source, variable=variable)
+                                                for (source, variable), name in names.items()}}
+    Path(str(path) + '.manifest.json').write_text(json.dumps(dict(
+        columns=columns, output_sha256=digest(path), inputs=list(inputs))))
+
+
+def truth(land, dates, projects):
+    """AORC as a known function of ERA5-Land: offsets, ratios, no drizzle below 1 mm, and snow
+    below 1 degC of its own temperature, where ERA5-Land snows below 0 degC of its own."""
+    a = dict(tmean_c=land['tmean_c'] + 2, tmin_c=land['tmin_c'] + 1, tmax_c=land['tmax_c'] + 3,
+             relative_humidity_pct=land['relative_humidity_pct'] - 5,
+             shortwave_down_mean_wm2=.9 * land['shortwave_down_mean_wm2'],
+             vapor_pressure_deficit_kpa=1.2 * land['vapor_pressure_deficit_kpa'],
+             precipitation_mm=np.where(land['precipitation_mm'] < 1, 0., 1.3 * land['precipitation_mm']))
+    a['snowfall_mm'] = np.where(a['tmean_c'] < 1, a['precipitation_mm'], 0.)
+    a['rainfall_mm'] = a['precipitation_mm'] - a['snowfall_mm']
+    a['pet_hargreaves_mm'] = np.array([hargreaves_pet(*s, LATITUDES[p], d) for s, p, d in zip(
+        zip(a['tmean_c'], a['tmin_c'], a['tmax_c']), projects, dates)])
+    return a
+
+
+def write_inputs(root):
+    """ERA5-Land for 2022-2025 and AORC for 2022-2024 with one blank day, in two catchments, as full tables."""
+    days = [date(2022, 1, 1) + timedelta(days=i) for i in range((date(2025, 12, 31) - date(2022, 1, 1)).days + 1)]
+    keys = [(day, project) for day in days for project in sorted(LATITUDES)]
+    dates = [day for day, _ in keys]
+    projects = np.array([project for _, project in keys])
+    rng = np.random.default_rng(0)
+    n = len(keys)
+    season = np.cos(2 * np.pi * (np.array([d.timetuple().tm_yday for d in dates]) - 200) / 365)
+    tmean = 5 + 10 * season + rng.normal(0, 3, n)
+    precipitation = rng.gamma(.6, 5, n)
+    land = dict(tmean_c=tmean, tmin_c=tmean - 4 - np.abs(rng.normal(0, 1, n)),
+                tmax_c=tmean + 4 + np.abs(rng.normal(0, 1, n)),
+                relative_humidity_pct=np.clip(70 - 10 * season + rng.normal(0, 8, n), 6, 100),
+                shortwave_down_mean_wm2=np.clip(150 + 100 * season + rng.normal(0, 20, n), 5, None),
+                vapor_pressure_deficit_kpa=np.clip(.5 + .4 * season + rng.normal(0, .2, n), .01, None),
+                precipitation_mm=precipitation, snowfall_mm=np.where(tmean < 0, precipitation, 0.))
+    truth_values = truth(land, dates, projects)
+    overlap = np.array([d.year < 2025 for d in dates])
+    aorc = {v: np.where(overlap, values, np.nan) for v, values in truth_values.items()}
+    gap = keys.index(GAP)
+    for values in aorc.values():
+        values[gap] = np.nan
+    other = {(item['source'], item['variable']): float(i) for i, item in enumerate(REQUESTED)
+             if item['source'] != AORC}
+    era5 = {(LAND, v): values for v, values in land.items()}
+    era5.update({key: np.full(n, value) for key, value in other.items()})
+    aorc_path, era5_path = root / 'aorc_full.csv', root / 'era5.csv'
+    write_table(aorc_path, keys, {(AORC, v): values for v, values in aorc.items()},
+                [dict(metadata=dict(source_id=AORC, pet_centroid_latitudes=LATITUDES))])
+    write_table(era5_path, keys, era5)
+    return dict(keys=keys, dates=dates, projects=projects, land=land, truth=truth_values, gap=gap,
+                other=other, aorc_path=aorc_path, era5_path=era5_path)
+
+
+class DebiasTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        for name, value in write_inputs(self.root).items():
+            setattr(self, name, value)
+        self.output = self.root / 'daily.csv'
+        with redirect_stdout(io.StringIO()):
+            debias.run(self.aorc_path, self.era5_path, self.output)
+        with self.output.open() as stream:
+            self.rows = list(csv.DictReader(stream))
+
+    def series(self, variable, rows=None):
+        return np.array([float(row[variable]) if row[variable] else np.nan for row in rows or self.rows])
+
+    def test_aorc_is_kept_and_blanks_are_filled_and_flagged(self):
+        names = [item['variable'] for item in REQUESTED if item['source'] == AORC]
+        self.assertEqual(list(self.rows[0]), ['date', 'project_id', *[item['variable'] for item in REQUESTED],
+                                              'aorc_gap_filled'])
+        self.assertEqual(len(self.rows), len(self.keys))
+        flagged = np.array([bool(row['aorc_gap_filled']) for row in self.rows])
+        expected = np.array([d.year == 2025 for d in self.dates])
+        expected[self.gap] = True
+        np.testing.assert_array_equal(flagged, expected)
+        self.assertEqual(self.rows[self.gap]['aorc_gap_filled'], ';'.join(names))
+        for variable in names:
+            np.testing.assert_allclose(self.series(variable)[~expected], self.truth[variable][~expected])
+        for (_, variable), value in self.other.items():
+            self.assertTrue(np.all(self.series(variable) == value), variable)
+
+    def test_filled_values_follow_the_fitted_relation(self):
+        filled = np.array([d.year == 2025 for d in self.dates])
+        for variable in ('tmean_c', 'tmin_c', 'tmax_c', 'shortwave_down_mean_wm2', 'vapor_pressure_deficit_kpa'):
+            np.testing.assert_allclose(self.series(variable)[filled], self.truth[variable][filled],
+                                       rtol=1e-6, atol=1e-6, err_msg=variable)
+        rain, snow, total = (self.series(v)[filled] for v in ('rainfall_mm', 'snowfall_mm', 'precipitation_mm'))
+        np.testing.assert_allclose(rain + snow, total)
+        true = self.truth['precipitation_mm'][filled]
+        self.assertAlmostEqual(total.mean(), true.mean(), delta=.02 * true.mean())
+        self.assertAlmostEqual(np.mean(total > .1), np.mean(true > .1), delta=.02)
+        self.assertLess(np.mean(np.abs(total - true)), .05)
+        self.assertGreater(np.mean(self.land['precipitation_mm'][filled] > .1), np.mean(true > .1) + .1)
+        true_snow = self.truth['snowfall_mm'][filled].sum()
+        self.assertAlmostEqual(snow.sum(), true_snow, delta=.03 * true_snow)
+        land_fraction = self.land['snowfall_mm'][filled] / self.land['precipitation_mm'][filled]
+        self.assertGreater((total * land_fraction).sum(), 1.1 * true_snow)
+        np.testing.assert_allclose(self.series('pet_hargreaves_mm')[filled],
+                                   self.truth['pet_hargreaves_mm'][filled], rtol=1e-6)
+
+    def test_check_compares_held_out_years(self):
+        with self.output.with_name('daily_check.csv').open() as stream:
+            rows = {(row['variable'], row['project_id']): row for row in csv.DictReader(stream)}
+        tmean = rows['tmean_c', 'ALL']
+        self.assertAlmostEqual(float(tmean['era5_land_mae']), 2, places=6)
+        self.assertLess(float(tmean['corrected_mae']), .01)
+        precipitation = rows['precipitation_mm', 'A']
+        self.assertLess(abs(float(precipitation['corrected_wet_days']) - float(precipitation['aorc_wet_days'])), .03)
+        self.assertGreater(float(precipitation['era5_land_wet_days']), float(precipitation['aorc_wet_days']) + .1)
+        self.assertEqual(rows['tmean_c', 'A']['aorc_wet_days'], '')
+
+    def test_short_overlap_is_refused(self):
+        short = {(AORC, v): np.where([d < date(2022, 2, 1) for d in self.dates], values, np.nan)
+                 for v, values in self.truth.items()}
+        write_table(self.aorc_path, self.keys, short,
+                    [dict(metadata=dict(source_id=AORC, pet_centroid_latitudes=LATITUDES))])
+        with self.assertRaisesRegex(ValueError, 'days with both sources'), redirect_stdout(io.StringIO()):
+            debias.run(self.aorc_path, self.era5_path, self.root / 'short.csv')
+
+
+class ReplaceTests(unittest.TestCase):
+    """A REPLACED catchment takes mapped ERA5-Land on every row, fitted on the --aorc table's REFERENCE dates."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        for name, value in write_inputs(self.root).items():
+            setattr(self, name, value)
+        for target, value in (('REPLACED', ('A',)), ('REFERENCE', ('2022-01-01', '2023-12-31'))):
+            patcher = mock.patch.object(debias, target, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        # A full table whose AORC for A drops in 2024, and an ERA5-Land table from 2023 only.
+        years = np.array([d.year for d in self.dates])
+        self.broken = (self.projects == 'A') & (years == 2024)
+        aorc = {v: np.where(years < 2025, values, np.nan) for v, values in self.truth.items()}
+        for v in ('precipitation_mm', 'rainfall_mm', 'snowfall_mm'):
+            aorc[v] = np.where(self.broken, .3 * aorc[v], aorc[v])
+        self.aorc_path = self.root / 'full.csv'
+        write_table(self.aorc_path, self.keys, {**{(AORC, v): values for v, values in aorc.items()},
+                                                **{(LAND, v): values for v, values in self.land.items()}},
+                    [dict(metadata=dict(source_id=AORC, pet_centroid_latitudes=LATITUDES))])
+        self.rows_used = years >= 2023
+        keys = [key for key, used in zip(self.keys, self.rows_used) if used]
+        other = {key: np.full(len(keys), value) for key, value in self.other.items()}
+        self.era5_path = self.root / 'era5_2023.csv'
+        write_table(self.era5_path, keys, {**{(LAND, v): values[self.rows_used] for v, values in self.land.items()},
+                                           **other})
+        self.output = self.root / 'replaced.csv'
+        with redirect_stdout(io.StringIO()):
+            debias.run(self.aorc_path, self.era5_path, self.output)
+        with self.output.open() as stream:
+            self.rows = list(csv.DictReader(stream))
+
+    def series(self, variable):
+        return np.array([float(row[variable]) if row[variable] else np.nan for row in self.rows])
+
+    def test_every_row_of_the_replaced_catchment_is_mapped_and_flagged(self):
+        names = [item['variable'] for item in REQUESTED if item['source'] == AORC]
+        projects = self.projects[self.rows_used]
+        years = np.array([d.year for d in self.dates])[self.rows_used]
+        self.assertEqual(len(self.rows), int(self.rows_used.sum()))
+        flags = np.array([row['aorc_gap_filled'] for row in self.rows])
+        self.assertTrue(np.all(flags[projects == 'A'] == ';'.join(names)))
+        np.testing.assert_array_equal(flags[projects == 'B'] != '', years[projects == 'B'] == 2025)
+        truth = {v: values[self.rows_used] for v, values in self.truth.items()}
+        for variable in ('tmean_c', 'tmin_c', 'tmax_c', 'shortwave_down_mean_wm2'):
+            np.testing.assert_allclose(self.series(variable), truth[variable], rtol=1e-6, atol=1e-6, err_msg=variable)
+        broken = (projects == 'A') & (years == 2024)
+        total, true = self.series('precipitation_mm')[broken], truth['precipitation_mm'][broken]
+        self.assertAlmostEqual(total.sum(), true.sum(), delta=.03 * true.sum())
+        np.testing.assert_allclose(self.series('rainfall_mm') + self.series('snowfall_mm'), self.series('precipitation_mm'))
+        kept = (projects == 'B') & (years < 2025)
+        np.testing.assert_allclose(self.series('precipitation_mm')[kept], truth['precipitation_mm'][kept])
+
+    def test_check_uses_the_reference_dates_of_the_replaced_catchment(self):
+        with self.output.with_name('replaced_check.csv').open() as stream:
+            rows = {(row['variable'], row['project_id']): row for row in csv.DictReader(stream)}
+        self.assertEqual(int(rows['tmean_c', 'A']['days']), 730)
+        self.assertEqual(int(rows['tmean_c', 'B']['days']), 731)
+        self.assertLess(float(rows['tmean_c', 'A']['corrected_mae']), .01)
+
+    def test_an_aorc_table_without_era5_land_is_refused(self):
+        write_table(self.aorc_path, self.keys, {(AORC, v): values for v, values in self.truth.items()},
+                    [dict(metadata=dict(source_id=AORC, pet_centroid_latitudes=LATITUDES))])
+        with self.assertRaisesRegex(ValueError, 'no ERA5-Land columns'), redirect_stdout(io.StringIO()):
+            debias.run(self.aorc_path, self.era5_path, self.root / 'refused.csv')
+
+
+if __name__ == '__main__':
+    unittest.main()

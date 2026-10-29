@@ -23,59 +23,17 @@ The 43 project records represent **43 distinct local drainage domains**. Seven M
 
 ## Historical daily data
 
-Install the research dependencies, configure the CDS key (`~/.cdsapirc`) and
-the DestinE Earth Data Hub token (`~/.netrc`) as described in the
-[data pipeline guide](docs/data_pipeline.md), and run one command for all three
-sources:
+Daily catchment meteorology from AORC, ERA5-Land and ERA5 for these polygons is
+produced by the separate [`history/`](history/README.md) package, which reads
+the GeoJSON written by `hydro-map build`:
 
 ```bash
-python -m pip install -e . -r research/requirements.txt
-python research/download_daily.py --geojson outputs/projects43_independent/dam_catchments.geojson --start 2025-12-29 --end 2025-12-31 --output outputs/catchment_daily.csv
+python -m pip install -e history
+catchment-history download --geojson outputs/projects43_independent/dam_catchments.geojson --start 2025-12-29 --end 2025-12-31 --output outputs/catchment_daily.csv
 ```
 
-This downloads AORC, ERA5-Land and ERA5, computes daily catchment statistics
-and derived variables, checks them, and writes the delivery:
-`catchment_daily.csv` holds the 25 requested variables in 28 columns (one
-source per variable; soil temperature in four layers), `catchment_daily_README.md` documents each column's source, whether
-it is native or computed, units, definition, limitations and matching forecast-model fields,
-and `catchment_daily_full.csv` holds all 62 variables with
-`catchment_daily_full_qc.csv` (per-value quality fields),
-`catchment_daily_full.csv.manifest.json` (units and provenance) and
-`catchment_daily_full.csv.checks/` (consistency, plausibility and AORC/ERA5-Land
-comparison reports and plots). All tables have the same 129 project-day rows
-in this example. Repeat the same command to resume completed source periods.
-AORC gaps stay blank in `catchment_daily.csv`; the delivered table is written
-from the full table by `research/debias_era5.py`, which fills them and replaces
-AORC in the Canadian catchments
-([details](docs/data_pipeline.md#aorc-replaced-in-the-canadian-catchments)).
-AORC also needs the `zstd` command-line decoder on `PATH`.
-
-The [data pipeline guide](docs/data_pipeline.md) covers credential setup, AORC
-and ERA5/ERA5-Land downloads, derived variables, units, quality flags and final
-CSV/Parquet delivery. The research scripts preserve one source per variable
-and export one row per project and UTC date. Start with a short sample before
-running the full 1996-2025 period.
-
-Read the [daily data notes](docs/data_notes.md) for measurement heights,
-variable definitions and how to interpret the checks. AORC wind is **10 m
-above ground**. To check an existing delivery without downloading again:
-
-```bash
-python research/check_daily.py outputs/catchment_daily_full.csv
-python research/deliver_daily.py outputs/catchment_daily_full.csv
-```
-
-To plot one catchment, also while a download is still running:
-
-```bash
-python research/plot_daily.py outputs/catchment_daily.csv.work --project MICA --kind overview
-```
-
-`--kind compare` overlays the sources for one variable and `--kind wateryear`
-compares water years. `--kind map`, `seasons`, `anomaly`, `annual` and `event`
-draw every catchment at once and take `--geojson` with the catchment polygons; see
-[Plots](docs/data_pipeline.md#plots). For a 30-year run on a compute host, see
-[long runs](docs/data_pipeline.md#long-runs-on-a-compute-host).
+See its [pipeline guide](history/docs/pipeline.md) and
+[data notes](history/docs/data_notes.md).
 
 ## Build options
 

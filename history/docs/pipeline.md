@@ -1,0 +1,726 @@
+# Historical catchment data pipeline
+
+This guide covers the 1996-01-01 through 2025-12-31 daily data workflow for the
+43 configured local catchments. It produces one row per project and UTC date,
+with source-qualified variables, units and quality information. A complete
+calendar contains 10,958 dates and 471,194 project-day rows. Missing values do
+not remove dates from that calendar.
+
+The catchments are read from a GeoJSON file of polygons (see
+[Catchment file](#3-catchment-file)). In the configured set Kootenay Canal
+represents natural drainage at its tailrace return; its turbine inflow requires
+a separate operational diversion model.
+
+## One-command workflow
+
+After the one-time installation and CDS token setup below, use:
+
+```bash
+catchment-history download --geojson outputs/projects43_independent/dam_catchments.geojson --start 2025-12-29 --end 2025-12-31 --output outputs/catchment_daily.csv
+```
+
+This single-line command works in Bash, Git Bash and PowerShell. It reads all
+local projects in the GeoJSON and performs three stages automatically:
+
+1. AORC, ERA5-Land and ERA5 download and daily catchment statistics, all three
+   at the same time and, by default, from the latest data backwards.
+2. Verified values and QC exports, each with one row per project and UTC day.
+3. Consistency, plausibility and source-agreement checks with plots, then the
+   requested-variable table and its README.
+
+The same `--output` argument produces the delivery:
+
+- `outputs/catchment_daily.csv`: the 25 requested variables, 31 columns
+  (`date`, `project_id`, 28 values: one source per variable, soil
+  temperature in its four layers, and `aorc_gap_filled`).
+- `outputs/catchment_daily_README.md`: for every requested column, its source,
+  whether it is a native source field or computed here, units, daily
+  definition, the limitations of the data and the matching ECMWF IFS /
+  ECMWF AIFS / NOAA GFS / WeatherNext 2 forecast fields.
+- `outputs/catchment_daily_full.csv`: every variable, 64 columns (`date`,
+  `project_id` and 62 source-qualified values, including the ERA5-Land
+  counterparts of the AORC forcing used for cross-checks).
+- `outputs/catchment_daily_full_qc.csv`: 250 columns (the same two keys and
+  four quality fields per full-table variable).
+- `outputs/catchment_daily_full.csv.manifest.json`: units, column definitions
+  and provenance for the full tables.
+
+The requested table copies its columns from the full table; its names drop the
+source prefix (the README gives the source). Where an AORC value is blank
+because the AORC archive lacks the data (for example all of 2024-06-18), it
+stays blank and `aorc_gap_filled` is empty. The delivered table is written from
+the full table by the `debias` command, which fills these gaps and replaces AORC in
+the Canadian catchments (see
+[AORC replaced in the Canadian catchments](#aorc-replaced-in-the-canadian-catchments)).
+See the [daily data notes](data_notes.md). The
+three-day, 43-project example has 129 rows in each table, in the same order.
+Missing values retain their quality flags in the QC table; completion does not
+imply that every observation exists. No separate export command is needed.
+
+The `outputs/catchment_daily_full.csv.checks/` directory contains
+`coverage.png`, `source_comparison.png` (every quantity available from both
+AORC and ERA5-Land), `timeseries.pdf` (one page per project), numerical checks,
+per-variable QC summaries, and `outliers.csv` with `outliers.pdf`: values within
+the plausible ranges that are unusual for their catchment, time of year, other
+source or neighbours, most unusual first. See the [daily data notes](data_notes.md) for
+measurement heights, signs, definitions and interpretation. To check an
+existing delivery and rebuild the requested table and README without
+downloading, run:
+
+```bash
+catchment-history check outputs/catchment_daily_full.csv
+catchment-history deliver outputs/catchment_daily_full.csv
+```
+
+To deliver the requested table as Parquet while the full table stays CSV, name
+a `.parquet` output (needs `pyarrow`, see [Install](#1-install)). The
+README is rewritten to list it; in Parquet, blanks are nulls and `date` is a
+date column:
+
+```bash
+catchment-history deliver outputs/catchment_daily_full.csv --output outputs/catchment_daily.parquet
+```
+
+The required arguments are `--geojson`, `--start` and `--end`. If `--output`
+is omitted, the CSV is named `outputs/catchment_daily_START_END.csv`. For the
+full period, use a new output filename:
+
+```bash
+catchment-history download --geojson outputs/projects43_independent/dam_catchments.geojson --start 1996-01-01 --end 2025-12-31 --output outputs/catchment_daily_1996_2025.csv
+```
+
+The script requires `zstd` and checks the local CDS configuration and the
+Earth Data Hub token before starting AORC. This check does not prove that the
+providers will accept the account, terms or requests. The three sources run
+concurrently: AORC is limited by S3 reads and decompression, ERA5 and ERA5-Land
+by their providers. AORC processes the latest year first and the CDS products queue and
+process the latest months first, so recent data are usable early; pass
+`--oldest-first` to reverse this. If one source fails, the others continue and
+the final delivery is not replaced. Repeating the same command reuses
+hash-verified completed years/months and available source cache; an
+interrupted AORC year is recomputed.
+
+### Long runs on a compute host
+
+By default ERA5 comes from Google's public
+[ARCO-ERA5](https://cloud.google.com/storage/docs/public-datasets/era5) copy and
+ERA5-Land from the [DestinE Earth Data Hub](https://earthdatahub.destine.eu/)
+copy, neither of which has a queue. Every response from a copy is checked: if
+any field is blank in a cell that a catchment uses, the response is replaced by
+the CDS original, so a gap in a copy cannot reach the daily values. In October
+2026 the only such gap in the Earth Data Hub for 1996-2025 was surface net
+thermal radiation, blank everywhere from 2024-11-01 to 2024-11-27, so a 30-year
+run makes one CDS request (the 2024 endpoints). `--era5-source cds`
+and `--land-source cds` use the CDS queue for everything instead (in October
+2026 a request waited from 2 minutes to 4 hours, so ERA5-Land alone took
+several days).
+
+Measured on a 16-core workstation in October 2026, a 30-year run takes about
+10-12 hours, set by AORC; the three sources run side by side:
+
+| Source | Per unit | 30 years |
+| --- | --- | --- |
+| AORC (S3) | about 20 minutes per year | about 10 hours |
+| ERA5 (ARCO-ERA5) | about 35 seconds and 3.7 GB per month | about 4 hours, 1.3 TB read |
+| ERA5-Land (Earth Data Hub) | about 3 minutes of reading per year and 50 seconds of processing per month | about 6-7 hours, about 150 GB read, plus the CDS queue for the 2024 endpoints |
+| Export, checks and delivery | | a few minutes |
+
+The Earth Data Hub allows 500,000 chunk reads a month; a 30-year run needs about
+50,000. Every source works through the period year by year, latest first, and
+writes each finished year (AORC) or month (ERA5, ERA5-Land) as it goes.
+
+Requests keep the CDS shape and size limits whichever provider answers them, so
+responses from the CDS and from the copies are interchangeable in the cache:
+hourly ERA5-Land states in batches of at most 14 days within a month, ERA5-Land
+24-hour endpoints in one request per year, and ERA5 single-level fields in one
+request per month. A year's uncached requests are fetched first; daily
+processing then decodes each hash-verified cached response once per batch.
+
+Before starting, on the host that will run the download:
+
+1. Clone or update the repository, create a Python 3.10+ environment and run
+   `python -m pip install -e .`; check `zstd --version`.
+2. Put `~/.cdsapirc` there (section 2) and accept the ERA5-Land and ERA5
+   single-level licences once on the CDS website. Add the DestinE personal
+   access token to `~/.netrc` as
+   `machine data.earthdatahub.destine.eu password <token>` and run
+   `chmod 600 ~/.netrc` (not needed with `--land-source cds`).
+3. Copy the catchment file to the host (section 3). Every run of a project
+   must use the same file.
+4. Use a node that can reach the internet (AWS S3, Google Cloud Storage and the
+   CDS). Many clusters
+   block it on compute nodes; use a login, data-transfer or interactive node
+   that allows long-running processes, following the site's rules.
+
+Start the run in a terminal multiplexer so it survives logging out:
+
+```bash
+tmux new -s hydro
+catchment-history download --geojson outputs/projects43_independent/dam_catchments.geojson --start 1996-01-01 --end 2025-12-31 --output outputs/catchment_daily_1996_2025.csv --work-dir /scratch/hydro/work_1996_2025 2>&1 | tee -a download_1996_2025.log
+```
+
+Detach with `Ctrl-b d` and return with `tmux attach -t hydro`. Without tmux,
+start the same command with `nohup ... > download_1996_2025.log 2>&1 &`. On a
+batch scheduler, put the command in the job script; when the wall time ends,
+submit the same job again and it continues where it stopped.
+
+Check progress at any time, from any terminal:
+
+```bash
+catchment-history progress /scratch/hydro/work_1996_2025
+tail -n 20 download_1996_2025.log
+```
+
+`progress` prints the AORC years processed, and for ERA5-Land and ERA5
+the requests downloaded, which provider answered them, and the months
+processed, with the time of the last change. In the log, `synchronized native
+fields chunk N/61` is AORC progress within a year, `Cached reanalysis-...` is a
+finished request, `saved ... daily values` a processed month, and `CDS queue
+full ...; retrying in 2 min` the CDS queue limit, which is normal. `... blank in
+catchment cells from ...; replacing the response with the CDS original` means
+a copy had a gap and the CDS fills it. If no file has changed for several hours,
+look at the end of the log. To stop, press `Ctrl-c` in the tmux window (or
+`kill` the process); running the identical command again resumes from the
+completed years, months and downloaded requests. Do not run two commands on the
+same working directory at once.
+
+Put `--work-dir` on large local or scratch storage. Raw AORC chunks are
+discarded after use unless `--keep-chunks` is given (about 30 GB per year,
+useful to reprocess without downloading); CDS responses are always kept (about
+5 GB per year of ERA5-Land). The raw Earth Data Hub chunks of the current year
+are kept in `cache/cds/edh_chunks` and deleted once its requests are answered.
+While the sources download, completed years and months can already be plotted (see [Plots](#plots)). When all three finish, the
+command exports, checks and writes the delivery files listed above.
+
+Post-export checks run on the saved delivery. If they fail, the files remain
+available, the command returns status 2, and the log gives the check-only command.
+Missing values are reported separately and are not filled automatically.
+
+Working files default to `OUTPUT.work/`, with `aorc/`, `era5-land/` and `era5/`
+source directories and a `cache/` directory. Retain this folder to resume.
+For a compute host, `--work-dir` and `--cache-dir` can point to large local
+storage while `--output` points to the delivery location. Do not run
+two commands against the same working/cache directories concurrently. After
+changing dates, geometry or processing code, use a new working directory (the
+source pipelines reject a changed run configuration) and pass the old cache
+with `--cache-dir OLD_WORK_DIR/cache`, so downloaded responses are reused.
+
+CDS coordinate encodings can differ slightly across files. Regular axes are
+reconstructed between their endpoints with an absolute residual limit of
+0.00002 degrees, covering float32 coordinate rounding. Cross-field checks
+require equal dimensions and coordinate differences within the same absolute
+limit; values are not interpolated. A larger shift, different resolution or
+different dimensions still stops processing. A cross-field mismatch writes
+`grid_mismatch.json` in the affected source directory with the field names,
+axis lengths, bounds, spacing and maximum differences. After a code fix, rerun
+in a new working directory with the old cache as above.
+
+`--max-download-gb` defaults to a 2,000 GB **AORC network-read ceiling per
+invocation**, not a file-size estimate or a CDS limit. Use
+`--max-download-gb 2` to bound a small demo. The other optional controls are
+`--workers` (concurrent AORC reads and decompressions, default 16, at most 32)
+and `--chunk-days` (ERA5-Land state batches, default 14).
+The CDS rejects an ERA5-Land request whose size cost (variables × hourly
+steps × 2) exceeds 12,000; with the 17 hourly ERA5-Land fields this allows at
+most 14 days, and the downloader refuses a larger value before contacting the
+CDS. Each CDS product keeps three requests queued at once (`--cds-workers`).
+A queue-limit rejection ("Number queued requests for this dataset is
+temporarily limited") is retried every two minutes for up to 12 hours; server
+errors and network failures up to 30 times. Invalid or oversized requests and
+missing licences are not retried. A request that fails does not stop the
+others: the run reports it after the rest are cached, and rerunning the same
+command fetches only what is missing.
+For Parquet, install the optional dependency below and use a `.parquet` output.
+
+Routing interpretation, including Kootenay Canal's tailrace/diversion note,
+is retained in source `run.json` files and the final manifest.
+
+### AORC replaced in the Canadian catchments
+
+From late 2007 to 2017 AORC precipitation over Mica, Revelstoke, Hugh
+Keenleyside, Duncan, Corra Linn, Kootenay Canal, Brilliant, Seven Mile, Waneta
+and Libby, which lie mostly in British Columbia, falls well below other years
+while snow courses show no drop ([data notes](data_notes.md)). In these
+catchments (`REPLACED` in `src/catchment_history/delivery_variables.py`) the `debias` command
+replaces every AORC column on every row, also where AORC exists, by ERA5-Land
+quantile-mapped onto AORC of `REFERENCE` (1996-2006). The mapping is fitted on
+the AORC and ERA5-Land columns of the `--aorc` full table over those dates, so
+`--era5` need not cover them; rain and snow and PET follow as for the 2026
+fill below. `aorc_gap_filled` names the replaced columns on every row. The
+other catchments keep AORC, and the full table is not changed.
+
+Write the whole 1996-2025 period from the full table, then 2026 as below, and
+join them:
+
+```bash
+catchment-history debias --aorc outputs/catchment_daily_1996_2025_full.csv --era5 outputs/catchment_daily_1996_2025_full.csv --output outputs/catchment_daily_1996_2025_mapped.parquet
+catchment-history plot-debias --aorc outputs/catchment_daily_1996_2025_full.csv --era5 outputs/catchment_daily_1996_2025_full.csv --output-dir figures/debias_1996_2025
+```
+
+Elsewhere AORC gaps are filled as in the 2026 table. `OUTPUT_check.csv`
+compares the replaced catchments with AORC in 1996-2006 only, each year fitted
+on the others; `catchments.pdf` shows their AORC beside the corrected ERA5-Land
+over the whole period. The `merge` command refuses to join a table in which these
+catchments are replaced with one in which they are not, and
+`merge-deliveries` names them in the README.
+
+### 2026: ERA5-Land corrected toward AORC
+
+The AORC archive ends at 2025-12-31 (no `2026.zarr` on 2026-10-20). For 2026,
+download ERA5-Land and ERA5 alone, from a few years before so that they overlap
+AORC, and map ERA5-Land onto AORC over the overlap:
+
+```bash
+catchment-history download-era5 --geojson outputs/projects43_independent/dam_catchments.geojson --start 2022-01-01 --end 2026-09-30 --output outputs/era5_2022_2026.csv --work-dir /scratch/hydro/era5_2022_2026
+catchment-history debias --aorc outputs/catchment_daily_1996_2025_full.csv --era5 outputs/era5_2022_2026.csv --output outputs/catchment_daily_2022_2026.csv
+```
+
+`download-era5` works from the latest month back, runs both products side by
+side and resumes like `download`; `progress` reads its
+working directory. Its table has the full-table layout without AORC columns.
+Requests for hours the Earth Data Hub does not hold yet go to the CDS queue.
+ERA5 after 2026-06-30 and the latest ERA5-Land months are preliminary (ERA5T,
+ERA5-Land-T) and may still be revised; download them again into a new working
+directory once the final data are out.
+
+The `debias` command needs a full table with AORC (here the 1996-2025 delivery). It
+keeps AORC where it exists, except in the replaced catchments above, and fills
+the rest from ERA5-Land, quantile-mapped per catchment and calendar month on
+the overlap days (the month and the months either side). Precipitation is
+split into rain and snow by a logistic curve of
+AORC's snow fraction against daily mean temperature, fitted for each catchment
+and applied to the corrected temperature; ERA5-Land's own split puts about 10%
+more of the 2022-2025 precipitation into snow than AORC's wet-bulb rule. PET is
+recalculated. The output has the requested-table columns; `aorc_gap_filled`
+names the filled columns. `OUTPUT_check.csv` corrects each overlap year with a
+fit on the other years and compares the mean, MAE, 99th percentile and wet-day
+fraction (> 0.1 mm) with AORC, beside the uncorrected ERA5-Land. The mapping
+corrects distributions, not the timing of individual storms, so keep filled
+days out of model calibration.
+
+To see what the correction changes, plot AORC beside ERA5-Land before and after
+it (same inputs as the `debias` command; corrected values in AORC years are fitted
+without that year):
+
+```bash
+catchment-history plot-debias --aorc outputs/catchment_daily_1996_2025_full.csv --era5 outputs/era5_2022_2026.csv --output-dir figures/debias
+```
+
+`timeseries.png` shows monthly means over all catchments, `monthly_bias.png`
+the difference from AORC by calendar month, `quantiles.png` the daily
+distributions, `catchments.png` the difference in each catchment, and
+`catchments.pdf` the monthly means of each catchment.
+
+To extend the 1996-2025 table, join the tables. The first file is kept whole;
+each later one adds only the dates after it, so 2022-2025 stay as in the first
+and 2026 is appended. Columns, catchments and the run of dates must match:
+
+```bash
+catchment-history merge outputs/catchment_daily_1996_2025_mapped.parquet outputs/catchment_daily_2022_2026.csv --output outputs/catchment_daily_1996_2026.parquet
+```
+
+## 1. Install
+
+Run commands from the repository root in an activated Python 3.10+ environment.
+Installing the package adds the `catchment-history` command:
+
+```bash
+python -m pip install -e .
+```
+
+AORC also needs the `zstd` command-line decoder on `PATH`. For example, in a
+Conda environment install it with `conda install -c conda-forge zstd`. Verify
+with `zstd --version`. The CDS path uses the official `cdsapi` client and
+NetCDF4. To enable optional Parquet output:
+
+```bash
+python -m pip install -e '.[parquet]'
+```
+
+## 2. Configure the CDS and Earth Data Hub tokens
+
+ERA5 and ERA5-Land use a **Climate Data Store Personal Access Token**. Register
+or sign in at the [CDS API setup page](https://cds.climate.copernicus.eu/how-to-api)
+and copy the configuration shown for your account into `.cdsapirc` in the home
+directory of the account that will run the downloads:
+
+| Runtime | File location |
+| --- | --- |
+| Linux or macOS | `~/.cdsapirc` |
+| Windows | `C:\Users\<username>\.cdsapirc` |
+| Remote compute host | `~/.cdsapirc` on that host, under the job's user account |
+
+The file contains:
+
+```yaml
+url: https://cds.climate.copernicus.eu/api
+key: <YOUR_PERSONAL_ACCESS_TOKEN>
+```
+
+On Unix, set `chmod 600 ~/.cdsapirc`. On Windows, ensure the filename is exactly
+`.cdsapirc`, not `.cdsapirc.txt`. To find the home directory used by Python:
+
+```bash
+python -c "from pathlib import Path; print(Path.home() / '.cdsapirc')"
+```
+
+Keep the token outside the repository. The scripts use `cdsapi.Client()` and do
+not accept or save a token as a command-line argument. A local configuration
+does not automatically configure a remote host. Before the first real request,
+accept the terms for each required dataset on its CDS download page:
+
+- [ERA5-Land hourly](https://cds.climate.copernicus.eu/datasets/reanalysis-era5-land?tab=download)
+- [ERA5 single levels](https://cds.climate.copernicus.eu/datasets/reanalysis-era5-single-levels?tab=download)
+
+ERA5-Land is read by default from the
+[Earth Data Hub](https://earthdatahub.destine.eu/), which needs a free DestinE
+account. Copy its personal access token into `~/.netrc` on the host that runs
+the downloads, as one line, and restrict the file:
+
+```text
+machine data.earthdatahub.destine.eu password <YOUR_EDH_TOKEN>
+```
+
+```bash
+chmod 600 ~/.netrc
+```
+
+## 3. Catchment file
+
+The catchments are a WGS84 GeoJSON `FeatureCollection` of `Polygon` or
+`MultiPolygon` features. Each feature needs:
+
+| Property | Meaning |
+| --- | --- |
+| `id` | Unique project identifier; becomes `project_id` in every table |
+| `part` | `local` (the area between this outlet and the outlets upstream) or `total`; one value for the whole file, and `download` requires `local` |
+| `forcing_group` (optional) | Projects that share one polygon; they must have identical geometry |
+| `catchment_role`, `diversion_intake_project`, `routing_requires_operations` (optional) | A natural reach at a tailrace (`natural_reach_at_tailrace`) whose turbine inflow depends on a diversion; the note is kept in the manifest |
+
+Use this exact file for every source and every run of a project. The
+workflow uses the full polygon, not a bounding box, a dam point or a centroid.
+Changes to the file require new working directories and new spatial weights.
+Downloaded data and generated tables are not included in Git.
+
+## Table layout
+
+The full table and its QC table share the unique key `(date, project_id)` and
+the same row order. Source-qualified columns prevent overwrites, for example
+`aorc_v1_1__precipitation_mm` and `era5_land_cds__precipitation_mm`. Each
+value's QC fields appear in the QC table with the suffixes `__qc`,
+`__valid_hours`, `__expected_hours` and `__min_valid_area_fraction`. For
+example, `aorc_v1_1__tmean_degC__qc` describes `aorc_v1_1__tmean_degC` in the
+values table. The QC table takes the format of `--output`: `example.csv.gz`
+produces `example_qc.csv.gz`, and `example.parquet` produces
+`example_qc.parquet`.
+
+The companion `<output filename>.manifest.json` uses `schema_version: 2`.
+Its `columns` and `qc_columns` dictionaries describe the two tables;
+`output_sha256`, `qc_output_sha256` and `qc_file` identify the paired outputs.
+It also retains original source-variable names, units, aggregation definitions,
+input hashes and project metadata. Deliver both tables and the manifest.
+
+The export requires completed, hash-verified source periods. It rejects
+duplicate observations, conflicting units, different GeoJSON hashes and
+mismatched project sets. Missing source periods are an error; a missing value
+inside a completed period remains a flagged blank.
+
+## Plots
+
+`catchment-history plot` draws one catchment, or every catchment at once,
+from a delivery (`OUTPUT_full.csv`) or from a working directory while it is
+still downloading; it uses whatever years and months are complete. Gaps in the
+data break the lines instead of being bridged. Long periods are shown as
+weekly or monthly points (`--resample` chooses daily `D`, weekly `W` or
+monthly `M`; amounts are summed over complete periods, states averaged).
+Figures are written to `figures/` unless `--output` names a PNG, PDF or SVG
+file.
+
+```bash
+catchment-history plot outputs/catchment_daily_1996_2025.csv.work --project MICA
+catchment-history plot outputs/catchment_daily_1996_2025.csv.work --project MICA --kind wateryear --variable snow_water_equivalent_mm
+catchment-history plot outputs/catchment_daily_1996_2025_full.csv --project BROWNLEE --kind compare --variable precipitation_mm --start 2015-10-01
+```
+
+The kinds `map`, `seasons`, `anomaly`, `annual` and `event` take every
+catchment in the input and need `--geojson` for the polygons, names and outlets. They use AORC unless
+`--source` says otherwise, and only years in which every catchment has at
+least 350 days of values. Rows are grouped by river system (upstream to
+downstream: Columbia in Canada; Kootenai, Flathead and Pend Oreille; Columbia
+in the US; Snake; Cascades), any other catchment following north to south.
+
+```bash
+catchment-history plot outputs/catchment_daily_1996_2025.csv.work --kind map --geojson outputs/projects43_independent/dam_catchments.geojson
+catchment-history plot outputs/catchment_daily_1996_2025.csv.work --kind seasons --geojson outputs/projects43_independent/dam_catchments.geojson
+catchment-history plot outputs/catchment_daily_1996_2025.csv.work --kind anomaly --geojson outputs/projects43_independent/dam_catchments.geojson
+catchment-history plot outputs/catchment_daily_1996_2025.csv.work --kind annual --geojson outputs/projects43_independent/dam_catchments.geojson
+catchment-history plot outputs/catchment_daily_1996_2025.csv.work --kind event --geojson outputs/projects43_independent/dam_catchments.geojson --variable precipitation_mm --start 1996-01-30 --end 1996-02-12
+catchment-history plot outputs/catchment_daily_1996_2025.csv.work --kind event --geojson outputs/projects43_independent/dam_catchments.geojson --variable tmax_c --start 2021-06-20 --end 2021-07-05
+```
+
+| Kind | What it shows | What to look for |
+| --- | --- | --- |
+| `overview` (default) | Stacked panels on one time axis: precipitation split into rain and snow, daily mean air temperature with the daily minimum-maximum range and the 0 °C line, snow water equivalent, surface and root-zone soil moisture, actual and potential evapotranspiration, and the 0 °C level above sea level | Snow accumulates while temperature stays below 0 °C and melts as it rises; soil moisture should rise with melt and rain and fall while evapotranspiration is high; rain-on-snow appears as rain bars over a snowpack |
+| `compare` | One variable from every source that has it (AORC, ERA5-Land, ERA5) and, below, ERA5-Land minus AORC with its mean and correlation | A steady offset is a bias that can be corrected; a drifting or seasonal difference, or low correlation, means the sources disagree on timing |
+| `wateryear` | One variable for each water year (1 October to 30 September): running totals for daily amounts (precipitation, snowfall, snowmelt, evapotranspiration), daily values for states (snow water equivalent, soil moisture); earlier years in grey, their median dashed and the latest year highlighted | Whether the current year is wetter or drier, and its snowpack larger or smaller, than usual at the same date; the timing of peak snow water equivalent and melt-out |
+| `map` | Three maps of the catchment polygons: mean annual precipitation, snowfall share of precipitation and mean air temperature; outlets as dots, the largest, wettest and driest catchments named | The Cascades wettest, the Columbia plateau driest, the snowfall share rising with latitude and elevation; a catchment that breaks the regional pattern needs a look at its polygon and cells |
+| `seasons` | One row per catchment, one column per month: precipitation, snowfall share and air temperature averaged over the complete years | Every row filled is completeness; winter precipitation, a snow season from November to March and summer heat in the US reaches is the expected regime |
+| `anomaly` | Water-year precipitation of each catchment as a percentage of its own mean, one column per water year, blue wet and red dry; a dot marks a water year with missing days | Known wet and dry years (1997 and 2011 wet, 2001 and 2015 dry) should appear as whole columns, showing the catchments move together |
+| `annual` | Annual precipitation as rain and snow, catchments sorted wettest first, with potential evapotranspiration (AORC) or actual evapotranspiration (ERA5-Land) as a marker | Where the marker falls inside the bar the catchment has water to spare; where it falls beyond, evaporative demand exceeds supply (the Columbia plateau and lower Snake) |
+| `event` | One variable day by day between `--start` and `--end`, one row per catchment: a flood (precipitation), a cold wave (minimum temperature), a heat wave (maximum temperature) | A documented event should appear on the right days in the right catchments, for example the February 1996 flood in the Cascades and lower Columbia and the January 2024 cold wave deepest in Canada and Montana |
+
+`--start` and `--end` limit the period; `--source` selects the source for
+`wateryear`. Variable names are the column names without source prefix and
+with the units suffix as stored in the source files, for example
+`precipitation_mm`, `tmean_c`, `snow_water_equivalent_mm` or
+`root_zone_soil_moisture_0_100cm_m3m3`.
+
+## Variables and calculations
+
+The names below are exported value-column names without their source prefixes.
+Unit suffixes are explicit, such as `degC`, `m_s`, `kg_kg`, `Pa`, `kPa`,
+`W_m2`, `MJ_m2`, `kg_m3` and `m3_m3`. Source daily files retain their
+original variable identifiers; the manifest maps them to the exported names.
+
+### AORC: weather inputs and derived diagnostics
+
+The [NOAA AORC v1.1 archive](https://registry.opendata.aws/noaa-nws-aorc/)
+provides eight hourly fields on a 30 arc-second grid: precipitation,
+temperature, specific humidity, surface pressure, downward shortwave and
+longwave radiation, and 10 m U/V wind. The published
+[NWRFC calibration framework](https://repository.library.noaa.gov/view/noaa/73306/noaa_73306_DS1.pdf)
+uses precipitation, temperature, humidity and pressure for its meteorological
+inputs and rain/snow partitioning. Using this data source does not reproduce
+NWRFC calibration, routing or reservoir operations.
+
+| Requested quantity | Output or calculation | Daily units and meaning |
+| --- | --- | --- |
+| Total precipitation | `precipitation_mm` | mm accumulated over the UTC day |
+| 2 m air temperature | `tmean_degC` | Mean of 24 hourly catchment means, °C |
+| Daily minimum/maximum temperature | `tmin_degC`, `tmax_degC` | Extrema of hourly catchment-mean temperature, °C; not averages of cellwise extrema |
+| Specific humidity | `specific_humidity_kg_kg` | Daily mean, kg/kg |
+| Surface pressure | `surface_pressure_Pa` | Daily mean, Pa |
+| Shortwave radiation | `shortwave_down_mean_W_m2`, `shortwave_down_energy_MJ_m2` | Incoming flux, W/m²; hourly integration estimate, MJ/m²/day |
+| Longwave radiation | `longwave_down_mean_W_m2`, `longwave_down_energy_MJ_m2` | Incoming flux, W/m²; hourly integration estimate, MJ/m²/day |
+| U/V wind | `u_wind_m_s`, `v_wind_m_s` | Mean eastward/northward 10 m components, m/s |
+| Wind speed | `wind_speed_m_s` | Mean of native hourly `sqrt(u²+v²)`, m/s |
+| Relative humidity | `relative_humidity_pct` | Native T/q/pressure calculation followed by averaging, % |
+| Vapor pressure deficit | `vapor_pressure_deficit_kPa` | Native T/q/pressure calculation followed by averaging, kPa |
+| Wet-bulb temperature | `wet_bulb_temperature_degC` | Pressure-aware psychrometric calculation, °C |
+| Rainfall and snowfall | `rainfall_mm`, `snowfall_mm` | Water-equivalent phase amounts, mm/day; sum to total precipitation when all inputs are valid |
+| Potential evapotranspiration | `pet_hargreaves_mm_day` | Hargreaves-Samani estimate, mm/day |
+
+The humidity calculation uses `e = q p / (0.622 + 0.378 q)` and the documented
+saturation-vapor-pressure formula over liquid water. RH is `100 e/es(T)`;
+supersaturated values are retained. VPD is `max(es(T) - e, 0)`. Wet-bulb
+temperature solves a pressure-aware psychrometric equation. Rain/snow is a
+binary diagnostic: snow at wet-bulb temperatures at or below 0.5°C, rain above
+0.5°C. It is not a direct snowfall observation. The wet-bulb solve uses
+liquid-water saturation even below freezing and caps vapor pressure at
+saturation for this calculation only; supersaturated inputs give wet bulb
+equal to air temperature. Conditions at the precipitation timestamp classify the hourly
+amount ending at that timestamp. Each calculation uses the intersection of
+valid input masks before spatial aggregation.
+
+PET uses the daily catchment-mean temperature statistics, polygon-centroid
+latitude, date and extraterrestrial radiation. The Hargreaves-Samani formula
+is `0.0023 (Tmean + 17.8) sqrt(Tmax - Tmin) Ra`, with radiation converted from
+MJ/m²/day to equivalent mm/day using 0.408. Negative PET is set to zero. This
+is an explicitly selected estimation method, not ERA5-Land potential
+evaporation and not a calibrated crop-specific water demand.
+
+### ERA5-Land: snow, soil and surface fluxes
+
+The complete archive comes from the
+[CDS hourly product](https://cds.climate.copernicus.eu/datasets/reanalysis-era5-land).
+It provides model estimates on a 0.1° distribution grid (native resolution
+about 9 km). By default the same hourly fields are read from the
+Earth Data Hub ERA5-Land store, a Zarr copy in chunks of 60 days by
+5° × 10° with values rounded to fewer significant bits.
+`src/catchment_history/edh_era5_land.py` answers the CDS requests from it and writes the
+same NetCDF layout, so caching and daily processing are unchanged; the store's
+units and accumulation type are checked like a CDS response. For 2024-11-19
+over the 43 catchments' area, both copies had the same grid and blank cells and
+differed by at most 4.5e-4 of each field's largest value (0.12 K in dewpoint
+and soil temperature, 30 Pa in pressure), and accumulations are totals since
+00 UTC in both. Surface net thermal radiation (`str`) is blank in the store
+everywhere from 2024-11-01 to 2024-11-27, so a run takes the 2024 24-hour
+endpoints from the CDS. Otherwise, since 1996 the store holds every value a run
+reads: at the catchments no field is blank at 00 UTC outside that gap, states
+are never blank, and only the radiation fields have a few blank cells at other
+hours, which runs do not read.
+
+| Requested quantity | Output or calculation | Daily units and meaning |
+| --- | --- | --- |
+| Snow water equivalent | `snow_water_equivalent_mm` from `sd` | Daily mean water equivalent, mm |
+| Physical snow depth | `snow_depth_m` from the separately identified `sde` field | Daily mean physical depth, m; never relabel `sd` as physical depth |
+| Snow density and cover | `snow_density_kg_m3`, `snow_cover_pct` | Supporting snow diagnostics, kg/m³ and % |
+| Snowmelt | `snowmelt_mm` | Modeled water-equivalent melt, mm/day |
+| Surface soil moisture | `soil_moisture_layer1_m3_m3` | Volumetric water content, 0-7 cm, m³/m³ |
+| Root-zone soil moisture | `root_zone_soil_moisture_0_100cm_m3_m3` | Defined here as the 0-100 cm thickness-weighted mean |
+| Deep soil moisture | `soil_moisture_layer4_m3_m3` | Volumetric water content, 100-289 cm, m³/m³ |
+| Soil temperature | `soil_temperature_layer1_degC` through `soil_temperature_layer4_degC` | Separate daily means for the four layers, °C |
+| Actual evapotranspiration | `actual_evapotranspiration_mm` from total evaporation | mm/day, positive upward water loss; negative values represent net deposition/condensation |
+| Net shortwave/longwave radiation | `net_shortwave_energy_MJ_m2`, `net_longwave_energy_MJ_m2` | Accumulated net energy, MJ/m²/day |
+| Total net radiation | `net_radiation_energy_MJ_m2`, `net_radiation_mean_W_m2` | Net solar plus net thermal energy, MJ/m²/day, and equivalent mean flux, W/m² |
+| Downward radiation | `shortwave_down_mean_W_m2`, `longwave_down_mean_W_m2` and `_energy_MJ_m2` from `ssrd`, `strd` | Daily mean flux and energy of the 24-hour accumulation |
+| Net shortwave/longwave flux | `net_shortwave_mean_W_m2`, `net_longwave_mean_W_m2` | The same accumulations as equivalent mean flux, W/m² |
+| Forcing counterparts of AORC | `tmean_degC`, `tmin_degC`, `tmax_degC`, `precipitation_mm`, `rainfall_mm`, `snowfall_mm`, `specific_humidity_kg_kg`, `relative_humidity_pct`, `vapor_pressure_deficit_kPa`, `wet_bulb_temperature_degC`, `surface_pressure_Pa`, `u_wind_m_s`, `v_wind_m_s`, `wind_speed_m_s` | Same names and daily definitions as AORC for direct comparison. Humidity is calculated from 2 m dewpoint and surface pressure with the AORC formulas; snowfall is the native ERA5-Land `sf` and rainfall is `tp - sf` |
+
+All four soil-water layers are retained. Layer boundaries are 0-7, 7-28,
+28-100 and 100-289 cm. The defined root-zone mean is
+`0.07*layer1 + 0.21*layer2 + 0.72*layer3`; other rooting depths require a
+different definition.
+
+ERA5-Land accumulated fields use the following midnight's forecast endpoint
+for the preceding UTC day. They are not summed across cumulative hourly
+steps. For those fields, one complete endpoint represents 24 hours:
+`valid_hours=24` is the represented accumulation duration, not a claim that
+24 independent hourly observations were retrieved. State means require all
+24 hourly values. See the
+[ECMWF accumulation and variable documentation](https://confluence.ecmwf.int/pages/viewpage.action?pageId=505384848).
+
+### ERA5: clouds and the freezing level
+
+The [single-level product](https://cds.climate.copernicus.eu/datasets/reanalysis-era5-single-levels)
+supplies total cloud cover, the 0°C level and surface geopotential. No
+pressure-level data are needed. By default these fields are read from
+[ARCO-ERA5](https://cloud.google.com/storage/docs/public-datasets/era5), Google's
+public copy of the same 0.25° hourly data, which answers each monthly request in
+under a minute instead of waiting in the CDS queue. For 2024 test months the
+ARCO and CDS responses had identical grids and times and differed by at most
+8e-6 in cloud fraction, 0.05 m in 0°C level and 0.45 m²/s² in geopotential,
+the precision of GRIB packing.
+
+`cloud_cover_fraction` is a daily mean fraction, 0-1.
+`freezing_level_above_ground_m` is the native ECMWF `zero_degree_level`
+(`deg0l`): the height above the surface where temperature passes from positive
+to negative, computed by ECMWF on the model's 137 vertical levels. It is zero
+when the whole column is below 0°C; with more than one warm layer, ECMWF assigns
+the top of the second atmospheric layer ([ECMWF parameter 228024](https://codes.ecmwf.int/grib/param-db/228024)).
+`freezing_level_above_sea_level_m` adds the ERA5 surface geopotential height
+(`z/9.80665`) in every cell and hour, as ECMWF recommends; it equals the model
+terrain height when the column is below freezing. This is the requested
+"0°C isotherm elevation". Both are defined at every cell and hour, so daily
+means are never blank because of a cold or inverted profile.
+
+### ERA5-Land for the Peace River catchments
+
+AORC covers 25-53°N and does not reach the BC Hydro projects on the Peace River
+(54-58°N). For those catchments ERA5-Land also supplies
+the AORC variables: `--primary era5-land` downloads ERA5-Land and ERA5 only,
+and the requested table takes precipitation, rainfall, snowfall, temperature,
+relative humidity, VPD and shortwave radiation from ERA5-Land. PET uses the same
+Hargreaves formula with the ERA5-Land temperature statistics and the catchment
+centroid latitude recorded in the full table's manifest. ERA5-Land precipitation
+is the 24-hour total ending at 24 UTC, its snowfall is the model's snowfall and
+rainfall the rest, and temperature and humidity are at 2 m.
+
+```bash
+catchment-history download --geojson outputs/projects_peace/dam_catchments.geojson --start 1996-01-01 --end 2026-09-30 --primary era5-land --output outputs/peace_daily_1996_2026.parquet
+```
+
+To combine this delivery with the Columbia delivery for the same dates, merge
+the two requested tables. A table with its `_full` table and manifest beside it
+is described by that manifest; one without, such as a delivery extended with
+the `merge` command, is taken as an AORC delivery. The merged table comes with a
+README, a column manifest and the combined catchment polygons:
+
+```bash
+catchment-history merge-deliveries outputs/catchment_daily_1996_2026.parquet outputs/peace_daily_1996_2026.parquet --output outputs/catchment_daily_46_1996_2026.parquet --geojson outputs/projects43_independent/dam_catchments.geojson outputs/projects_peace/dam_catchments.geojson
+```
+
+The map, seasonal, anomaly and annual figures of every catchment can then be
+drawn from the merged table in one command:
+
+```bash
+catchment-history plot outputs/catchment_daily_46_1996_2026.parquet --geojson outputs/catchment_daily_46_1996_2026_catchments.geojson --kind report --output-dir figures/report
+```
+
+The values table contains **62 data variables**: 19 from AORC, 40 from
+ERA5-Land and 3 from ERA5. Together with `date` and
+`project_id`, the full table has 64 columns. Each variable has four fields in
+the separate QC table, which has 250 columns including the same two keys.
+The requested table holds the 25 requested variables in 28 columns (10 AORC,
+15 ERA5-Land and 3 ERA5; wind comes from ERA5-Land because AORC changes wind
+source at the start of 2018); `src/catchment_history/delivery_variables.py` lists them with their forecast
+counterparts. Daily accumulated quantities use `mm` or `MJ/m2` in the
+machine-readable unit dictionary; the daily interval makes them numerically
+equivalent to the mm/day and MJ/m²/day amounts in the tables above.
+
+## Code reference
+
+Modules are in `src/catchment_history/`; `cli.py` maps each command to its module.
+
+| Module | Command | Purpose |
+| --- | --- | --- |
+| `download.py` | `download` | One command for all three sources, daily processing, resume, checks and the final delivery |
+| `download_era5.py` | `download-era5` | ERA5-Land and ERA5 without AORC, latest months first, exported in the full-table layout |
+| `aorc.py`, `aorc_zarr.py` | | Retrieve native AORC fields and calculate polygon series and native-cell diagnostics |
+| `cds.py`, `cds_fields.py` | | Retrieve ERA5-Land/ERA5, calculate polygon statistics and write monthly daily files; variable definitions, soil weighting, humidity, wind and freezing level |
+| `arco_era5.py` | | ERA5 single-level requests answered from the public ARCO-ERA5 copy in the CDS response layout |
+| `edh_era5_land.py` | | ERA5-Land requests answered from the Earth Data Hub copy in the CDS response layout |
+| `catchments.py` | | Read the catchment GeoJSON and validate forcing groups and routing notes |
+| `area_weights.py` | | Fractional polygon weights of grid cells |
+| `meteorology.py` | | Humidity, wet bulb, rain/snow partition, wind speed and Hargreaves PET formulas |
+| `aggregate.py` | | Aggregate hourly polygon series with explicit UTC timing and coverage rules |
+| `export.py` | | Verify source artifacts and export aligned daily values and QC tables plus their manifest |
+| `check.py` | `check` | Check delivered values/QC, physical plausibility and AORC/ERA5-Land agreement; plot coverage and project time series |
+| `deliver.py` | `deliver` | Write the requested-variable table and README from a checked full delivery, without filling AORC gaps |
+| `delivery_variables.py` | | Requested columns: source, native or computed, definition and forecast counterparts; `REPLACED` and `REFERENCE` |
+| `debias.py` | `debias` | Quantile-map ERA5-Land onto AORC, fill the AORC columns where AORC is blank or replaced, and check the fit year by year |
+| `merge.py` | `merge` | Join requested tables (CSV or Parquet) into one period: earlier files kept, later ones only extend the dates |
+| `merge_deliveries.py` | `merge-deliveries` | Merge the requested tables of separate deliveries (for example Columbia and Peace) into one table, README and catchment GeoJSON |
+| `plot.py` | `plot` | Overview, source comparison and water-year plots for one catchment; map, seasonal-cycle and water-year anomaly plots for every catchment; from a delivery or a working directory |
+| `plot_debias.py` | `plot-debias` | AORC beside ERA5-Land before and after quantile mapping: monthly series, seasonal and per-catchment differences, quantiles |
+| `progress.py` | `progress` | Progress of a running or interrupted download: years, requests and months completed |
+
+For modeling, begin with AORC precipitation and temperature as meteorological
+forcing. Rain/snow partition and PET are calculated inputs with the method
+defined here. Use the ERA5-Land states and fluxes only where your model needs
+external states, predictors or evaluation data; do not count externally
+supplied snowmelt/ET a second time if the hydrological model already computes
+those processes. Preserve source prefixes and keep the QC table linked by
+`(date, project_id)` when preparing model inputs. The split preserves all
+variables and quality checks; it does not choose features or impute values.
+Missing or flagged values require a separately chosen treatment.
+
+## Quality, interpretation and validation
+
+The tests run all three source-processing contracts through the final
+exporter across a December/January boundary with synthetic CDS responses. The
+unified entry point is tested for resume without repeat retrieval, routing-note
+retention, early credential failure and preservation of a previous delivery
+after a source failure; the CDS path for coordinate rounding and rejection of
+real grid shifts. A real cached AORC replay for 43 projects over 2025-12-29
+through 2025-12-31 produced 2,451 daily records: 2,322 valid and 129 flagged
+precipitation/rain/snow values on the last date. Rain plus snow matched
+precipitation in all 86 complete project-days within 1.1e-13 mm.
+
+- Area averages include fractional native grid-cell intersections. Invalid
+  cells never become zero and valid cells are not renormalized to represent
+  missing areas. Each source records its weighting method.
+- A UTC precipitation day uses amounts ending at 01Z through the next 00Z.
+  State statistics use 00-23Z. Align observed flow days before fitting a model.
+- The inspected AORC archive lacks 2026-01-01 00Z, needed for the last hour of
+  2025-12-31 precipitation. Its final precipitation total and dependent phase
+  totals remain blank. Do not replace them with a 23-hour sum or silently
+  splice an ERA5-Land hour into AORC.
+- AORC is a gridded analysis assembled from observations and other products;
+  ERA5-Land snow/soil/ET are model estimates. They are not basin-wide sensor
+  measurements or demonstrated hydrological truth.
+- The source-labelled snow, soil and ET products do not automatically form a
+  closed water balance with AORC precipitation. Evaluate them as additional
+  predictors, initialization information or diagnostics. Training and
+  validation splits must prevent future information entering model features.
+- Codes, units, geometry hashes and source identities are retained. Successful
+  unit tests or request previews do not establish 30-year source completeness
+  or hydrologic forecast skill. Live CDS verification requires a configured
+  account and accepted dataset terms.
+
+Run the tests with:
+
+```bash
+python -m pip install -e '.[test]'
+python -m pytest
+```

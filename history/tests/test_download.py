@@ -1,0 +1,207 @@
+"""One-command orchestration, failure handling and routing-note retention."""
+
+from contextlib import ExitStack, redirect_stderr, redirect_stdout
+import csv
+from datetime import date
+from functools import partial
+import io
+import json
+import os
+from pathlib import Path
+import sys
+import tempfile
+import unittest
+from unittest.mock import patch
+
+import numpy as np
+
+from catchment_history.check import check_file
+from catchment_history import download
+from catchment_history.delivery_variables import REQUESTED
+from catchment_history.aorc import FIELDS, requested_hours
+from catchment_history.meteorology import DERIVED_FIELDS
+from test_cds import FakeClient
+
+
+class DownloadDailyTests(unittest.TestCase):
+    def setUp(self):
+        self.pipeline = download
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.geojson = self.root / 'catchments.geojson'
+        self.geojson.write_text(json.dumps(dict(type='FeatureCollection', features=[dict(
+            type='Feature', properties=dict(id='A', name='A', part='local',
+                catchment_role='natural_reach_at_tailrace', diversion_intake_project='UPSTREAM',
+                routing_requires_operations=True), geometry=dict(type='Polygon', coordinates=[[
+                    [-120.03, 49.97], [-119.97, 49.97], [-119.97, 50.03],
+                    [-120.03, 50.03], [-120.03, 49.97]]]))])))
+        self.output = self.root / 'daily.csv'
+        self.full = self.root / 'daily_full.csv'
+        self.day = date(2025, 12, 31)
+
+    def native_inputs(self, store, metas, times, blocks, variables, start, end, *unused):
+        definitions = {name: (units, kind) for name, units, kind in FIELDS.values()}
+        definitions.update(DERIVED_FIELDS)
+        values = dict(temperature_c=5., precipitation_mm=1., rainfall_mm=.75, snowfall_mm=.25,
+                      wind_speed_ms=7., relative_humidity_pct=80., specific_humidity_kgkg=.004,
+                      surface_pressure_pa=90000., shortwave_down_wm2=100., longwave_down_wm2=300.)
+        result = {}
+        for name, (units, kind) in definitions.items():
+            stamps = requested_hours(start, end, kind == 'hour_ending_amount')
+            result[name] = (stamps, {'A': np.full(len(stamps), values.get(name, 1.))},
+                            {'A': np.ones(len(stamps))}, units, kind)
+        return result
+
+    def aorc_inputs(self, stack, plots=False):
+        """Fake AORC reads; the delivery checks draw their plots only if asked."""
+        if not plots:
+            stack.enter_context(patch('catchment_history.download.check_file', partial(check_file, plots=False)))
+        stack.enter_context(patch('catchment_history.aorc.metadata', return_value={}))
+        stack.enter_context(patch('catchment_history.aorc.axis', side_effect=lambda store, year, name, *args:
+            requested_hours(date(year, 1, 1), date(year, 12, 31), False)
+            if name == 'time' else np.array([0., 1.])))
+        stack.enter_context(patch('catchment_history.aorc.weights', return_value={
+            'A': (np.array([0]), np.array([0]), np.array([1.]))}))
+        stack.enter_context(patch('catchment_history.aorc.extract_native_series', side_effect=self.native_inputs))
+        stack.enter_context(patch('shutil.which', return_value='zstd'))
+
+    def command_line(self, stack, *arguments):
+        """main() with fake providers for every source and the given arguments."""
+        self.aorc_inputs(stack)
+        stack.enter_context(patch('cdsapi.Client', return_value=FakeClient()))
+        stack.enter_context(patch('catchment_history.arco_era5.ArcoClient', return_value=FakeClient()))
+        stack.enter_context(patch('catchment_history.edh_era5_land.token', return_value='test'))
+        stack.enter_context(patch('catchment_history.edh_era5_land.EdhClient', side_effect=lambda *args, **kwargs: FakeClient()))
+        stack.enter_context(patch.object(sys, 'argv', ['download.py', '--geojson', str(self.geojson),
+                                                       '--start', str(self.day), '--end', str(self.day), *arguments]))
+
+    def test_three_sources_export_and_resume_without_retrieving_again(self):
+        stream = io.StringIO()
+        client = FakeClient()
+        with ExitStack() as stack, redirect_stdout(stream):
+            self.aorc_inputs(stack, plots=True)
+            report = self.pipeline.run(self.geojson, self.day, self.day, self.output, cds_client=client)
+            with patch('catchment_history.aorc.extract_native_series', side_effect=AssertionError('Re-read AORC')), \
+                 patch.object(client, 'retrieve', side_effect=AssertionError('Re-read CDS')):
+                self.pipeline.run(self.geojson, self.day, self.day, self.output, cds_client=client)
+        with self.full.open() as handle:
+            rows = list(csv.DictReader(handle))
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(len(rows[0]), 64)
+        with self.full.with_name('daily_full_qc.csv').open() as handle:
+            quality = list(csv.DictReader(handle))
+        self.assertEqual(len(quality), len(rows))
+        self.assertEqual(len(quality[0]), 250)
+        self.assertEqual(quality[0]['aorc_v1_1__precipitation_mm__qc'], 'valid')
+        self.assertFalse(any(name.endswith('__qc') for name in rows[0]))
+        self.assertEqual(float(rows[0]['aorc_v1_1__precipitation_mm']), 24.)
+        self.assertEqual(float(rows[0]['era5_land_cds__precipitation_mm']), 2.)
+        self.assertEqual(float(rows[0]['era5_cds__cloud_cover_fraction']), .5)
+        with self.output.open() as handle:
+            requested = list(csv.DictReader(handle))
+        self.assertEqual(len(requested[0]), 3 + len(REQUESTED))
+        self.assertEqual(requested[0]['precipitation_mm'], rows[0]['aorc_v1_1__precipitation_mm'])
+        # AORC changes wind source in 2018, so the requested wind is ERA5-Land's.
+        self.assertEqual(requested[0]['wind_speed_m_s'], rows[0]['era5_land_cds__wind_speed_m_s'])
+        self.assertNotEqual(requested[0]['wind_speed_m_s'], rows[0]['aorc_v1_1__wind_speed_m_s'])
+        self.assertEqual(requested[0]['freezing_level_above_sea_level_m'],
+                         rows[0]['era5_cds__freezing_level_above_sea_level_m'])
+        readme = self.root / 'daily_README.md'
+        self.assertIn('`snow_water_equivalent_mm`', readme.read_text())
+        self.assertIn('HGT:0C isotherm', readme.read_text())
+        self.assertIn('| ECMWF AIFS |', readme.read_text())
+        self.assertEqual(report['project_count'], 1)
+        self.assertEqual(report['columns']['aorc_v1_1__wind_speed_m_s']['reference_height_m'], 10)
+        self.assertEqual(report['columns']['era5_land_cds__tmean_degC']['reference_height_m'], 2)
+        checks = Path(str(self.full)+'.checks')
+        self.assertTrue((checks/'timeseries.pdf').is_file())
+        self.assertEqual(json.loads((checks/'summary.json').read_text())['failed_checks'], 0)
+        self.assertNotIn('Turbine inflow', stream.getvalue())
+        for item in report['inputs']:
+            self.assertTrue(item['metadata']['warnings'])
+            self.assertTrue(item['metadata']['project_forcing']['A']['routing_requires_operations'])
+
+    def test_requested_table_can_be_written_as_parquet(self):
+        import pyarrow.parquet as pq
+        from catchment_history import deliver
+        parquet = self.output.with_suffix('.parquet')
+        with ExitStack() as stack, redirect_stdout(io.StringIO()):
+            self.aorc_inputs(stack)
+            self.pipeline.run(self.geojson, self.day, self.day, self.output, cds_client=FakeClient())
+            stack.enter_context(patch.object(sys, 'argv', ['deliver.py', str(self.full), '--output', str(parquet)]))
+            deliver.main()
+        with self.output.open() as handle:
+            expected = next(csv.DictReader(handle))
+        table = pq.read_table(parquet)
+        self.assertEqual(table.column_names, list(expected))
+        self.assertEqual(str(table.schema.field('date').type), 'date32[day]')
+        row = table.to_pylist()[0]
+        self.assertEqual(row.pop('date').isoformat(), expected.pop('date'))
+        for name, text in expected.items():
+            self.assertEqual(row[name], (None if text == '' else text if name in ('project_id', 'aorc_gap_filled')
+                                         else float(text)), name)
+        self.assertIn("pandas.read_parquet('daily.parquet')", (self.root / 'daily_README.md').read_text())
+
+    def test_missing_credentials_fail_before_source_downloads(self):
+        with patch('shutil.which', return_value='zstd'), \
+             patch('cdsapi.Client', side_effect=OSError('Missing CDS configuration')), \
+             patch('catchment_history.aorc.run', side_effect=AssertionError('AORC started before credential check')):
+            with self.assertRaisesRegex(OSError, 'CDS configuration'):
+                self.pipeline.run(self.geojson, self.day, self.day, self.output)
+        self.assertFalse(self.output.exists())
+
+    def test_post_export_check_failure_reports_that_delivery_exists(self):
+        with ExitStack() as stack, redirect_stdout(io.StringIO()):
+            self.command_line(stack, '--output', str(self.output))
+            stack.enter_context(patch('catchment_history.download.check_file', side_effect=OSError('Plot failed')))
+            errors = io.StringIO()
+            with redirect_stderr(errors):
+                self.assertEqual(self.pipeline.main(), 2)
+        self.assertTrue(self.output.is_file())
+        self.assertIn('saved', errors.getvalue())
+        self.assertNotIn('not replaced', errors.getvalue())
+
+    def test_cli_needs_only_geometry_and_dates(self):
+        with ExitStack() as stack, redirect_stdout(io.StringIO()):
+            self.command_line(stack)
+            previous = Path.cwd()
+            stack.callback(os.chdir, previous)
+            os.chdir(self.root)
+            self.assertEqual(self.pipeline.main(), 0)
+        path = self.root / 'outputs/catchment_daily_2025-12-31_2025-12-31.csv'
+        with path.open() as stream:
+            row = next(csv.DictReader(stream))
+        self.assertEqual(row['project_id'], 'A')
+        self.assertEqual(len(row), 3 + len(REQUESTED))
+        self.assertTrue(path.with_name('catchment_daily_2025-12-31_2025-12-31_full.csv').is_file())
+
+    def test_source_failure_preserves_previous_delivery(self):
+        self.output.write_text('previous delivery\n')
+        quality = self.output.with_name('daily_full_qc.csv')
+        quality.write_text('previous quality\n')
+        companion = Path(str(self.full) + '.manifest.json')
+        companion.write_text('previous manifest\n')
+        with ExitStack() as stack:
+            self.aorc_inputs(stack)
+            client = FakeClient()
+            with patch.object(client, 'retrieve', side_effect=RuntimeError('Source unavailable')):
+                with self.assertRaisesRegex(RuntimeError, 'Source unavailable'):
+                    self.pipeline.run(self.geojson, self.day, self.day, self.output, cds_client=client)
+        self.assertEqual(self.output.read_text(), 'previous delivery\n')
+        self.assertEqual(quality.read_text(), 'previous quality\n')
+        self.assertEqual(companion.read_text(), 'previous manifest\n')
+
+    def test_invalid_window_and_nonlocal_geometry_rejected_before_network(self):
+        with patch('cdsapi.Client', side_effect=AssertionError('Network setup started')):
+            with self.assertRaisesRegex(ValueError, 'start|Start'):
+                self.pipeline.run(self.geojson, date(2026, 1, 1), self.day, self.output)
+            document = json.loads(self.geojson.read_text())
+            document['features'][0]['properties']['part'] = 'total'
+            self.geojson.write_text(json.dumps(document))
+            with self.assertRaisesRegex(ValueError, 'local'):
+                self.pipeline.run(self.geojson, self.day, self.day, self.output)
+
+
+if __name__ == '__main__':
+    unittest.main()
