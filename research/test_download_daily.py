@@ -1,8 +1,9 @@
 """One-command orchestration, failure handling and routing-note retention."""
 
-from contextlib import ExitStack, redirect_stdout
+from contextlib import ExitStack, redirect_stderr, redirect_stdout
 import csv
 from datetime import date
+from functools import partial
 import io
 import json
 import os
@@ -12,9 +13,9 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-import netCDF4
 import numpy as np
 
+from check_daily import check_file
 import download_daily
 from delivery_variables import REQUESTED
 from download_aorc import FIELDS, requested_hours
@@ -52,7 +53,10 @@ class DownloadDailyTests(unittest.TestCase):
                             {'A': np.ones(len(stamps))}, units, kind)
         return result
 
-    def aorc_inputs(self, stack):
+    def aorc_inputs(self, stack, plots=False):
+        """Fake AORC reads; the delivery checks draw their plots only if asked."""
+        if not plots:
+            stack.enter_context(patch('download_daily.check_file', partial(check_file, plots=False)))
         stack.enter_context(patch('download_aorc.metadata', return_value={}))
         stack.enter_context(patch('download_aorc.axis', side_effect=lambda store, year, name, *args:
             requested_hours(date(year, 1, 1), date(year, 12, 31), False)
@@ -62,11 +66,21 @@ class DownloadDailyTests(unittest.TestCase):
         stack.enter_context(patch('download_aorc.extract_native_series', side_effect=self.native_inputs))
         stack.enter_context(patch('shutil.which', return_value='zstd'))
 
+    def command_line(self, stack, *arguments):
+        """main() with fake providers for every source and the given arguments."""
+        self.aorc_inputs(stack)
+        stack.enter_context(patch('cdsapi.Client', return_value=FakeClient()))
+        stack.enter_context(patch('arco_era5.ArcoClient', return_value=FakeClient()))
+        stack.enter_context(patch('edh_era5_land.token', return_value='test'))
+        stack.enter_context(patch('edh_era5_land.EdhClient', side_effect=lambda *args, **kwargs: FakeClient()))
+        stack.enter_context(patch.object(sys, 'argv', ['download_daily.py', '--geojson', str(self.geojson),
+                                                       '--start', str(self.day), '--end', str(self.day), *arguments]))
+
     def test_three_sources_export_and_resume_without_retrieving_again(self):
         stream = io.StringIO()
         client = FakeClient()
         with ExitStack() as stack, redirect_stdout(stream):
-            self.aorc_inputs(stack)
+            self.aorc_inputs(stack, plots=True)
             report = self.pipeline.run(self.geojson, self.day, self.day, self.output, cds_client=client)
             with patch('download_aorc.extract_native_series', side_effect=AssertionError('Re-read AORC')), \
                  patch.object(client, 'retrieve', side_effect=AssertionError('Re-read CDS')):
@@ -139,15 +153,8 @@ class DownloadDailyTests(unittest.TestCase):
 
     def test_post_export_check_failure_reports_that_delivery_exists(self):
         with ExitStack() as stack, redirect_stdout(io.StringIO()):
-            self.aorc_inputs(stack)
-            stack.enter_context(patch('cdsapi.Client', return_value=FakeClient()))
-            stack.enter_context(patch('edh_era5_land.token', return_value='test'))
-            stack.enter_context(patch('edh_era5_land.EdhClient', side_effect=lambda *args, **kwargs: FakeClient()))
-            stack.enter_context(patch.object(sys, 'argv', ['download_daily.py',
-                '--geojson', str(self.geojson), '--start', str(self.day), '--end', str(self.day),
-                '--output', str(self.output)]))
+            self.command_line(stack, '--output', str(self.output))
             stack.enter_context(patch('download_daily.check_file', side_effect=OSError('Plot failed')))
-            from contextlib import redirect_stderr
             errors = io.StringIO()
             with redirect_stderr(errors):
                 self.assertEqual(self.pipeline.main(), 2)
@@ -155,54 +162,9 @@ class DownloadDailyTests(unittest.TestCase):
         self.assertIn('saved', errors.getvalue())
         self.assertNotIn('not replaced', errors.getvalue())
 
-    def test_failed_grid_check_resumes_aorc_and_cached_land_after_code_update(self):
-        client = FakeClient()
-        retrieve = client.retrieve
-        def response_with_roundoff(dataset, request, target):
-            retrieve(dataset, request, target)
-            if dataset == 'reanalysis-era5-land' and len(request['time']) == 1:
-                with netCDF4.Dataset(target, 'a') as ds:
-                    ds['longitude'][:] += 1e-12
-        exact_grid = lambda reference, current: all(np.array_equal(a, b) for a, b in zip(reference, current))
-        with ExitStack() as stack, redirect_stdout(io.StringIO()):
-            self.aorc_inputs(stack)
-            with patch.object(client, 'retrieve', side_effect=response_with_roundoff), \
-                 patch('download_cds._same_grid', side_effect=exact_grid):
-                with self.assertRaisesRegex(ValueError, 'CDS grid mismatch'):
-                    self.pipeline.run(self.geojson, self.day, self.day, self.output, cds_client=client)
-            # ERA5 runs alongside the failing ERA5-Land and completes its single request.
-            self.assertEqual(client.calls, 3)
-            self.assertFalse(self.output.exists())
-            work = Path(str(self.output)+'.work')
-            run_path = work/'era5-land/run.json'
-            previous = json.loads(run_path.read_text())
-            previous['code_sha256']['download_cds.py'] = 'old-processing-code'
-            previous['methods'].pop('grid_coordinates')
-            run_path.write_text(json.dumps(previous))
-            def no_repeated_land_download(dataset, request, target):
-                self.assertNotEqual(dataset, 'reanalysis-era5-land')
-                retrieve(dataset, request, target)
-            with patch('download_aorc.extract_native_series', side_effect=AssertionError('Re-read AORC')), \
-                 patch.object(client, 'retrieve', side_effect=no_repeated_land_download):
-                report = self.pipeline.run(self.geojson, self.day, self.day, self.output, cds_client=client)
-        self.assertEqual(client.calls, 3)
-        self.assertEqual(report['row_count'], 1)
-        self.assertFalse((work/'era5-land/grid_mismatch.json').exists())
-        with self.output.open() as stream:
-            row = next(csv.DictReader(stream))
-        self.assertEqual(float(row['cloud_cover_fraction']), .5)
-        with self.full.open() as stream:
-            row = next(csv.DictReader(stream))
-        self.assertEqual(float(row['era5_land_cds__precipitation_mm']), 2.)
-
     def test_cli_needs_only_geometry_and_dates(self):
         with ExitStack() as stack, redirect_stdout(io.StringIO()):
-            self.aorc_inputs(stack)
-            stack.enter_context(patch('cdsapi.Client', return_value=FakeClient()))
-            stack.enter_context(patch('edh_era5_land.token', return_value='test'))
-            stack.enter_context(patch('edh_era5_land.EdhClient', side_effect=lambda *args, **kwargs: FakeClient()))
-            stack.enter_context(patch.object(sys, 'argv', ['download_daily.py',
-                '--geojson', str(self.geojson), '--start', str(self.day), '--end', str(self.day)]))
+            self.command_line(stack)
             previous = Path.cwd()
             stack.callback(os.chdir, previous)
             os.chdir(self.root)

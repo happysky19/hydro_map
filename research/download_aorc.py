@@ -4,9 +4,9 @@
 Reads only intersecting native Zarr chunks. Annual outputs are resumable;
 meteorological chunks are discarded by default after aggregation. Missing
 cells never receive zero precipitation or cause spatial renormalization.
-With --derive, RH/VPD, liquid-water wet bulb, rain/snow water equivalent and
-10m wind speed are calculated at synchronized native cells before averaging.
-Daily Hargreaves PET uses the mean/min/max of hourly catchment temperatures.
+RH/VPD, liquid-water wet bulb, rain/snow water equivalent and 10m wind speed
+are calculated at synchronized native cells before averaging. Daily Hargreaves
+PET uses the mean/min/max of hourly catchment temperatures.
 """
 import argparse
 from collections import deque
@@ -65,7 +65,6 @@ class Store:
         directory.mkdir(parents=True, exist_ok=True)
         self.lock = threading.Lock()
         self.bytes = 0
-        self.refresh_years = set()
         # Offline runs still know which objects the source reported as absent.
         self.absent = set()
         log = directory / 'requests.jsonl'
@@ -84,8 +83,7 @@ class Store:
     def read(self, url):
         path = self.path(url)
         record_path = path.with_suffix('.json')
-        refresh = any(url.startswith(BASE + f'{year}.zarr/') for year in self.refresh_years)
-        if not refresh and path.exists() and record_path.exists():
+        if path.exists() and record_path.exists():
             record = json.loads(record_path.read_text())
             check(record['url'] == url and digest(path) == record['sha256'], 'Cache hash mismatch')
             return path.read_bytes(), path
@@ -233,52 +231,6 @@ def block_weights(polygon_weights):
     return blocks
 
 
-def extract_series(store, metas, times_by_year, blocks, variable, target, zstd, workers, keep):
-    projects = sorted({project for block in blocks.values() for project in block})
-    sums = {p: np.zeros(len(target)) for p in projects}
-    coverage = {p: np.zeros(len(target)) for p in projects}
-    field = FIELDS[variable][0]
-    target_years = np.array([dt.datetime.fromtimestamp(int(t), dt.timezone.utc).year for t in target])
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        for year in sorted(set(target_years)):
-            if year not in metas:
-                continue
-            m, source_times = metas[year], times_by_year[year]
-            dest = np.flatnonzero(target_years == year)
-            indexes = np.searchsorted(source_times, target[dest])
-            check(np.all(indexes < len(source_times)) and np.array_equal(source_times[indexes], target[dest]),
-                  f'Requested timestamps absent from time axis: {year}')
-            for chunk_t in np.unique(indexes // 144):
-                selected = indexes // 144 == chunk_t
-                dest_rows, local_time = dest[selected], indexes[selected] % 144
-                keys = sorted(blocks)
-                # Bound both in-flight downloads and decoded arrays to one small batch.
-                for offset in range(0, len(keys), workers):
-                    batch = keys[offset:offset + workers]
-                    urls = [BASE + f'{year}.zarr/{variable}/{chunk_t}.{by}.{bx}' for by, bx in batch]
-                    futures = [pool.submit(store.read, url) for url in urls]
-                    for key, url, future in zip(batch, urls, futures):
-                        try:
-                            payload, _ = future.result()
-                        except FileNotFoundError:
-                            continue
-                        raw, _ = decode(payload, '<i2', zstd)
-                        check(raw.size == 144 * 128 * 256, f'Unexpected chunk shape: {url}')
-                        raw = raw.reshape(144, 128, 256)
-                        attrs, array = m[variable + '/.zattrs'], m[variable + '/.zarray']
-                        for project, (yy, xx, area) in blocks[key].items():
-                            values = unpack(raw[local_time[:, None], yy, xx], attrs,
-                                            array.get('fill_value'), field)
-                            subtotal, valid_area = accumulate(values, area)
-                            sums[project][dest_rows] += subtotal
-                            coverage[project][dest_rows] += valid_area
-                        if not keep:
-                            store.discard(url)
-                print(f'{year} {variable} chunk {int(chunk_t) + 1}/61; '
-                      f'network {store.bytes / 1e9:.3f} GB', flush=True)
-    return sums, coverage
-
-
 def read_chunk(store, url, zstd):
     """Fetch and decode one Zarr chunk in a worker thread; None if the object is absent."""
     try:
@@ -375,25 +327,20 @@ def extract_native_series(store, metas, times_by_year, blocks, variables,
 
 def run(args):
     check(args.start <= args.end, 'Start must not follow end')
-    check(not (args.cache_only and args.refresh_incomplete), 'Refreshing requires online source access')
     check(1 <= args.workers <= 32 and args.max_download_gb > 0, 'Invalid workers or download limit')
     zstd = shutil.which('zstd')
     check(zstd is not None, 'Install the zstd command-line decoder')
     features, forcing = load_polygons(args.geojson, args.projects, include_metadata=True)
-    derive = getattr(args, 'derive', False)
-    variables = sorted(set(args.variables) | (DERIVED_INPUTS if derive else set()))
-    output_fields = [FIELDS[variable][0] for variable in variables]
-    if derive:
-        output_fields.extend(DERIVED_FIELDS)
-    pet_latitudes = {project: geometry.centroid.y for project, geometry in features.items()} if derive else None
+    variables = sorted(VARIABLES)
+    output_fields = [FIELDS[variable][0] for variable in variables] + list(DERIVED_FIELDS)
+    pet_latitudes = {project: geometry.centroid.y for project, geometry in features.items()}
     args.output_dir.mkdir(parents=True, exist_ok=True)
     store = Store(args.cache_dir, args.max_download_gb * 1e9, args.cache_only)
     config = dict(schema=2, geometry_sha256=digest(args.geojson), projects=sorted(features), **forcing,
                   start=str(args.start), end=str(args.end), variables=variables,
                   source=BASE, source_id='aorc_v1.1', area_crs='EPSG:6933', day='UTC',
-                  derive=derive, derived_methods=DERIVED_METHODS if derive else {},
-                  pet_centroid_latitudes=pet_latitudes,
-                  daily_schema=daily_schema(output_fields, include_pet=derive),
+                  derive=True, derived_methods=DERIVED_METHODS, pet_centroid_latitudes=pet_latitudes,
+                  daily_schema=daily_schema(output_fields, include_pet=True),
                   code_sha256={name: digest(Path(__file__).with_name(name)) for name in
                            ('download_aorc.py', 'aggregate_daily.py', 'aorc_zarr.py',
                             'routing_metadata.py', 'meteorology.py')})
@@ -480,33 +427,15 @@ def run(args):
                       and record['hourly_sha256'] == digest(hourly) and record['daily_sha256'] == digest(daily),
                       f'Completed output verification failed: {year}')
                 incomplete = any(row['valid_hours'] != row['hours'] for row in record['hourly_quality'])
-                if not (incomplete and args.refresh_incomplete):
-                    state = 'contains gaps' if incomplete else 'all requested hours valid'
-                    print(f'{year}: verified existing output ({state}); skipped', flush=True)
-                    continue
-                print(f'{year}: refreshing incomplete output from the source', flush=True)
-                # A refresh interruption must not leave old hashes claiming new files.
-                manifest.unlink()
-            if args.refresh_incomplete:
-                store.refresh_years.update((year, year + 1))
-                for changed_year in (year, year + 1):
-                    metas.pop(changed_year, None)
-                    times_by_year.pop(changed_year, None)
+                state = 'contains gaps' if incomplete else 'all requested hours valid'
+                print(f'{year}: verified existing output ({state}); skipped', flush=True)
+                continue
             start, end = max(args.start, dt.date(year, 1, 1)), min(args.end, dt.date(year, 12, 31))
             load_year(year)
-            if end.month == 12 and end.day == 31 and 'APCP_surface' in variables:
+            if end.month == 12 and end.day == 31:
                 load_year(year + 1, optional=year == args.end.year)
-            if derive:
-                extracted = extract_native_series(store, metas, times_by_year, blocks, variables,
-                                                   start, end, zstd, args.workers, args.keep_chunks)
-            else:
-                extracted = {}
-                for variable in variables:
-                    name, units, kind = FIELDS[variable]
-                    target = requested_hours(start, end, kind == 'hour_ending_amount')
-                    sums, coverage = extract_series(store, metas, times_by_year, blocks, variable,
-                                                    target, zstd, args.workers, args.keep_chunks)
-                    extracted[name] = (target, sums, coverage, units, kind)
+            extracted = extract_native_series(store, metas, times_by_year, blocks, variables,
+                                               start, end, zstd, args.workers, args.keep_chunks)
             if pending is not None:
                 pending.result()
             pending = background.submit(finalize, year, start, end, extracted)
@@ -524,17 +453,11 @@ def main():
     parser.add_argument('--start', type=dt.date.fromisoformat, default=dt.date(1996, 1, 1))
     parser.add_argument('--end', type=dt.date.fromisoformat, default=dt.date(2025, 12, 31))
     parser.add_argument('--projects', nargs='+')
-    parser.add_argument('--variables', choices=VARIABLES, nargs='+', default=VARIABLES)
     parser.add_argument('--workers', type=int, default=16, help='Concurrent AORC reads and decodes (1–32)')
     parser.add_argument('--max-download-gb', type=float, default=1.)
     parser.add_argument('--cache-only', action='store_true')
-    parser.add_argument('--refresh-incomplete', action='store_true',
-                        help='Re-fetch and recompute years containing invalid hours; bypass their cached objects')
     parser.add_argument('--keep-chunks', action='store_true')
     parser.add_argument('--newest-first', action='store_true', help='Process the most recent year first')
-    parser.add_argument('--derive', action='store_true',
-                        help='Add native-cell RH/VPD, wet bulb, rain/snow, wind speed and daily Hargreaves PET; '
-                             'automatically include their source inputs')
     run(parser.parse_args())
 
 

@@ -121,11 +121,9 @@ def merge(inputs, output, geojsons):
             filled_dates.add(day.isoformat())
     merged = dict(start=dates[0].isoformat(), end=dates[1].isoformat(), row_count=table.num_rows,
                   project_metadata=dict(sorted(metadata.items())), columns=manifest['columns'])
-    # The inputs may fill AORC gaps in different ways (a later year joined with merge_daily.py,
-    # for example), so the README describes the filled values without naming one method.
     readme = readme_text(merged, selected, output.name, missing,
                          dict(counts={name: filled[name] for name in names if filled[name]},
-                              dates=sorted(filled_dates), generic=True), primary=primary, replaced=replaced)
+                              dates=sorted(filled_dates)), primary=primary, replaced=replaced)
     output.parent.mkdir(parents=True, exist_ok=True)
     targets = {'table': output, 'readme': companion(output, '_README', '.md'),
                'manifest': Path(str(output) + '.manifest.json'),

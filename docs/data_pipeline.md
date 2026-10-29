@@ -51,11 +51,12 @@ The same `--output` argument produces the delivery:
 
 The requested table copies its columns from the full table; its names drop the
 source prefix (the README gives the source). Where an AORC value is blank
-because the AORC archive lacks the data (for example all of 2024-06-18), the
-requested table fills it from the same ERA5-Land quantity adjusted to AORC for
-that catchment and calendar month and names the filled columns in
-`aorc_gap_filled`; the full table is never filled. See the
-[daily data notes](data_notes.md). The
+because the AORC archive lacks the data (for example all of 2024-06-18), it
+stays blank and `aorc_gap_filled` is empty. The delivered table is written from
+the full table by `debias_era5.py`, which fills these gaps and replaces AORC in
+the Canadian catchments (see
+[AORC replaced in the Canadian catchments](#aorc-replaced-in-the-canadian-catchments)).
+See the [daily data notes](data_notes.md). The
 three-day, 43-project example has 129 rows in each table, in the same order.
 Missing values retain their quality flags in the QC table; completion does not
 imply that every observation exists. No separate export command is needed.
@@ -130,9 +131,14 @@ Measured on a 16-core workstation in October 2026, a 30-year run takes about
 
 The Earth Data Hub allows 500,000 chunk reads a month; a 30-year run needs about
 50,000. Every source works through the period year by year, latest first, and
-writes each finished year (AORC) or month (ERA5, ERA5-Land) as it goes. Before
-a long run, check the Earth Data Hub store with
-`python research/check_edh.py --scan --compare-cds --geojson <catchment file>`.
+writes each finished year (AORC) or month (ERA5, ERA5-Land) as it goes.
+
+Requests keep the CDS shape and size limits whichever provider answers them, so
+responses from the CDS and from the copies are interchangeable in the cache:
+hourly ERA5-Land states in batches of at most 14 days within a month, ERA5-Land
+24-hour endpoints in one request per year, and ERA5 single-level fields in one
+request per month. A year's uncached requests are fetched first; daily
+processing then decodes each hash-verified cached response once per batch.
 
 Before starting, on the host that will run the download:
 
@@ -199,15 +205,11 @@ Missing values are reported separately and are not filled automatically.
 Working files default to `OUTPUT.work/`, with `aorc/`, `era5-land/` and `era5/`
 source directories and a `cache/` directory. Retain this folder to resume.
 For a compute host, `--work-dir` and `--cache-dir` can point to large local
-storage while `--output` points to the delivery location. Existing files from
-separate manual runs are not automatically discovered or moved. Do not run
+storage while `--output` points to the delivery location. Do not run
 two commands against the same working/cache directories concurrently. After
-changing dates, geometry or processing code, use a new working directory;
-the source pipelines reject incompatible run configurations. One exception
-allows a CDS processing update when no monthly output or completion manifest
-exists yet and the request configuration is unchanged. The previous run
-metadata is retained under `run_history/`, and verified raw responses are
-reused. This does not change AORC resume checks.
+changing dates, geometry or processing code, use a new working directory (the
+source pipelines reject a changed run configuration) and pass the old cache
+with `--cache-dir OLD_WORK_DIR/cache`, so downloaded responses are reused.
 
 CDS coordinate encodings can differ slightly across files. Regular axes are
 reconstructed between their endpoints with an absolute residual limit of
@@ -216,9 +218,8 @@ require equal dimensions and coordinate differences within the same absolute
 limit; values are not interpolated. A larger shift, different resolution or
 different dimensions still stops processing. A cross-field mismatch writes
 `grid_mismatch.json` in the affected source directory with the field names,
-axis lengths, bounds, spacing and maximum differences. After a precision-check
-fix, repeat the original command with the same paths and options to reuse the
-downloaded data. Keep the working folder and cache intact.
+axis lengths, bounds, spacing and maximum differences. After a code fix, rerun
+in a new working directory with the old cache as above.
 
 `--max-download-gb` defaults to a 2,000 GB **AORC network-read ceiling per
 invocation**, not a file-size estimate or a CDS limit. Use
@@ -238,13 +239,7 @@ command fetches only what is missing.
 For Parquet, install the optional dependency below and use a `.parquet` output.
 
 Routing interpretation, including Kootenay Canal's tailrace/diversion note,
-is retained in source `run.json` files and the final manifest. These static
-notes are no longer repeated in the console. Missing-data messages and source
-errors remain visible. This changes reporting only, not the catchment or
-meteorological calculations.
-
-The source-specific commands later in this guide are available for individual
-source checks; they are not additional steps after `download_daily.py`.
+is retained in source `run.json` files and the final manifest.
 
 ### AORC replaced in the Canadian catchments
 
@@ -307,9 +302,7 @@ names the filled columns. `OUTPUT_check.csv` corrects each overlap year with a
 fit on the other years and compares the mean, MAE, 99th percentile and wet-day
 fraction (> 0.1 mm) with AORC, beside the uncorrected ERA5-Land. The mapping
 corrects distributions, not the timing of individual storms, so keep filled
-days out of model calibration. With `--raw` the blanks are filled with
-ERA5-Land as it is, for comparison or when no correction is wanted; the output
-and the check file are otherwise the same.
+days out of model calibration.
 
 To see what the correction changes, plot AORC beside ERA5-Land before and after
 it (same inputs as `debias_era5.py`; corrected values in AORC years are fitted
@@ -397,15 +390,7 @@ machine data.earthdatahub.destine.eu password <YOUR_EDH_TOKEN>
 
 ```bash
 chmod 600 ~/.netrc
-python research/check_edh.py
 ```
-
-`check_edh.py` confirms access, units and the accumulation convention without
-printing the token; its last line should be `RESULT: all checks passed`.
-
-The request preview described below does not need a token. It checks local
-configuration and constructs requests; it does not verify account permissions,
-accepted terms, provider availability or live response formats.
 
 ## 3. Build the boundaries
 
@@ -422,129 +407,28 @@ same catchment part and upstream cutoffs across sources. Changes to the
 GeoJSON require new output directories and new spatial weights. Downloaded
 data and generated geometry are not included in Git.
 
-## 4. Run a short test first
+## Table layout
 
-Start with all 43 projects for December 29-31, 2025. This tests the calendar
-boundary as well as the complete project set. AORC downloads can be large even
-for a short time window because its native objects span several days.
-
-```bash
-python research/download_aorc.py \
-  --geojson outputs/projects43_independent/dam_catchments.geojson \
-  --output-dir outputs/aorc_demo_derived --cache-dir data/aorc_cache \
-  --start 2025-12-29 --end 2025-12-31 --derive \
-  --workers 4 --max-download-gb 2 --keep-chunks
-
-python research/download_cds.py --product era5-land \
-  --geojson outputs/projects43_independent/dam_catchments.geojson \
-  --output-dir outputs/era5_land_demo_cds --cache-dir data/cds_cache \
-  --start 2025-12-29 --end 2025-12-31 --dry-run
-
-python research/download_cds.py --product era5 \
-  --geojson outputs/projects43_independent/dam_catchments.geojson \
-  --output-dir outputs/era5_demo_cds --cache-dir data/cds_cache \
-  --start 2025-12-29 --end 2025-12-31 --dry-run
-```
-
-After reviewing the CDS request previews and configuring credentials, repeat
-the two CDS commands without `--dry-run`. They retrieve data and process daily
-catchment statistics. AORC requires no account. Each CDS product retains its
-own source identity; ERA5-Land is not silently substituted for AORC.
-
-## 5. Download the full period
-
-Choose output and cache directories on a compute host with enough disk space
-and reliable networking. The following paths are examples, relative to the
-repository; replace them with the storage paths on the host. The AORC transfer
-ceiling is a hard upper bound, not an estimate or a prepaid allocation.
-
-```bash
-OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 python research/download_aorc.py \
-  --geojson outputs/projects43_independent/dam_catchments.geojson \
-  --output-dir data/aorc_1996_2025_derived --cache-dir data/aorc_cache \
-  --start 1996-01-01 --end 2025-12-31 --derive \
-  --workers 4 --max-download-gb 2000
-
-python research/download_cds.py --product era5-land \
-  --geojson outputs/projects43_independent/dam_catchments.geojson \
-  --output-dir data/era5_land_1996_2025 --cache-dir data/cds_cache \
-  --start 1996-01-01 --end 2025-12-31
-
-python research/download_cds.py --product era5 \
-  --geojson outputs/projects43_independent/dam_catchments.geojson \
-  --output-dir data/era5_1996_2025 --cache-dir data/cds_cache \
-  --start 1996-01-01 --end 2025-12-31
-```
-
-The two products may run at the same time with a shared cache: their request
-manifest is updated under a file lock. Requests keep the CDS shape and size
-limits whichever provider answers them, so responses from the CDS and from the
-copies are interchangeable in the cache: hourly ERA5-Land states in batches of
-at most 14 days within a month (the size limit above), ERA5-Land 24-hour
-endpoints in one request per year, and ERA5 single-level fields in one request
-per month. A year's uncached requests are fetched first, three
-at a time per product by default (`--workers`); daily processing then decodes
-each hash-verified cached response once per batch.
-
-Repeat an identical command to resume verified completed periods. AORC writes
-annual files; CDS writes monthly files. Configuration and output hashes are
-checked before reuse. Do not overwrite an old run after changing processing
-code, geometry or options; use a new directory, except for the unfinished CDS
-processing update described above. Keep the source manifests with
-the data. Raw AORC meteorological chunks are discarded after all requested
-base and derived products consume them unless `--keep-chunks` is supplied.
-
-## 6. Export one project-day row
-
-After the required source periods have completed:
-
-```bash
-python research/export_daily.py \
-  --geojson outputs/projects43_independent/dam_catchments.geojson \
-  --input-dir data/aorc_1996_2025_derived data/era5_land_1996_2025 data/era5_1996_2025 \
-  --start 1996-01-01 --end 2025-12-31 \
-  --output outputs/delivery/catchment_daily_1996_2025_full.csv
-python research/check_daily.py outputs/delivery/catchment_daily_1996_2025_full.csv
-python research/deliver_daily.py outputs/delivery/catchment_daily_1996_2025_full.csv
-```
-
-`deliver_daily.py` writes `catchment_daily_1996_2025.csv` (requested columns)
-and `catchment_daily_1996_2025_README.md` beside the full table.
-
-Use `.csv.gz` for compressed CSV or `.parquet` for optional Parquet output.
-The QC table uses the same format: `example.csv.gz` produces
-`example_qc.csv.gz`, and `example.parquet` produces `example_qc.parquet`.
-The same command can export a short test period from the three demo directories
-or re-export existing completed source periods without downloading again. For
-the one-command example above, use these source directories:
-
-```bash
-python research/export_daily.py --geojson outputs/projects43_independent/dam_catchments.geojson --input-dir outputs/catchment_daily.csv.work/aorc outputs/catchment_daily.csv.work/era5-land outputs/catchment_daily.csv.work/era5 --start 2025-12-29 --end 2025-12-31 --output outputs/catchment_daily_full.csv
-```
-
-Let an existing download finish before updating its checkout or re-exporting
-its source files. This delivery-format change does not change the downloader
-configuration or require source data to be downloaded again.
-
-The exporter requires completed, hash-verified source periods. It rejects
-duplicate observations, conflicting units, different GeoJSON hashes and
-mismatched project sets. Missing source periods are an error; a missing value
-inside a completed period remains a flagged blank.
-
-Both tables share the unique key `(date, project_id)` and the same row order.
-Source-qualified columns prevent
-overwrites, for example `aorc_v1_1__precipitation_mm` and
-`era5_land_cds__precipitation_mm`. Each value's QC fields appear in the QC
-table with the suffixes `__qc`, `__valid_hours`, `__expected_hours` and
-`__min_valid_area_fraction`. For example, `aorc_v1_1__tmean_degC__qc`
-describes `aorc_v1_1__tmean_degC` in the values table.
+The full table and its QC table share the unique key `(date, project_id)` and
+the same row order. Source-qualified columns prevent overwrites, for example
+`aorc_v1_1__precipitation_mm` and `era5_land_cds__precipitation_mm`. Each
+value's QC fields appear in the QC table with the suffixes `__qc`,
+`__valid_hours`, `__expected_hours` and `__min_valid_area_fraction`. For
+example, `aorc_v1_1__tmean_degC__qc` describes `aorc_v1_1__tmean_degC` in the
+values table. The QC table takes the format of `--output`: `example.csv.gz`
+produces `example_qc.csv.gz`, and `example.parquet` produces
+`example_qc.parquet`.
 
 The companion `<output filename>.manifest.json` uses `schema_version: 2`.
 Its `columns` and `qc_columns` dictionaries describe the two tables;
 `output_sha256`, `qc_output_sha256` and `qc_file` identify the paired outputs.
 It also retains original source-variable names, units, aggregation definitions,
 input hashes and project metadata. Deliver both tables and the manifest.
-The destination is supplied through `--output`.
+
+The export requires completed, hash-verified source periods. It rejects
+duplicate observations, conflicting units, different GeoJSON hashes and
+mismatched project sets. Missing source periods are an error; a missing value
+inside a completed period remains a flagged blank.
 
 ## Plots
 
@@ -631,11 +515,6 @@ NWRFC calibration, routing or reservoir operations.
 | Rainfall and snowfall | `rainfall_mm`, `snowfall_mm` | Water-equivalent phase amounts, mm/day; sum to total precipitation when all inputs are valid |
 | Potential evapotranspiration | `pet_hargreaves_mm_day` | Hargreaves-Samani estimate, mm/day |
 
-`--derive` enables the additional diagnostics and PET. Without it, the
-downloader retains the original eight-input workflow. Existing hourly
-catchment means cannot recover exact native-grid RH, speed or precipitation
-phase. To add these products, read the native inputs again with `--derive`.
-
 The humidity calculation uses `e = q p / (0.622 + 0.378 q)` and the documented
 saturation-vapor-pressure formula over liquid water. RH is `100 e/es(T)`;
 supersaturated values are retained. VPD is `max(es(T) - e, 0)`. Wet-bulb
@@ -674,8 +553,7 @@ everywhere from 2024-11-01 to 2024-11-27, so a run takes the 2024 24-hour
 endpoints from the CDS. Otherwise, since 1996 the store holds every value a run
 reads: at the catchments no field is blank at 00 UTC outside that gap, states
 are never blank, and only the radiation fields have a few blank cells at other
-hours, which runs do not read (`python research/check_edh.py --field NAME`
-shows this for any field).
+hours, which runs do not read.
 
 | Requested quantity | Output or calculation | Daily units and meaning |
 | --- | --- | --- |
@@ -764,8 +642,8 @@ drawn from the merged table in one command:
 python research/plot_daily.py outputs/catchment_daily_46_1996_2026.parquet --geojson outputs/catchment_daily_46_1996_2026_catchments.geojson --kind report --output-dir figures/report
 ```
 
-The values table contains **62 data variables**: 19 from AORC with
-`--derive`, 40 from ERA5-Land and 3 from ERA5. Together with `date` and
+The values table contains **62 data variables**: 19 from AORC, 40 from
+ERA5-Land and 3 from ERA5. Together with `date` and
 `project_id`, the full table has 64 columns. Each variable has four fields in
 the separate QC table, which has 250 columns including the same two keys.
 The requested table holds the 25 requested variables in 28 columns (10 AORC,
@@ -780,7 +658,7 @@ equivalent to the mm/day and MJ/m²/day amounts in the tables above.
 | File | Purpose |
 | --- | --- |
 | `research/download_daily.py` | One command for all three sources, daily processing, resume, checks and the final delivery |
-| `research/download_aorc.py` | Retrieve native AORC fields and calculate polygon series; `--derive` enables diagnostics |
+| `research/download_aorc.py` | Retrieve native AORC fields and calculate polygon series and native-cell diagnostics |
 | `research/merge_deliveries.py` | Merge the requested tables of separate deliveries (for example Columbia and Peace) into one table, README and catchment GeoJSON |
 | `research/meteorology.py` | Humidity, wet bulb, rain/snow partition, wind speed and Hargreaves PET formulas |
 | `research/aggregate_daily.py` | Aggregate hourly polygon series with explicit UTC timing and coverage rules |
@@ -788,10 +666,9 @@ equivalent to the mm/day and MJ/m²/day amounts in the tables above.
 | `research/cds_fields.py` | CDS variable definitions, soil weighting, humidity, wind and freezing-level conversions |
 | `research/arco_era5.py` | Serves ERA5 single-level requests from the public ARCO-ERA5 copy in the CDS response layout |
 | `research/edh_era5_land.py` | Serves ERA5-Land requests from the Earth Data Hub copy in the CDS response layout |
-| `research/check_edh.py` | Checks the Earth Data Hub store: units, accumulation convention, gaps (`--scan`, `--field`) and values against the CDS (`--compare-cds`) |
 | `research/export_daily.py` | Verify source artifacts and export aligned daily values and QC tables plus their manifest |
 | `research/check_daily.py` | Check delivered values/QC, physical plausibility and AORC/ERA5-Land agreement; plot coverage and project time series |
-| `research/deliver_daily.py` | Write the requested-variable table and README from a checked full delivery |
+| `research/deliver_daily.py` | Write the requested-variable table and README from a checked full delivery, without filling AORC gaps |
 | `research/delivery_variables.py` | Requested columns: source, native or computed, definition and forecast counterparts |
 | `research/plot_daily.py` | Overview, source comparison and water-year plots for one catchment; map, seasonal-cycle and water-year anomaly plots for every catchment; from a delivery or a working directory |
 | `research/progress_daily.py` | Progress of a running or interrupted download: years, requests and months completed |
@@ -812,26 +689,15 @@ Missing or flagged values require a separately chosen treatment.
 
 ## Quality, interpretation and validation
 
-Validation on 2026-10-06 passed 76 core tests and 120 research tests, including
-all three source-processing contracts through the final exporter across a
-December/January boundary using synthetic CDS responses. The unified entry
-point also tests resume without repeat retrieval, routing-note retention,
-early credential failure and preservation of a previous delivery after a
-source failure. CDS tests cover coordinate rounding, rejection of real grid
-shifts and dimension changes, and resuming a failed grid check after a code
-update without downloading AORC or the cached ERA5-Land responses again.
-A real cached AORC
-replay for 43 projects over 2025-12-29 through 2025-12-31 produced 2,451 daily
-records: 2,322 valid and 129 flagged precipitation/rain/snow values on the
-last date. Rain plus snow matched precipitation in all 86 complete project-days
-within 1.1e-13 mm. CSV and Parquet exports both contained 129 rows. Re-exporting
-this AORC sample into the split format preserved all 2,451 numeric/missing
-values and their QC records exactly. The values table had 21 columns and the
-QC table 78 columns for these 19 AORC variables. Three-source integration
-tests verify 47 value columns and 182 QC columns, including typed Parquet
-nulls and rollback if either output or its manifest cannot be published. The CDS
-request previews cover all 43 projects. Local CDS tests use synthetic
-responses; authenticated end-to-end CDS output has not been validated here.
+The research tests run all three source-processing contracts through the final
+exporter across a December/January boundary with synthetic CDS responses. The
+unified entry point is tested for resume without repeat retrieval, routing-note
+retention, early credential failure and preservation of a previous delivery
+after a source failure; the CDS path for coordinate rounding and rejection of
+real grid shifts. A real cached AORC replay for 43 projects over 2025-12-29
+through 2025-12-31 produced 2,451 daily records: 2,322 valid and 129 flagged
+precipitation/rain/snow values on the last date. Rain plus snow matched
+precipitation in all 86 complete project-days within 1.1e-13 mm.
 
 - Area averages include fractional native grid-cell intersections. Invalid
   cells never become zero and valid cells are not renormalized to represent

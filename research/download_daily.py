@@ -93,9 +93,8 @@ def run(geojson, start, end, output=None, *, work_dir=None, cache_dir=None,
         print(f'[1/3] AORC, ERA5-Land and ERA5 in parallel (AORC transfer ceiling {max_download_gb:g} GB)', flush=True)
         sources['AORC'] = lambda: download_aorc.run(argparse.Namespace(
             geojson=geojson, start=start, end=end, output_dir=work_dir / 'aorc',
-            cache_dir=cache_dir / 'aorc', projects=None, variables=download_aorc.VARIABLES,
-            derive=True, workers=workers, max_download_gb=max_download_gb, cache_only=False,
-            refresh_incomplete=False, keep_chunks=keep_chunks, newest_first=newest_first))
+            cache_dir=cache_dir / 'aorc', projects=None, workers=workers, max_download_gb=max_download_gb,
+            cache_only=False, keep_chunks=keep_chunks, newest_first=newest_first))
     else:
         print('[1/3] ERA5-Land and ERA5 in parallel; ERA5-Land also supplies the AORC variables', flush=True)
     sources.update({label: (lambda product=product: download_cds.run_pipeline(

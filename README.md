@@ -44,6 +44,10 @@ and `catchment_daily_full.csv` holds all 62 variables with
 `catchment_daily_full.csv.checks/` (consistency, plausibility and AORC/ERA5-Land
 comparison reports and plots). All tables have the same 129 project-day rows
 in this example. Repeat the same command to resume completed source periods.
+AORC gaps stay blank in `catchment_daily.csv`; the delivered table is written
+from the full table by `research/debias_era5.py`, which fills them and replaces
+AORC in the Canadian catchments
+([details](docs/data_pipeline.md#aorc-replaced-in-the-canadian-catchments)).
 AORC also needs the `zstd` command-line decoder on `PATH`.
 
 The [data pipeline guide](docs/data_pipeline.md) covers credential setup, AORC

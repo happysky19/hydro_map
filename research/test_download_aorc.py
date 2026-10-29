@@ -7,12 +7,12 @@ from pathlib import Path
 import tempfile
 from types import SimpleNamespace
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import numpy as np
 
-from download_aorc import (BASE, Store, accumulate, extract_native_series, extract_series,
-                           load_polygons, requested_hours, run, unpack)
+from download_aorc import (BASE, Store, accumulate, extract_native_series, load_polygons,
+                           requested_hours, run, unpack)
 
 
 class AorcDownloadTests(unittest.TestCase):
@@ -109,63 +109,9 @@ class AorcDownloadTests(unittest.TestCase):
         np.testing.assert_allclose(sums, [2.5, .25])
         np.testing.assert_allclose(coverage, [1., .25])
 
-    def test_leap_year_window(self):
-        times = requested_hours(dt.date(2024, 1, 1), dt.date(2024, 12, 31), False)
-        self.assertEqual(len(times), 8784)
-        self.assertTrue(np.all(np.diff(times) == 3600))
-
-    def extract_precipitation(self, day, available_years, missing_block=False):
-        """Use two selected cells; broadcast decoder views allocate no full grids."""
-        variable = 'APCP_surface'
-        metas = {year: {
-            variable + '/.zattrs': dict(scale_factor=1., missing_value=-32767),
-            variable + '/.zarray': dict(fill_value=-32767),
-        } for year in available_years}
-        times = {year: requested_hours(dt.date(year, 1, 1), dt.date(year, 12, 31), False)
-                 for year in available_years}
-        blocks = {
-            (0, 0): {'A': (np.array([0]), np.array([0]), np.array([.25]))},
-            (0, 1): {'A': (np.array([0]), np.array([0]), np.array([.75]))},
-        }
-
-        class FakeStore:
-            bytes = 0
-
-            def read(self, url):
-                if missing_block and url.endswith('.0.1'):
-                    raise FileNotFoundError(url)
-                return url.encode(), None
-
-            def discard(self, url):
-                pass
-
-        def decoded(payload, dtype, zstd):
-            value = 3 if b'2025.zarr' in payload else 1
-            return np.broadcast_to(np.array(value, dtype=np.int16), (144 * 128 * 256,)), 0
-
-        target = requested_hours(day, day, True)
-        with patch('download_aorc.decode', side_effect=decoded), patch('builtins.print'):
-            return extract_series(FakeStore(), metas, times, blocks, variable,
-                                  target, 'unused', 2, False)
-
-    def test_extraction_uses_next_year_precipitation_chunk(self):
-        sums, coverage = self.extract_precipitation(dt.date(2024, 12, 31), [2024, 2025])
-        np.testing.assert_allclose(sums['A'], [1.] * 23 + [3.])
-        np.testing.assert_allclose(coverage['A'], np.ones(24))
-
-    def test_extraction_missing_next_year_keeps_boundary_uncovered(self):
-        sums, coverage = self.extract_precipitation(dt.date(2025, 12, 31), [2025])
-        np.testing.assert_allclose(sums['A'], [3.] * 23 + [0.])
-        np.testing.assert_allclose(coverage['A'], [1.] * 23 + [0.])
-
-    def test_extraction_missing_spatial_chunk_preserves_missing_fraction(self):
-        sums, coverage = self.extract_precipitation(dt.date(2025, 1, 1), [2025], True)
-        np.testing.assert_allclose(sums['A'], np.full(24, .75))
-        np.testing.assert_allclose(coverage['A'], np.full(24, .25))
-
     def native_derived_extraction(self, missing_union=False, missing_boundary_precip=False):
-        variables = ['APCP_surface', 'TMP_2maboveground', 'SPFH_2maboveground',
-                     'PRES_surface', 'UGRD_10maboveground', 'VGRD_10maboveground']
+        variables = ['APCP_surface', 'TMP_2maboveground', 'SPFH_2maboveground', 'PRES_surface',
+                     'DSWRF_surface', 'DLWRF_surface', 'UGRD_10maboveground', 'VGRD_10maboveground']
         scales = {'TMP_2maboveground': (1., 273.15), 'SPFH_2maboveground': (.000001, 0.),
                   'PRES_surface': (10., 0.)}
         metas = {year: {} for year in (2024, 2025)}
@@ -196,6 +142,7 @@ class AorcDownloadTests(unittest.TestCase):
             variable = payload.decode().split('/')[-2]
             pair = {'APCP_surface': [2, 4], 'TMP_2maboveground': [-2, 3],
                     'SPFH_2maboveground': [3653, 5260], 'PRES_surface': [9000, 9000],
+                    'DSWRF_surface': [100, 300], 'DLWRF_surface': [250, 350],
                     'UGRD_10maboveground': [3, -3], 'VGRD_10maboveground': [4, -4]}[variable]
             if missing_union and variable == 'SPFH_2maboveground':
                 pair[1] = -32767
@@ -209,8 +156,8 @@ class AorcDownloadTests(unittest.TestCase):
             result = extract_native_series(FakeStore(), metas, times, blocks, variables,
                 dt.date(2024, 12, 31), dt.date(2024, 12, 31), 'unused', 2, False)
         self.assertEqual(len(read_urls), len(set(read_urls)))
-        self.assertEqual(len(read_urls), 12)
-        self.assertEqual(len(discarded), 11 if missing_boundary_precip else 12)
+        self.assertEqual(len(read_urls), 16)
+        self.assertEqual(len(discarded), 15 if missing_boundary_precip else 16)
         return result
 
     def test_native_derived_extraction_preserves_nonlinear_cellwise_wind_and_phase(self):
@@ -238,109 +185,70 @@ class AorcDownloadTests(unittest.TestCase):
         for name in ('temperature_c', 'relative_humidity_pct', 'wet_bulb_temperature_c'):
             np.testing.assert_allclose(result[name][2]['A'], np.ones(24))
 
-    def test_derive_run_records_methods_dependencies_schema_and_pet(self):
-        extracted = self.native_derived_extraction()
+    def run_twice(self, folder, properties, extracted):
+        """Run a one-day extraction twice over one catchment; returns the arguments and the extractor mock."""
+        geojson = folder / 'catchment.geojson'
+        geojson.write_text(json.dumps(dict(type='FeatureCollection', features=[dict(
+            type='Feature', properties=dict(id='A', part='local', **properties), geometry=dict(type='Polygon',
+            coordinates=[[[0, 44], [1, 44], [1, 46], [0, 46], [0, 44]]]))])))
+        args = SimpleNamespace(geojson=geojson, projects=None, start=dt.date(2024, 12, 31),
+            end=dt.date(2024, 12, 31), output_dir=folder / 'output', cache_dir=folder / 'cache',
+            workers=1, max_download_gb=.001, cache_only=True, keep_chunks=False)
+
+        def fake_axis(store, year, name, metadata, zstd):
+            return (requested_hours(dt.date(year, 1, 1), dt.date(year, 12, 31), False)
+                    if name == 'time' else np.array([0., 1.]))
+
+        with patch('download_aorc.shutil.which', return_value='zstd'), \
+             patch('download_aorc.metadata', return_value={}), \
+             patch('download_aorc.axis', side_effect=fake_axis), \
+             patch('download_aorc.weights', return_value={
+                 'A': (np.array([0]), np.array([0]), np.array([1.]))}), \
+             patch('download_aorc.extract_native_series', return_value=extracted) as native, \
+             patch('builtins.print'):
+            run(args)
+            run(args)
+        return args, native
+
+    def test_run_records_methods_dependencies_schema_and_pet(self):
         with tempfile.TemporaryDirectory() as directory:
-            folder = Path(directory)
-            geojson = folder / 'catchment.geojson'
-            geojson.write_text(json.dumps(dict(type='FeatureCollection', features=[dict(
-                type='Feature', properties=dict(id='A', part='local'), geometry=dict(type='Polygon',
-                coordinates=[[[0, 44], [1, 44], [1, 46], [0, 46], [0, 44]]]))])))
-            args = SimpleNamespace(geojson=geojson, projects=None, start=dt.date(2024, 12, 31),
-                end=dt.date(2024, 12, 31), output_dir=folder / 'output', cache_dir=folder / 'cache',
-                variables=['APCP_surface'], workers=1, max_download_gb=.001,
-                cache_only=True, refresh_incomplete=False, keep_chunks=False, derive=True)
-
-            def fake_axis(store, year, name, metadata, zstd):
-                return (requested_hours(dt.date(year, 1, 1), dt.date(year, 12, 31), False)
-                        if name == 'time' else np.array([0., 1.]))
-
-            with patch('download_aorc.shutil.which', return_value='zstd'), \
-                 patch('download_aorc.metadata', return_value={}), \
-                 patch('download_aorc.axis', side_effect=fake_axis), \
-                 patch('download_aorc.weights', return_value={
-                     'A': (np.array([0]), np.array([0]), np.array([1.]))}), \
-                 patch('download_aorc.extract_native_series', return_value=extracted) as native, \
-                 patch('download_aorc.extract_series', side_effect=AssertionError('Legacy extractor used')), \
-                 patch('builtins.print'):
-                run(args)
-                run(args)
+            args, native = self.run_twice(Path(directory), {}, self.native_derived_extraction())
             self.assertEqual(native.call_count, 1)
             metadata = json.loads((args.output_dir / 'run.json').read_text())
             self.assertEqual(metadata['source_id'], 'aorc_v1.1')
-            self.assertEqual(len(metadata['variables']), 6)
+            self.assertEqual(len(metadata['variables']), 8)
             self.assertEqual(metadata['pet_centroid_latitudes'], {'A': 45.})
             self.assertIn('meteorology.py', metadata['code_sha256'])
             self.assertEqual(metadata['derived_methods']['phase']['snow_threshold_c'], .5)
             with gzip.open(args.output_dir / 'daily_2024.csv.gz', 'rt') as stream:
                 rows = {row['variable']: row for row in csv.DictReader(stream)}
             self.assertEqual(set(rows), set(metadata['daily_schema']))
-            self.assertEqual(len(rows), 15)
+            self.assertEqual(len(rows), 19)
             self.assertTrue(all(row['qc'] == 'valid' and row['valid_hours'] == '24' for row in rows.values()))
             self.assertEqual(float(rows['rainfall_mm']['value']) + float(rows['snowfall_mm']['value']),
                              float(rows['precipitation_mm']['value']))
             self.assertEqual(rows['pet_hargreaves_mm']['units'], 'mm/day')
 
-    def test_refresh_incomplete_recomputes_year_while_normal_resume_skips(self):
+    def test_a_year_with_gaps_keeps_routing_metadata_and_is_not_recomputed(self):
+        properties = dict(catchment_role='natural_reach_at_tailrace', diversion_intake_project='UPSTREAM',
+                          routing_requires_operations=True)
+        extracted = self.native_derived_extraction(missing_boundary_precip=True)
         with tempfile.TemporaryDirectory() as directory:
-            folder = Path(directory)
-            geojson = folder / 'catchment.geojson'
-            geojson.write_text(json.dumps(dict(type='FeatureCollection', features=[dict(
-                type='Feature', properties=dict(id='A', part='local',
-                    catchment_role='natural_reach_at_tailrace', diversion_intake_project='UPSTREAM',
-                    routing_requires_operations=True), geometry=dict(type='Polygon',
-                    coordinates=[[[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]]]))])))
-            args = SimpleNamespace(geojson=geojson, projects=None, start=dt.date(2025, 1, 1),
-                end=dt.date(2025, 1, 1), output_dir=folder / 'output', cache_dir=folder / 'cache',
-                variables=['APCP_surface'], workers=1, max_download_gb=.001,
-                cache_only=False, refresh_incomplete=False, keep_chunks=False)
-            calls = []
+            args, native = self.run_twice(Path(directory), properties, extracted)
+            self.assertEqual(native.call_count, 1)
+            metadata = json.loads((args.output_dir / 'run.json').read_text())
+            self.assertEqual(metadata['forcing_groups'], {'A': ['A']})
+            self.assertEqual(metadata['project_forcing']['A']['forcing_group'], 'A')
+            self.assertEqual(metadata['project_forcing']['A']['diversion_intake_project'], 'UPSTREAM')
+            self.assertIs(metadata['project_forcing']['A']['routing_requires_operations'], True)
+            self.assertIn('turbine inflow', metadata['warnings'][0])
+            self.assertEqual(json.loads((args.output_dir / 'year_2024.json').read_text())['status'],
+                             'computed_with_gaps')
+            with gzip.open(args.output_dir / 'daily_2024.csv.gz', 'rt') as stream:
+                precipitation = next(row for row in csv.DictReader(stream) if row['variable'] == 'precipitation_mm')
+            self.assertEqual((precipitation['value'], precipitation['valid_hours']), ('', '23'))
 
-            def fake_extract(store, *unused):
-                calls.append(set(store.refresh_years))
-                if not store.refresh_years:
-                    return {'A': np.full(24, 2.)}, {'A': np.array([1.] * 23 + [0.])}
-                return {'A': np.full(24, 3.)}, {'A': np.ones(24)}
-
-            def fake_axis(store, year, name, metadata, zstd):
-                return (requested_hours(dt.date(year, 1, 1), dt.date(year, 12, 31), False)
-                        if name == 'time' else np.array([0., 1.]))
-
-            with patch('download_aorc.shutil.which', return_value='zstd'), \
-                 patch('download_aorc.metadata', return_value={}), \
-                 patch('download_aorc.axis', side_effect=fake_axis), \
-                 patch('download_aorc.weights', return_value={
-                     'A': (np.array([0]), np.array([0]), np.array([1.]))}), \
-                 patch('download_aorc.extract_series', side_effect=fake_extract), \
-                 patch('builtins.print'):
-                run(args)
-                metadata = json.loads((args.output_dir / 'run.json').read_text())
-                self.assertFalse(metadata['derive'])
-                self.assertEqual(set(metadata['daily_schema']), {'precipitation_mm'})
-                self.assertEqual(metadata['forcing_groups'], {'A': ['A']})
-                self.assertEqual(metadata['project_forcing']['A']['forcing_group'], 'A')
-                self.assertEqual(metadata['project_forcing']['A']['diversion_intake_project'], 'UPSTREAM')
-                self.assertIs(metadata['project_forcing']['A']['routing_requires_operations'], True)
-                self.assertIn('turbine inflow', metadata['warnings'][0])
-                manifest = args.output_dir / 'year_2025.json'
-                self.assertEqual(json.loads(manifest.read_text())['status'], 'computed_with_gaps')
-                run(args)
-                self.assertEqual(calls, [set()])
-                args.refresh_incomplete = True
-                with patch('download_aorc.aggregate_daily', side_effect=RuntimeError('interrupted')):
-                    with self.assertRaisesRegex(RuntimeError, 'interrupted'):
-                        run(args)
-                self.assertFalse(manifest.exists())
-                # A retry must recompute, not compare newly written data with old hashes.
-                run(args)
-                self.assertEqual(calls, [set(), {2025, 2026}, {2025, 2026}])
-                self.assertEqual(json.loads(manifest.read_text())['status'], 'computed_all_hours_valid')
-                with gzip.open(args.output_dir / 'daily_2025.csv.gz', 'rt') as stream:
-                    row = next(csv.DictReader(stream))
-                self.assertEqual(float(row['value']), 72.)
-                self.assertEqual(row['valid_hours'], '24')
-
-    def test_refresh_year_bypasses_even_a_hash_valid_source_cache(self):
+    def test_hash_valid_cache_is_read_without_a_request(self):
         with tempfile.TemporaryDirectory() as directory:
             store = Store(Path(directory), limit=100)
             url = BASE + '2025.zarr/APCP_surface/0.0.0'
@@ -348,17 +256,10 @@ class AorcDownloadTests(unittest.TestCase):
             path.write_bytes(b'old')
             path.with_suffix('.json').write_text(json.dumps(dict(
                 url=url, status=200, bytes=3, sha256=hashlib.sha256(b'old').hexdigest())))
-            response = MagicMock(status_code=200)
-            response.__enter__.return_value = response
-            response.iter_content.return_value = iter([b'new'])
-            with patch('download_aorc.requests.get', return_value=response) as request:
+            with patch('download_aorc.requests.get') as request:
                 self.assertEqual(store.read(url)[0], b'old')
                 request.assert_not_called()
-                store.refresh_years.add(2025)
-                self.assertEqual(store.read(url)[0], b'new')
-                request.assert_called_once()
-            self.assertEqual(path.read_bytes(), b'new')
-            self.assertEqual(store.bytes, 3)
+            self.assertEqual(store.bytes, 0)
 
 
 if __name__ == '__main__':

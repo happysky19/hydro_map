@@ -534,18 +534,7 @@ def run_pipeline(geojson, product, output_dir, cache_dir, start, end, *, project
     output_dir.mkdir(parents=True, exist_ok=True); cache_dir.mkdir(parents=True, exist_ok=True)
     run_path = output_dir/'run.json'
     if run_path.exists() and json.loads(run_path.read_text()) != run:
-        previous = json.loads(run_path.read_text())
-        processing_keys = {'code_sha256', 'methods', 'daily_schema'}
-        request_config = lambda value: {key: item for key, item in value.items() if key not in processing_keys}
-        if (request_config(previous) != request_config(run)
-                or any(output_dir.glob('month_*.json')) or any(output_dir.glob('daily_*.csv'))
-                or any(output_dir.glob('daily_*.csv.gz'))):
-            raise ValueError('Output configuration differs; use a new output directory and retain the cache directory')
-        # No completed CDS output can mix processing versions. Raw request hashes remain unchanged.
-        history = output_dir/'run_history'
-        history.mkdir(exist_ok=True)
-        atomic_json(history/f'{json_hash(previous)}.json', previous)
-        print('Updated unfinished CDS processing configuration; retaining verified request cache', flush=True)
+        raise ValueError('Output configuration differs; use a new output directory and retain the cache directory')
     atomic_json(run_path, run)
     manifest_path = cache_dir/'requests.manifest.json'
     manifest = json.loads(manifest_path.read_text()) if manifest_path.exists() else {}

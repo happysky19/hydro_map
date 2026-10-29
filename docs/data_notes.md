@@ -182,14 +182,13 @@ and NOAA's NWRFC NetCDF files contain only fill values for that day, across the
 whole domain. That day is blank for every AORC variable, and precipitation is
 also blank on 2024-06-17 because its last hour ends at 2024-06-18 00 UTC.
 
-These blanks stay blank in the full table. In the requested table they are
-filled from the same ERA5-Land quantity, adjusted to AORC's mean for that
-catchment and calendar month (a shift for temperatures and relative humidity;
-a ratio limited to 0.25-4 for precipitation, shortwave radiation and vapor
-pressure deficit). Filled precipitation is split
-with ERA5-Land's snow fraction so that rain plus snow still equals the total,
-and PET is recalculated from the filled temperatures. The `aorc_gap_filled`
-column lists the filled columns of each row, and the README counts them.
+These blanks stay blank in the full table. In the delivered table
+`debias_era5.py` fills them from ERA5-Land quantile-mapped onto AORC for that
+catchment and calendar month. Filled precipitation is split into rain and snow
+by AORC's snow fraction against daily mean temperature, so that rain plus snow
+still equals the total, and PET is recalculated from the filled temperatures.
+The `aorc_gap_filled` column lists the filled columns of each row, and the
+README counts them.
 
 AORC's 10 m wind changes source at the start of 2018, from NLDAS-2 (12 km,
 itself from the 32 km NARR reanalysis) to the 2.5 km URMA analysis, which is

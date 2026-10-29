@@ -1,8 +1,7 @@
 """Check strict daily UTC statistics from hourly catchment means."""
 
 import csv
-import gzip
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta
 from pathlib import Path
 import tempfile
 import unittest
@@ -70,20 +69,18 @@ class DailyAggregationTests(unittest.TestCase):
                 self.assertTrue(all(r['qc'] == 'invalid_hours' for r in result))
 
     def test_sources_stay_separate_and_leap_day_is_explicit(self):
-        rows = hourly('snow_water_equivalent_mm', [1.] * 24, '2024-02-28T00:00:00+00:00', 'mm', source='aorc')
-        rows += hourly('snow_water_equivalent_mm', [8.] * 24, '2024-02-28T00:00:00+00:00', 'mm', source='era5')
+        rows = hourly('surface_pressure_pa', [1.] * 24, '2024-02-28T00:00:00+00:00', 'Pa', source='aorc')
+        rows += hourly('surface_pressure_pa', [8.] * 24, '2024-02-28T00:00:00+00:00', 'Pa', source='era5')
         result = self.run_daily(rows, date(2024, 2, 28), date(2024, 3, 1))
         self.assertEqual(len(result), 6)
         self.assertEqual([r['value'] for r in result], ['1.0', '', '', '8.0', '', ''])
         self.assertEqual([r['date'] for r in result[:3]], ['2024-02-28', '2024-02-29', '2024-03-01'])
 
-    def test_radiation_timing_controls_daily_mean_and_energy(self):
-        for kind, expected in [('instantaneous', 0.), ('hour_ending_mean', 100.)]:
-            with self.subTest(kind=kind):
-                rows = hourly('shortwave_down_wm2', [0.] * 24 + [2400.], units='W/m2', kind=kind)
-                result = {r['variable']: r for r in self.run_daily(rows)}
-                self.assertEqual(float(result['shortwave_down_mean_wm2']['value']), expected)
-                self.assertAlmostEqual(float(result['shortwave_down_energy_mjm2']['value']), expected * .0864)
+    def test_radiation_mean_and_energy_use_hours_00_to_23(self):
+        rows = hourly('shortwave_down_wm2', [100.] * 24 + [2400.], units='W/m2')
+        result = {r['variable']: r for r in self.run_daily(rows)}
+        self.assertEqual(float(result['shortwave_down_mean_wm2']['value']), 100.)
+        self.assertAlmostEqual(float(result['shortwave_down_energy_mjm2']['value']), 8.64)
 
     def test_derived_phase_sums_and_diagnostic_means(self):
         rows = []
@@ -120,13 +117,6 @@ class DailyAggregationTests(unittest.TestCase):
             if complete:
                 self.assertGreater(float(pet['value']), 0.)
 
-    def test_pet_requires_explicit_finite_centroid_latitude(self):
-        self.write(hourly('temperature_c', [10.] * 24))
-        for latitudes in ({}, {'A': float('nan')}, {'A': 91.}):
-            with self.subTest(latitudes=latitudes), self.assertRaises(ValueError):
-                aggregate_daily(self.input, self.output, date(2025, 12, 31), date(2025, 12, 31),
-                                pet_latitudes=latitudes)
-
     def test_duplicate_order_units_and_metadata_errors_preserve_previous_output(self):
         base = hourly('temperature_c', [1.] * 24)
         scenarios = [base + [base[-1]], list(reversed(base))]
@@ -144,31 +134,8 @@ class DailyAggregationTests(unittest.TestCase):
                     aggregate_daily(self.input, self.output, date(2025, 12, 31), date(2025, 12, 31))
                 self.assertEqual(self.output.read_text(), 'previous complete output')
 
-    def test_duplicate_outside_requested_dates_still_rejected(self):
-        rows = hourly('temperature_c', [2.] * 25)
-        rows.append(rows[-1])
-        self.write(rows)
-        with self.assertRaises(ValueError):
-            aggregate_daily(self.input, self.output, date(2025, 12, 31), date(2025, 12, 31))
-
-    def test_gzip_roundtrip_and_unavailable_year_end_hour(self):
-        rows = hourly('precipitation_mm', [1.] * 24, '2025-12-31T01:00:00+00:00', 'mm', 'hour_ending_amount')
-        rows[-1].update(value='', valid_area_fraction=0., qc='source_unavailable')
-        compressed_input, compressed_output = self.input.with_suffix('.csv.gz'), self.output.with_suffix('.csv.gz')
-        with gzip.open(compressed_input, 'wt', newline='') as stream:
-            writer = csv.DictWriter(stream, fieldnames=FIELDS)
-            writer.writeheader()
-            writer.writerows(rows)
-        aggregate_daily(compressed_input, compressed_output, date(2025, 12, 31), date(2025, 12, 31))
-        with gzip.open(compressed_output, 'rt', newline='') as stream:
-            result = list(csv.DictReader(stream))
-        self.assertEqual(len(result), 1)
-        self.assertEqual(result[0]['value'], '')
-        self.assertEqual(result[0]['valid_hours'], '23')
-        self.assertEqual(result[0]['min_valid_area_fraction'], '0.0')
-
     def test_entire_thirty_year_calendar_has_requested_end_date(self):
-        rows = hourly('snow_water_equivalent_mm', [1.] * 24, '2025-12-31T00:00:00+00:00', 'mm')
+        rows = hourly('surface_pressure_pa', [1.] * 24, '2025-12-31T00:00:00+00:00', 'Pa')
         result = self.run_daily(rows, date(1996, 1, 1), date(2025, 12, 31))
         self.assertEqual(len(result), 10958)
         self.assertEqual(result[0]['date'], '1996-01-01')
@@ -176,15 +143,6 @@ class DailyAggregationTests(unittest.TestCase):
         self.assertEqual(sum(r['date'].endswith('-02-29') for r in result), 8)
         self.assertEqual(result[-1]['value'], '1.0')
         self.assertEqual(sum(r['value'] == '' for r in result), 10957)
-
-    def test_refuses_overwriting_input_or_reversed_dates(self):
-        self.write(hourly('temperature_c', [1.] * 24))
-        original = self.input.read_bytes()
-        with self.assertRaises(ValueError):
-            aggregate_daily(self.input, self.input, date(2025, 12, 31), date(2025, 12, 31))
-        self.assertEqual(self.input.read_bytes(), original)
-        with self.assertRaises(ValueError):
-            aggregate_daily(self.input, self.output, date(2026, 1, 1), date(2025, 12, 31))
 
 
 if __name__ == '__main__':

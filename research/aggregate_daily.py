@@ -10,10 +10,9 @@ derived on native cells before spatial averaging. Optional daily PET uses
 catchment temperature statistics and the supplied polygon centroid latitude.
 """
 
-import argparse
 import csv
 import gzip
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 from itertools import groupby
 import math
 from pathlib import Path
@@ -33,9 +32,8 @@ RULES = {
     'surface_pressure_pa': ('Pa', {'instantaneous'}),
     'u_wind_ms': ('m/s', {'instantaneous'}),
     'v_wind_ms': ('m/s', {'instantaneous'}),
-    'shortwave_down_wm2': ('W/m2', {'instantaneous', 'hour_ending_mean'}),
-    'longwave_down_wm2': ('W/m2', {'instantaneous', 'hour_ending_mean'}),
-    'snow_water_equivalent_mm': ('mm', {'instantaneous'}),
+    'shortwave_down_wm2': ('W/m2', {'instantaneous'}),
+    'longwave_down_wm2': ('W/m2', {'instantaneous'}),
 }
 RULES.update({name: (units, {kind}) for name, (units, kind) in DERIVED_FIELDS.items()})
 AMOUNTS = {'precipitation_mm', 'rainfall_mm', 'snowfall_mm'}
@@ -181,17 +179,3 @@ def aggregate_daily(hourly_csv, daily_csv, start, end, pet_latitudes=None):
             temporary.unlink(missing_ok=True)
     return count
 
-
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--input', required=True, type=Path)
-    parser.add_argument('--output', required=True, type=Path)
-    parser.add_argument('--start', required=True, type=date.fromisoformat)
-    parser.add_argument('--end', required=True, type=date.fromisoformat)
-    args = parser.parse_args()
-    count = aggregate_daily(args.input, args.output, args.start, args.end)
-    print(f'Wrote {count} daily rows; incomplete days retain blank values.')
-
-
-if __name__ == '__main__':
-    main()

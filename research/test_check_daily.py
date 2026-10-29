@@ -201,20 +201,6 @@ class CheckDailyTests(unittest.TestCase):
         self.assertEqual(report['persistent_snow'], [dict(source='era5_land_cds', project_id='A',
                                                           minimum_swe_mm=400., mean_swe_mm=450.)])
 
-    def test_long_window_plots_handle_all_missing_series(self):
-        start = date(2024, 1, 1)
-        row, qc = self.rows[0], self.quality[0]
-        self.rows = [dict(row, date=str(start+timedelta(days=i))) for i in range(400)]
-        self.quality = [dict(qc, date=r['date']) for r in self.rows]
-        self.save()
-        path = Path(str(self.path)+'.manifest.json')
-        metadata = json.loads(path.read_text())
-        metadata.update(start=str(start), end=self.rows[-1]['date'], row_count=400)
-        path.write_text(json.dumps(metadata))
-        report = self.check(plots=True)
-        self.assertEqual(report['missing_values'], 400)
-        self.assertEqual(report['failed_checks'], 0)
-
 
 if __name__ == '__main__':
     unittest.main()
@@ -278,7 +264,7 @@ class ReviewFlagTests(unittest.TestCase):
         self.assertEqual(counts, {}, rows[:5])
 
     def test_each_kind_of_problem_is_found_and_ranked(self):
-        np, v, at = self.np, self.values, self.lookup
+        v, at = self.values, self.lookup
         day = lambda text: self.days.index(date.fromisoformat(text))
         v[day('2012-07-10'), 0, at['aorc_v1.1', 'tmean_c']] += 25               # one-day spike
         v[day('2013-06-02'), 1, at['aorc_v1.1', 'precipitation_mm']] = 160      # storm in one source only

@@ -14,7 +14,6 @@ import gzip
 import hashlib
 import json
 import math
-import os
 from pathlib import Path
 import re
 import sqlite3
@@ -34,21 +33,6 @@ UNIT_SUFFIXES = {
     'W/m2': ('W_m2', ('w_m2', 'wm2')), 'MJ/m2': ('MJ_m2', ('mj_m2', 'mjm2')),
     'kg/m3': ('kg_m3', ('kg_m3', 'kgm3')), 'm3/m3': ('m3_m3', ('m3_m3', 'm3m3')),
     '%': ('pct', ('pct',)), '1': ('fraction', ('fraction',)),
-}
-AORC_URL = 'https://noaa-nws-aorc-v1-1-1km.s3.amazonaws.com/'
-AORC_DAILY = {
-    'APCP_surface': [('precipitation_mm', 'mm', 'Sum of 24 hour-ending water-equivalent amounts')],
-    'TMP_2maboveground': [('tmean_c', 'degC', 'Mean of 24 hourly polygon means'),
-        ('tmin_c', 'degC', 'Minimum of 24 hourly polygon means'),
-        ('tmax_c', 'degC', 'Maximum of 24 hourly polygon means')],
-    'SPFH_2maboveground': [('specific_humidity_kgkg', 'kg/kg', 'Mean of 24 hourly polygon means')],
-    'PRES_surface': [('surface_pressure_pa', 'Pa', 'Mean of 24 hourly polygon means')],
-    'UGRD_10maboveground': [('u_wind_ms', 'm/s', 'Mean of 24 hourly polygon means')],
-    'VGRD_10maboveground': [('v_wind_ms', 'm/s', 'Mean of 24 hourly polygon means')],
-    'DSWRF_surface': [('shortwave_down_mean_wm2', 'W/m2', 'Mean of 24 hourly polygon means'),
-        ('shortwave_down_energy_mjm2', 'MJ/m2', 'Rectangular hourly integration of downward shortwave')],
-    'DLWRF_surface': [('longwave_down_mean_wm2', 'W/m2', 'Mean of 24 hourly polygon means'),
-        ('longwave_down_energy_mjm2', 'MJ/m2', 'Rectangular hourly integration of downward longwave')],
 }
 
 
@@ -88,16 +72,8 @@ def _value_column(source, variable, units):
 
 def _schema(run):
     source = run.get('source_id')
-    if source is None and run.get('source') == AORC_URL:
-        source = 'aorc_v1.1'
     _name(source)
     schema = run.get('daily_schema')
-    if schema is None and run.get('source') == AORC_URL:
-        variables = run.get('variables', [])
-        if not variables or any(v not in AORC_DAILY for v in variables):
-            raise ValueError('Unidentified legacy AORC variable schema')
-        schema = {name: dict(units=units, statistic=statistic)
-                  for variable in variables for name, units, statistic in AORC_DAILY[variable]}
     if not isinstance(schema, dict) or not schema:
         raise ValueError('run.json requires an identified daily_schema')
     for variable, definition in schema.items():
@@ -302,7 +278,7 @@ def _write(path, output, columns, rows, *, quality=False, text_columns=()):
 
 
 def export_daily(geojson, input_dirs, start, end, output):
-    """Verify periods, stage both tables, and roll back failed file publication."""
+    """Verify periods, stage both tables and publish them, the manifest last."""
     geojson, output = Path(geojson), Path(output)
     companion = Path(str(output) + '.manifest.json')
     if start > end or not input_dirs:
@@ -312,8 +288,6 @@ def export_daily(geojson, input_dirs, start, end, output):
     suffix = '.csv.gz' if output.name.endswith('.csv.gz') else output.suffix
     qc_output = output.with_name(output.name[:-len(suffix)] + '_qc' + suffix)
     destinations = [output, qc_output, companion]
-    if any(path.is_dir() for path in destinations):
-        raise ValueError('Outputs and companion manifest must be files, not directories')
     doc = json.loads(geojson.read_text())
     if doc.get('type') != 'FeatureCollection' or doc.get('crs') or not doc.get('features'):
         raise ValueError('Use a nonempty WGS84 GeoJSON FeatureCollection')
@@ -338,8 +312,6 @@ def export_daily(geojson, input_dirs, start, end, output):
     columns = {'date': dict(description='UTC calendar date'),
                'project_id': dict(description='Canonical GeoJSON project identifier')}
     qc_columns = dict(columns)
-    if len({_name(source) for source in schemas}) != len(schemas):
-        raise ValueError('Source prefix collision after sanitizing identifiers')
     bases = []
     for source, schema in sorted(schemas.items()):
         for variable, definition in sorted(schema.items()):
@@ -392,23 +364,9 @@ def export_daily(geojson, input_dirs, start, end, output):
         report['output_sha256'] = digest(temporary)
         report['qc_output_sha256'] = digest(quality_table)
         metadata.write_text(json.dumps(report, indent=2, allow_nan=False) + '\n')
-        backups, published = {}, []
-        for index, target in enumerate(destinations):
-            if target.exists() or target.is_symlink():
-                backups[target] = Path(folder)/f'previous_{index}'
-                os.link(target, backups[target], follow_symlinks=False)
-        try:
-            # The manifest is the commit marker: consumers verify both output hashes.
-            for staged, target in zip([temporary, quality_table, metadata], destinations):
-                staged.replace(target)
-                published.append(target)
-        except OSError:
-            for target in reversed(published):
-                if target in backups:
-                    backups[target].replace(target)
-                else:
-                    target.unlink()
-            raise
+        # The manifest is the commit marker: consumers verify both output hashes against it.
+        for staged, target in zip([temporary, quality_table, metadata], destinations):
+            staged.replace(target)
     return report
 
 

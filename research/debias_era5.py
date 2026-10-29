@@ -18,9 +18,6 @@ aorc_gap_filled naming the filled or replaced columns of each row.
 OUTPUT_check.csv tests the method: each year with AORC to fit on is corrected
 with a fit on the other years and compared with AORC, beside the uncorrected
 ERA5-Land.
-
---raw fills with ERA5-Land as it is, without the mapping, with its own rain and
-snow; PET is recalculated from its temperatures.
 """
 
 import argparse
@@ -36,17 +33,22 @@ import numpy as np
 
 from check_daily import table_rows
 from delivery_variables import AORC, LAND, REFERENCE, REPLACED, REQUESTED
-from deliver_daily import ADDITIVE, FILL_COLUMN, RATIO, RATIO_LIMITS, companion
+from deliver_daily import FILL_COLUMN, companion
 from export_daily import _write, digest
 from meteorology import hargreaves_pet
 
 
+# Beyond the fitted quantiles signed quantities shift; nonnegative ones scale, within RATIO_LIMITS (see mapped).
+ADDITIVE = {'tmean_c', 'tmin_c', 'tmax_c', 'relative_humidity_pct'}
+RATIO = {'precipitation_mm', 'shortwave_down_mean_wm2', 'vapor_pressure_deficit_kpa'}
+RATIO_LIMITS = (.25, 4.)
 MAPPED = sorted(ADDITIVE | RATIO)
 VARIABLES = [item['variable'] for item in REQUESTED if item['source'] == AORC]
 LEVELS = (np.arange(100) + .5) / 100
 MIN_DAYS = 60
 WET_MM = .1
-CENTRES, WIDTHS = np.arange(-6, 6.01, .1), np.arange(.2, 4.01, .1)
+# Candidate snow-fraction curves: (centre, width) in degC.
+CURVES = np.array(np.meshgrid(np.arange(-6, 6.01, .1), np.arange(.2, 4.01, .1), indexing='ij')).reshape(2, -1).T
 CHECK_COLUMNS = ['variable', 'project_id', 'days', 'aorc_mean', 'era5_land_mean', 'corrected_mean',
                  'era5_land_mae', 'corrected_mae', 'aorc_p99', 'era5_land_p99', 'corrected_p99',
                  'aorc_wet_days', 'era5_land_wet_days', 'corrected_wet_days']
@@ -72,17 +74,26 @@ def read(path, manifest, wanted):
     return keys, {column: np.array(series) for column, series in values.items()}
 
 
-def fit(x, y, projects, months, rows):
-    """Quantile pairs per (project, month), from the paired rows of that month and the months either side."""
+def month_groups(projects, dates):
+    """Catchment names, and for each row the group number catchment * 12 + month - 1."""
+    names, codes = np.unique(projects, return_inverse=True)
+    return names, codes * 12 + np.array([day.month for day in dates]) - 1
+
+
+def fit(x, y, names, groups, rows):
+    """Quantile pairs per group, from the paired rows of that month and the months either side."""
+    rows = rows[np.argsort(groups[rows], kind='stable')]
+    bounds = np.searchsorted(groups[rows], np.arange(len(names) * 12 + 1))
     maps = {}
-    for project in np.unique(projects):
-        mine = rows[projects[rows] == project]
-        for month in range(1, 13):
-            near = mine[np.isin(months[mine], [(month - 2) % 12 + 1, month, month % 12 + 1])]
+    for code, project in enumerate(names):
+        for month in range(12):
+            near = np.concatenate([rows[bounds[group]:bounds[group + 1]]
+                                   for group in code * 12 + np.arange(month - 1, month + 2) % 12])
             if len(near) < MIN_DAYS:
-                raise ValueError(f'{project}, month {month}: {len(near)} days with both sources; need {MIN_DAYS}')
+                raise ValueError(f'{project}, month {month + 1}: {len(near)} days with both sources; '
+                                 f'need {MIN_DAYS}')
             xq, index = np.unique(np.quantile(x[near], LEVELS), return_inverse=True)
-            maps[project, month] = xq, np.bincount(index, np.quantile(y[near], LEVELS)) / np.bincount(index)
+            maps[code * 12 + month] = xq, np.bincount(index, np.quantile(y[near], LEVELS)) / np.bincount(index)
     return maps
 
 
@@ -107,24 +118,37 @@ def snow_fraction(temperature, centre, width):
     return 1 / (1 + np.exp((temperature - centre) / width))
 
 
-def fit_phase(aorc, projects, rows):
-    """Per catchment, the logistic curve of AORC's snow fraction against daily mean temperature.
+def phase_errors(aorc, projects, rows, parts):
+    """Per catchment and part of the rows (parts numbers them), the wet days and the error of every curve.
 
-    Returns {project: (centre, width)} in degC: half the precipitation falls as snow at the
-    centre. The fit weights each wet day by its precipitation, so large events count most.
+    The error sums, over the wet days, the squared difference between the curve and AORC's snow
+    fraction, weighted by precipitation so large events count most.
     """
-    p, s, t = (aorc[name][rows] for name in ('precipitation_mm', 'snowfall_mm', 'tmean_c'))
+    p, s, t, own, part = (array[rows] for array in
+                          (aorc['precipitation_mm'], aorc['snowfall_mm'], aorc['tmean_c'], projects, parts))
     wet = (p > WET_MM) & np.isfinite(s) & np.isfinite(t)
-    centre, width = (grid.ravel() for grid in np.meshgrid(CENTRES, WIDTHS, indexing='ij'))
+    errors = {}
+    for project in np.unique(own):
+        mine = wet & (own == project)
+        errors[project] = {}
+        for number in np.unique(part[mine]):
+            at = mine & (part == number)
+            fraction = np.clip(s[at] / p[at], 0, 1)
+            error = (p[at] * (snow_fraction(t[at], *CURVES.T[:, :, None]) - fraction) ** 2).sum(axis=1)
+            errors[project][number] = at.sum(), error
+    return errors
+
+
+def best_curves(errors, without=None):
+    """{project: (centre, width)} with the least error over every part except without: the logistic
+    curve of AORC's snow fraction against daily mean temperature, half snow at the centre."""
     curves = {}
-    for project in np.unique(projects[rows]):
-        at = wet & (projects[rows] == project)
-        if at.sum() < MIN_DAYS:
-            raise ValueError(f'{project}: {at.sum()} wet days with AORC; need {MIN_DAYS} for the snow fraction')
-        fraction = np.clip(s[at] / p[at], 0, 1)
-        error = (p[at] * (snow_fraction(t[at], centre[:, None], width[:, None]) - fraction) ** 2).sum(axis=1)
-        best = np.argmin(error)
-        curves[project] = centre[best], width[best]
+    for project, parts in errors.items():
+        kept = [value for number, value in parts.items() if number != without]
+        days = sum(count for count, _ in kept)
+        if days < MIN_DAYS:
+            raise ValueError(f'{project}: {days} wet days with AORC; need {MIN_DAYS} for the snow fraction')
+        curves[project] = tuple(CURVES[np.argmin(np.sum([error for _, error in kept], axis=0))])
     return curves
 
 
@@ -155,21 +179,23 @@ def finish(values, land, projects, dates, latitudes, phase=None):
     return values
 
 
-def correct(aorc, land, projects, dates, latitudes, train, target):
-    """Corrected values on the target rows, mapped with a fit on the train rows."""
-    months = np.array([day.month for day in dates])
+def correct(aorc, land, projects, dates, latitudes, train, target, phase=None):
+    """Corrected values on the target rows, mapped with a fit on the train rows; phase gives the
+    snow-fraction curves if they are already fitted on those rows."""
+    names, groups = month_groups(projects, dates)
     values = {}
     for variable in MAPPED:
         x, y = land[variable], aorc[variable]
-        maps = fit(x, y, projects, months, train[np.isfinite(x[train]) & np.isfinite(y[train])])
+        maps = fit(x, y, names, groups, train[np.isfinite(x[train]) & np.isfinite(y[train])])
         result = np.full(len(target), np.nan)
-        for key in set(zip(projects[target], months[target])):
-            at = (projects[target] == key[0]) & (months[target] == key[1])
-            result[at] = mapped(x[target[at]], *maps[key], variable in RATIO)
+        for group in np.unique(groups[target]):
+            at = groups[target] == group
+            result[at] = mapped(x[target[at]], *maps[group], variable in RATIO)
         values[variable] = result
+    if phase is None:
+        phase = best_curves(phase_errors(aorc, projects, train, np.zeros(len(projects), int)))
     subset = {name: array[target] for name, array in land.items()}
-    return finish(values, subset, projects[target], [dates[i] for i in target], latitudes,
-                  fit_phase(aorc, projects, train))
+    return finish(values, subset, projects[target], [dates[i] for i in target], latitudes, phase)
 
 
 def uncorrected(land, projects, dates, latitudes, target):
@@ -184,22 +210,23 @@ def fitting(projects, count):
     return np.flatnonzero(np.isin(projects, REPLACED) == (np.arange(len(projects)) >= count))
 
 
-def paired_rows(aorc, land, train=None):
-    """Rows with both sources for every mapped variable, among train if given."""
+def paired_rows(aorc, land, train):
+    """Rows among train with both sources for every mapped variable."""
     paired = np.flatnonzero(np.logical_and.reduce([np.isfinite(aorc[v]) & np.isfinite(land[v]) for v in MAPPED]))
-    return paired if train is None else np.intersect1d(paired, train)
+    return np.intersect1d(paired, train)
 
 
-def held_out(aorc, land, projects, dates, latitudes, train=None):
-    """Corrected values on every row: a year with AORC is mapped with a fit on the other years.
-
-    train limits the rows the mapping is fitted on (default: every row)."""
+def held_out(aorc, land, projects, dates, latitudes, train):
+    """Corrected values on every row: a year with AORC is mapped with a fit on the train rows of the other years."""
     paired = paired_rows(aorc, land, train)
     years = np.array([day.year for day in dates])
+    # Each year's share of the snow-fraction error is computed once and left out in turn.
+    errors = phase_errors(aorc, projects, paired, years)
     result = {v: np.full(len(dates), np.nan) for v in VARIABLES}
     for year in sorted(set(years)):
         target = np.flatnonzero(years == year)
-        values = correct(aorc, land, projects, dates, latitudes, paired[years[paired] != year], target)
+        values = correct(aorc, land, projects, dates, latitudes, paired[years[paired] != year], target,
+                         best_curves(errors, without=year))
         for v in VARIABLES:
             result[v][target] = values[v]
     return result
@@ -212,8 +239,8 @@ def statistics(variable, project, a, r, c):
             *np.percentile([a, r, c], 99, axis=1), wet(a), wet(r), wet(c)]
 
 
-def check(aorc, land, projects, dates, latitudes, path, train=None):
-    """Correct each overlap year with a fit on the others and compare with AORC, on the train rows if given."""
+def check(aorc, land, projects, dates, latitudes, path, train):
+    """Correct each overlap year with a fit on the others and compare with AORC on the train rows."""
     held = paired_rows(aorc, land, train)
     years = {dates[i].year for i in held}
     if len(years) < 2:
@@ -295,7 +322,7 @@ def inputs(aorc_path, era5_path):
     return keys, columns, data, aorc, land, projects, dates, latitudes
 
 
-def run(aorc_path, era5_path, output, raw=False):
+def run(aorc_path, era5_path, output):
     output = Path(output)
     keys, columns, data, aorc, land, projects, dates, latitudes = inputs(aorc_path, era5_path)
     count = len(keys)
@@ -304,15 +331,13 @@ def run(aorc_path, era5_path, output, raw=False):
     values = {v: aorc[v][:count].copy() for v in VARIABLES}
     filled = {v: np.zeros(count, bool) for v in VARIABLES}
     target = np.flatnonzero(replaced | np.logical_or.reduce([np.isnan(values[v]) for v in VARIABLES]))
-    method = 'uncorrected ERA5-Land' if raw else 'quantile-mapped ERA5-Land'
     print(f'{count:,} rows, {count - len(target):,} with complete AORC kept; '
-          f'filling {len(target):,} with {method}', flush=True)
+          f'filling {len(target):,} with quantile-mapped ERA5-Land', flush=True)
     if replaced.any():
-        print(f'AORC replaced on every row of {", ".join(sorted(set(projects[:count][replaced])))}'
-              + ('' if raw else f'; fitted on {REFERENCE[0]} to {REFERENCE[1]}'), flush=True)
+        print(f'AORC replaced on every row of {", ".join(sorted(set(projects[:count][replaced])))}; '
+              f'fitted on {REFERENCE[0]} to {REFERENCE[1]}', flush=True)
     if len(target):
-        corrected = (uncorrected(land, projects, dates, latitudes, target) if raw
-                     else correct(aorc, land, projects, dates, latitudes, train, target))
+        corrected = correct(aorc, land, projects, dates, latitudes, train, target)
         for v in VARIABLES:
             use = replaced[target] | np.isnan(values[v][target])
             values[v][target[use]] = corrected[v][use]
@@ -342,10 +367,9 @@ def main():
     parser.add_argument('--aorc', required=True, type=Path, help='Full table with AORC columns (download_daily.py)')
     parser.add_argument('--era5', required=True, type=Path, help='Table written by download_era5.py, or a full table')
     parser.add_argument('--output', required=True, type=Path, help='Requested-variable table (.csv, .csv.gz or .parquet)')
-    parser.add_argument('--raw', action='store_true', help='Fill with ERA5-Land as it is, without quantile mapping')
     args = parser.parse_args()
     try:
-        run(args.aorc, args.era5, args.output, args.raw)
+        run(args.aorc, args.era5, args.output)
     except (ValueError, OSError) as error:
         print(f'Failed: {error}', file=sys.stderr)
         return 1

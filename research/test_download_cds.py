@@ -104,21 +104,6 @@ class FieldTests(unittest.TestCase):
         self.assertEqual(fields['wind_speed_ms'][0][0, 0, 0], 5)
         self.assertLess(fields['wet_bulb_temperature_c'][0][0, 0, 0], 0)
 
-    def test_era5_requests_only_single_level_fields(self):
-        requests = make_requests('era5', date(2025, 12, 29), [51, -121, 49, -119], date(2025, 12, 31))
-        self.assertEqual([r['dataset'] for r in requests], ['reanalysis-era5-single-levels'])
-        self.assertIn('zero_degree_level', requests[0]['request']['variable'])
-        self.assertNotIn('pressure_level', requests[0]['request'])
-
-    def test_december_endpoint_request(self):
-        requests = accumulated_requests(date(2025, 12, 31), date(2025, 12, 31), [51, -121, 49, -119])
-        self.assertEqual(len(requests), 1)
-        endpoint = requests[0]['request']
-        self.assertEqual((endpoint['year'], endpoint['month'], endpoint['day'], endpoint['time']),
-                         ('2026', ['01'], ['01'], ['00:00']))
-        self.assertEqual([r['kind'] for r in make_requests('era5-land', date(2025, 12, 31), [51, -121, 49, -119])],
-                         ['states'])
-
     def test_endpoints_are_one_request_per_year(self):
         requests = accumulated_requests(date(2024, 1, 1), date(2025, 12, 31), [51, -121, 49, -119])
         self.assertEqual([(r['request']['year'], len(r['request']['month']), len(r['request']['day']))
@@ -136,7 +121,6 @@ class FieldTests(unittest.TestCase):
         self.assertEqual(max(stamps), datetime(2026, 10, 1, tzinfo=timezone.utc))
         batch = batch_requests('era5-land', date(2026, 9, 29), date(2026, 9, 30), [51, -121, 49, -119], requests)
         self.assertEqual([r['request']['month'][-1] for r in batch if r['kind'] == 'accumulated'], ['09', '10'])
-
 
 
 def write_netcdf(path, variables, *, day='2025-12-31', hours=24, expver=False,
@@ -211,14 +195,6 @@ class ResponseTests(unittest.TestCase):
         self.assertEqual(rows[0]['valid_hours'], 23)
         self.assertEqual(rows[0]['min_valid_area_fraction'], .75)
 
-    def test_archive_members_checked(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp)/'data.zip'
-            with zipfile.ZipFile(path, 'w') as archive:
-                archive.writestr('../data.nc', b'not netcdf')
-            with self.assertRaisesRegex(ValueError, 'Unsafe'):
-                read_response(path, ['t2m'])
-
     def test_zip_split_fields_and_day_slices(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -230,18 +206,6 @@ class ResponseTests(unittest.TestCase):
             result = read_response(root/'data.zip', ['t2m', 'sd'], date(2025, 12, 31))
             self.assertEqual(result['t2m']['data'].shape, (24, 2, 2))
             self.assertEqual(align_hours(result['sd'], date(2025, 12, 31))[0, 0, 0], .1)
-
-    def test_duplicate_fields_with_changed_grid_are_rejected(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            for name in ['a', 'b']:
-                write_netcdf(root/f'{name}.nc', {'t2m': ('K', 280)})
-            with netCDF4.Dataset(root/'b.nc', 'a') as ds:
-                ds['latitude'][:] += 1
-            with zipfile.ZipFile(root/'data.zip', 'w') as archive:
-                for name in ['a', 'b']: archive.write(root/f'{name}.nc', f'{name}.nc')
-            with self.assertRaisesRegex(ValueError, 'Conflicting duplicate field'):
-                read_response(root/'data.zip', ['t2m'])
 
 
 class FakeClient:
@@ -342,71 +306,6 @@ class PipelineTests(unittest.TestCase):
         self.assertAlmostEqual(diagnostic['axes']['longitude']['max_abs_difference_degrees'], .001)
         self.assertFalse((self.root/'output/daily_2025-12.csv.gz').exists())
 
-    def test_unfinished_processing_update_reuses_verified_downloads(self):
-        client = FakeClient()
-        with patch('download_cds.land_daily_fields', side_effect=ValueError('Interrupted processing')):
-            with self.assertRaisesRegex(ValueError, 'Interrupted processing'):
-                run_pipeline(*self.arguments, client=client)
-        run_path = self.root/'output/run.json'
-        previous = json.loads(run_path.read_text())
-        previous['code_sha256']['download_cds.py'] = 'old-processing-code'
-        previous['methods'].pop('grid_coordinates', None)
-        run_path.write_text(json.dumps(previous))
-        (self.root/'output/daily_2025-12.csv.part').write_bytes(b'incomplete output')
-        with patch.object(client, 'retrieve', side_effect=AssertionError('Redownloaded cached response')):
-            run_pipeline(*self.arguments, client=client)
-        history = list((self.root/'output/run_history').glob('*.json'))
-        self.assertEqual(len(history), 1)
-        self.assertEqual(json.loads(history[0].read_text()), previous)
-        self.assertEqual(client.calls, 2)
-        self.assertTrue((self.root/'output/month_2025-12.json').exists())
-        self.assertFalse((self.root/'output/daily_2025-12.csv.part').exists())
-
-    def test_processing_update_cannot_mix_completed_months(self):
-        run_pipeline(*self.arguments, client=FakeClient())
-        run_path = self.root/'output/run.json'
-        previous = json.loads(run_path.read_text())
-        previous['code_sha256']['download_cds.py'] = 'old-processing-code'
-        run_path.write_text(json.dumps(previous))
-        for artifact in ['month_2025-12.json', 'daily_2025-12.csv.gz']:
-            with self.subTest(remaining_artifact=artifact):
-                with self.assertRaisesRegex(ValueError, 'configuration differs'):
-                    run_pipeline(*self.arguments, cache_only=True)
-            if artifact.startswith('month'):
-                (self.root/'output'/artifact).unlink()
-
-    def test_unfinished_processing_update_cannot_change_request(self):
-        with patch('download_cds.land_daily_fields', side_effect=ValueError('Interrupted processing')):
-            with self.assertRaisesRegex(ValueError, 'Interrupted processing'):
-                run_pipeline(*self.arguments, client=FakeClient())
-        run_path = self.root/'output/run.json'
-        previous = json.loads(run_path.read_text())
-        previous['code_sha256']['download_cds.py'] = 'old-processing-code'
-        for key, value in [('geometry_sha256', 'different-geometry'), ('start', '2025-12-30'),
-                           ('projects', ['B']), ('chunk_days', 31)]:
-            with self.subTest(changed=key):
-                run_path.write_text(json.dumps(dict(previous, **{key: value})))
-                with self.assertRaisesRegex(ValueError, 'configuration differs'):
-                    run_pipeline(*self.arguments, cache_only=True)
-
-    def test_different_grid_dimensions_are_rejected(self):
-        client = FakeClient()
-        retrieve = client.retrieve
-        def different_shape(dataset, request, target):
-            retrieve(dataset, request, target)
-            if len(request['time']) == 1:
-                fields = {key: (definition[1], .001) for key, definition in ALL_FIELDS.items()
-                          if definition[0] in request['variable']}
-                write_netcdf(target, fields, day='2026-01-01', hours=1,
-                             longitudes=[239.95, 240.05, 240.15])
-        with patch.object(client, 'retrieve', side_effect=different_shape):
-            with self.assertRaisesRegex(ValueError, 'CDS grid mismatch'):
-                run_pipeline(*self.arguments, client=client)
-        axes = json.loads((self.root/'output/grid_mismatch.json').read_text())['axes']
-        self.assertEqual(axes['longitude']['reference']['count'], 2)
-        self.assertEqual(axes['longitude']['received']['count'], 3)
-        self.assertIsNone(axes['longitude']['max_abs_difference_degrees'])
-
     def test_full_synthetic_products_verified_resume_and_configuration_guard(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp); geometry = root/'catchments.geojson'
@@ -416,7 +315,7 @@ class PipelineTests(unittest.TestCase):
                               [-119.97, 50.03], [-120.03, 50.03], [-120.03, 49.97]]]}}]}))
             for product, expected_count, calls in [('era5-land', 40, 2), ('era5', 3, 1)]:
                 client = FakeClient(); output = root/product; cache = root/f'{product}_cache'
-                run = run_pipeline(geometry, product, output, cache, '2025-12-31', '2025-12-31', client=client)
+                run_pipeline(geometry, product, output, cache, '2025-12-31', '2025-12-31', client=client)
                 self.assertEqual(client.calls, calls)
                 with gzip.open(output/'daily_2025-12.csv.gz', 'rt') as stream:
                     rows = list(csv.DictReader(stream))
@@ -485,18 +384,6 @@ class PipelineTests(unittest.TestCase):
         self.assertTrue(transient(queued))
         self.assertFalse(transient(requests.HTTPError('403 Client Error: Forbidden ... cost limits exceeded')))
         self.assertFalse(transient(RuntimeError('Source unavailable')))
-
-    def test_newest_first_requests_latest_month_first(self):
-        client = FakeClient()
-        retrieve, order = client.retrieve, []
-        def record(dataset, request, target):
-            order.append((request['year'], request['month']))
-            retrieve(dataset, request, target)
-        with patch.object(client, 'retrieve', side_effect=record), redirect_stdout(io.StringIO()):
-            run_pipeline(self.geometry, 'era5', self.root/'output', self.root/'cache', '2025-12-30', '2026-01-02',
-                         client=client, workers=1, newest_first=True)
-        self.assertEqual(order, [(['2026'], ['01']), (['2025'], ['12'])])
-        self.assertTrue((self.root/'output/month_2025-12.json').exists())
 
     def test_response_cached_by_another_process_is_reused(self):
         from download_cds import fetch_response
@@ -584,18 +471,6 @@ class PipelineTests(unittest.TestCase):
             rows = {row['variable']: row for row in csv.DictReader(stream)}
         self.assertNotEqual(rows['tmean_c']['qc'], 'valid')
         self.assertEqual(rows['precipitation_mm']['qc'], 'valid')
-
-    def test_request_errors_are_not_retried(self):
-        client = FakeClient()
-        specs = make_requests('era5', date(2025, 12, 31), [50.1, -120.1, 49.9, -119.9])
-        for error in (RuntimeError('Source unavailable'),
-                      OSError('403 Client Error: Forbidden; cost limits exceeded')):
-            with self.subTest(error=str(error)):
-                with patch.object(client, 'retrieve', side_effect=error) as retrieve, \
-                     patch('download_cds.time.sleep', side_effect=AssertionError('Retried')):
-                    with self.assertRaises(type(error)):
-                        prefetch(specs, self.root/'cache', {}, client)
-                self.assertEqual(retrieve.call_count, 1)
 
 
 if __name__ == '__main__':

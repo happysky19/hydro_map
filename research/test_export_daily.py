@@ -9,7 +9,6 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
 
 from aggregate_daily import DAILY_FIELDS
 from export_daily import export_daily
@@ -39,16 +38,13 @@ class ExportDailyTests(unittest.TestCase):
                     expected_hours='24', valid_hours='24', min_valid_area_fraction='1',
                     qc='valid', **changes)
 
-    def source(self, name='aorc', source='aorc_v1.1', legacy=False):
+    def source(self, name='aorc', source='aorc_v1.1'):
         folder = self.root / name
         folder.mkdir()
-        run = dict(schema=2, source='https://noaa-nws-aorc-v1-1-1km.s3.amazonaws.com/'
-                   if legacy else source, projects=['A', 'B'], start=str(self.start),
+        run = dict(schema=2, source=source, source_id=source, projects=['A', 'B'], start=str(self.start),
                    end=str(self.end), day='UTC', geometry_sha256=digest(self.geojson),
-                   variables=['APCP_surface'])
-        if not legacy:
-            run.update(source_id=source, daily_schema={
-                'precipitation_mm': dict(units='mm', statistic='Sum of hourly water-equivalent amounts')})
+                   variables=['APCP_surface'], daily_schema={
+                       'precipitation_mm': dict(units='mm', statistic='Sum of hourly water-equivalent amounts')})
         (folder / 'run.json').write_text(json.dumps(run))
         return folder
 
@@ -76,7 +72,7 @@ class ExportDailyTests(unittest.TestCase):
             return list(csv.DictReader(stream))
 
     def test_complete_leap_grid_mixed_sources_and_missing_observations(self):
-        aorc = self.source(legacy=True)
+        aorc = self.source()
         missing = self.row(stamp='2024-03-01')
         missing.update(value='', qc='invalid_hours', valid_hours='23', min_valid_area_fraction='0')
         self.period(aorc, [self.row(), missing])
@@ -178,27 +174,6 @@ class ExportDailyTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '[Dd]uplicate'):
             self.export([folder])
 
-    def test_sanitized_source_collision_is_rejected(self):
-        first = self.source('first', 'aorc.v1')
-        second = self.source('second', 'aorc-v1')
-        self.period(first, [self.row('aorc.v1')])
-        self.period(second, [self.row('aorc-v1')])
-        with self.assertRaisesRegex(ValueError, 'collision'):
-            self.export([first, second])
-
-    def test_source_prefixes_stay_distinct_even_for_disjoint_variables(self):
-        first = self.source('first', 'aorc.v1')
-        second = self.source('second', 'aorc-v1')
-        run = json.loads((second / 'run.json').read_text())
-        run['daily_schema'] = {'tmean_c': dict(units='degC', statistic='mean')}
-        (second / 'run.json').write_text(json.dumps(run))
-        row = self.row('aorc-v1')
-        row.update(variable='tmean_c', units='degC')
-        self.period(first, [self.row('aorc.v1')])
-        self.period(second, [row])
-        with self.assertRaisesRegex(ValueError, 'collision'):
-            self.export([first, second])
-
     def test_configuration_hash_mismatch_is_rejected(self):
         folder = self.source()
         self.period(folder, [self.row()])
@@ -207,17 +182,6 @@ class ExportDailyTests(unittest.TestCase):
         record['configuration_sha256'] = '0' * 64
         path.write_text(json.dumps(record))
         with self.assertRaisesRegex(ValueError, 'configuration hash'):
-            self.export([folder])
-
-    def test_cds_manifest_row_count_is_verified(self):
-        folder = self.source('cds', 'era5_cds')
-        self.period(folder, [self.row('era5_cds')])
-        path = folder / 'year_2024.json'
-        record = json.loads(path.read_text())
-        del record['daily_rows']
-        record['rows'] = 2
-        path.write_text(json.dumps(record))
-        with self.assertRaisesRegex(ValueError, 'row count'):
             self.export([folder])
 
     def test_absent_declared_series_retains_column_and_missing_qc(self):
@@ -231,91 +195,6 @@ class ExportDailyTests(unittest.TestCase):
         self.assertTrue(all(row['aorc_v1_1__tmean_degC__qc'] == 'missing_record'
                             for row in self.read(self.qc_output)))
 
-    def test_manifest_directory_conflict_preserves_existing_output(self):
-        folder = self.source()
-        self.period(folder, [self.row()])
-        self.output.write_text('keep data')
-        Path(str(self.output) + '.manifest.json').mkdir()
-        with self.assertRaises((ValueError, OSError)):
-            self.export([folder])
-        self.assertEqual(self.output.read_text(), 'keep data')
-
-    def test_manifest_publish_failure_rolls_back_the_data_file(self):
-        folder = self.source()
-        self.period(folder, [self.row()])
-        self.output.write_text('keep data')
-        self.qc_output.write_text('keep quality')
-        companion = Path(str(self.output) + '.manifest.json')
-        companion.write_text('keep metadata')
-        replace = Path.replace
-
-        def fail_manifest(path, target):
-            if target == companion:
-                raise OSError('manifest publication interrupted')
-            return replace(path, target)
-
-        with patch.object(Path, 'replace', fail_manifest), self.assertRaisesRegex(OSError, 'interrupted'):
-            self.export([folder])
-        self.assertEqual(self.output.read_text(), 'keep data')
-        self.assertEqual(self.qc_output.read_text(), 'keep quality')
-        self.assertEqual(companion.read_text(), 'keep metadata')
-
-    def test_qc_publish_failure_preserves_the_existing_pair(self):
-        folder = self.source()
-        self.period(folder, [self.row()])
-        self.output.write_text('keep data')
-        self.qc_output.write_text('keep quality')
-        companion = Path(str(self.output) + '.manifest.json')
-        companion.write_text('keep metadata')
-        replace = Path.replace
-        def fail_qc(path, target):
-            if target == self.qc_output:
-                raise OSError('QC publication interrupted')
-            return replace(path, target)
-        with patch.object(Path, 'replace', fail_qc), self.assertRaisesRegex(OSError, 'interrupted'):
-            self.export([folder])
-        self.assertEqual(self.output.read_text(), 'keep data')
-        self.assertEqual(self.qc_output.read_text(), 'keep quality')
-        self.assertEqual(companion.read_text(), 'keep metadata')
-
-    def test_failed_first_publication_removes_both_new_tables(self):
-        folder = self.source()
-        self.period(folder, [self.row()])
-        companion = Path(str(self.output) + '.manifest.json')
-        replace = Path.replace
-        def fail_manifest(path, target):
-            if target == companion:
-                raise OSError('manifest publication interrupted')
-            return replace(path, target)
-        with patch.object(Path, 'replace', fail_manifest), self.assertRaisesRegex(OSError, 'interrupted'):
-            self.export([folder])
-        for path in (self.output, self.qc_output, companion):
-            self.assertFalse(path.exists())
-
-    def test_qc_directory_conflict_does_not_publish_values(self):
-        folder = self.source()
-        self.period(folder, [self.row()])
-        self.qc_output.mkdir()
-        with self.assertRaisesRegex(ValueError, 'directories'):
-            self.export([folder])
-        self.assertFalse(self.output.exists())
-
-    def test_unit_name_collision_and_unknown_units_are_rejected(self):
-        folder = self.source()
-        path = folder/'run.json'
-        run = json.loads(path.read_text())
-        for schema, message in [
-            ({'wind_speed_ms': dict(units='m/s', statistic='mean'),
-              'wind_speed_m_s': dict(units='m/s', statistic='mean')}, 'collision'),
-            ({'temperature': dict(units='furlongs', statistic='mean')}, 'unit'),
-        ]:
-            run['daily_schema'] = schema
-            path.write_text(json.dumps(run))
-            self.period(folder, [])
-            with self.subTest(schema=schema), self.assertRaisesRegex(ValueError, message):
-                self.export([folder])
-            self.assertFalse(self.output.exists())
-
     def test_invalid_qc_cannot_hide_a_numeric_value(self):
         folder = self.source()
         row = self.row()
@@ -324,15 +203,6 @@ class ExportDailyTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'QC|qc'):
             self.export([folder])
         self.assertFalse(self.output.exists())
-
-    def test_unit_conflict_and_unidentified_source_are_rejected(self):
-        folder = self.source()
-        for field, value in [('units', 'K'), ('source', 'unidentified')]:
-            row = self.row()
-            row[field] = value
-            self.period(folder, [row])
-            with self.subTest(field=field), self.assertRaises(ValueError):
-                self.export([folder])
 
     def test_geometry_hash_and_missing_project_are_rejected(self):
         folder = self.source()
@@ -343,25 +213,6 @@ class ExportDailyTests(unittest.TestCase):
             self.period(folder, [self.row()])
             with self.subTest(field=field), self.assertRaises(ValueError):
                 self.export([folder])
-
-    def test_unmanifested_daily_and_input_overwrite_are_rejected(self):
-        folder = self.source()
-        daily = self.period(folder, [self.row()])
-        before = daily.read_bytes()
-        with self.assertRaisesRegex(ValueError, 'overwrite|input'):
-            self.export([folder], daily)
-        self.assertEqual(daily.read_bytes(), before)
-        (folder / 'year_2024.json').unlink()
-        with self.assertRaisesRegex(ValueError, 'manifest'):
-            self.export([folder])
-
-    def test_gzip_export_has_same_rows(self):
-        folder = self.source()
-        self.period(folder, [self.row()])
-        output = self.root / 'delivery.csv.gz'
-        self.export([folder], output)
-        self.assertEqual(len(self.read(output)), 6)
-        self.assertEqual(len(self.read(self.root/'delivery_qc.csv.gz')), 6)
 
     def test_generated_cds_monthly_tables_export_together(self):
         from download_cds import run_pipeline

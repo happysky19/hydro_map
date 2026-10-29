@@ -2,10 +2,13 @@
 
 from contextlib import ExitStack, redirect_stdout
 import csv
+from functools import partial
 import io
 import json
 import unittest
+from unittest.mock import patch
 
+from check_daily import check_file
 import download_daily
 from deliver_daily import companion
 import merge_deliveries
@@ -29,7 +32,7 @@ class MergeTests(unittest.TestCase):
         with ExitStack() as stack, redirect_stdout(io.StringIO()):
             aorc.aorc_inputs(stack)
             download_daily.run(aorc.geojson, aorc.day, aorc.day, aorc.root / 'columbia.parquet', cds_client=FakeClient())
-        with redirect_stdout(io.StringIO()):
+        with patch('download_daily.check_file', partial(check_file, plots=False)), redirect_stdout(io.StringIO()):
             download_daily.run(north.geojson, north.day, north.day, north.root / 'peace.csv',
                                cds_client=FakeClient(), primary='era5-land')
         return aorc, north
