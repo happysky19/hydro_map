@@ -14,7 +14,7 @@ import numpy as np
 
 from catchment_history import debias
 from catchment_history.delivery_variables import AORC, LAND, REQUESTED
-from catchment_history.export import digest
+from catchment_history.files import digest
 from catchment_history.meteorology import hargreaves_pet
 
 
@@ -52,6 +52,13 @@ def truth(land, dates, projects):
     return a
 
 
+def write_aorc(path, keys, aorc, land):
+    """A full table with AORC and ERA5-Land and the PET latitudes in its manifest."""
+    write_table(path, keys, {**{(AORC, v): values for v, values in aorc.items()},
+                             **{(LAND, v): values for v, values in land.items()}},
+                [dict(metadata=dict(source_id=AORC, pet_centroid_latitudes=LATITUDES))])
+
+
 def write_inputs(root):
     """ERA5-Land for 2022-2025 and AORC for 2022-2024 with one blank day, in two catchments, as full tables."""
     days = [date(2022, 1, 1) + timedelta(days=i) for i in range((date(2025, 12, 31) - date(2022, 1, 1)).days + 1)]
@@ -80,8 +87,7 @@ def write_inputs(root):
     era5 = {(LAND, v): values for v, values in land.items()}
     era5.update({key: np.full(n, value) for key, value in other.items()})
     aorc_path, era5_path = root / 'aorc_full.csv', root / 'era5.csv'
-    write_table(aorc_path, keys, {(AORC, v): values for v, values in aorc.items()},
-                [dict(metadata=dict(source_id=AORC, pet_centroid_latitudes=LATITUDES))])
+    write_aorc(aorc_path, keys, aorc, land)
     write_table(era5_path, keys, era5)
     return dict(keys=keys, dates=dates, projects=projects, land=land, truth=truth_values, gap=gap,
                 other=other, aorc_path=aorc_path, era5_path=era5_path)
@@ -149,16 +155,16 @@ class DebiasTests(unittest.TestCase):
         self.assertEqual(rows['tmean_c', 'A']['aorc_wet_days'], '')
 
     def test_short_overlap_is_refused(self):
-        short = {(AORC, v): np.where([d < date(2022, 2, 1) for d in self.dates], values, np.nan)
+        short = {v: np.where([d < date(2022, 2, 1) for d in self.dates], values, np.nan)
                  for v, values in self.truth.items()}
-        write_table(self.aorc_path, self.keys, short,
-                    [dict(metadata=dict(source_id=AORC, pet_centroid_latitudes=LATITUDES))])
+        write_aorc(self.aorc_path, self.keys, short, self.land)
         with self.assertRaisesRegex(ValueError, 'days with both sources'), redirect_stdout(io.StringIO()):
             debias.run(self.aorc_path, self.era5_path, self.root / 'short.csv')
 
 
 class ReplaceTests(unittest.TestCase):
-    """A REPLACED catchment takes mapped ERA5-Land on every row, fitted on the --aorc table's REFERENCE dates."""
+    """A REPLACED catchment takes mapped ERA5-Land on every row, fitted on the --aorc table's REFERENCE dates;
+    the other catchment is fitted on RECENT."""
 
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
@@ -177,9 +183,7 @@ class ReplaceTests(unittest.TestCase):
         for v in ('precipitation_mm', 'rainfall_mm', 'snowfall_mm'):
             aorc[v] = np.where(self.broken, .3 * aorc[v], aorc[v])
         self.aorc_path = self.root / 'full.csv'
-        write_table(self.aorc_path, self.keys, {**{(AORC, v): values for v, values in aorc.items()},
-                                                **{(LAND, v): values for v, values in self.land.items()}},
-                    [dict(metadata=dict(source_id=AORC, pet_centroid_latitudes=LATITUDES))])
+        write_aorc(self.aorc_path, self.keys, aorc, self.land)
         self.rows_used = years >= 2023
         keys = [key for key, used in zip(self.keys, self.rows_used) if used]
         other = {key: np.full(len(keys), value) for key, value in self.other.items()}
@@ -213,11 +217,11 @@ class ReplaceTests(unittest.TestCase):
         kept = (projects == 'B') & (years < 2025)
         np.testing.assert_allclose(self.series('precipitation_mm')[kept], truth['precipitation_mm'][kept])
 
-    def test_check_uses_the_reference_dates_of_the_replaced_catchment(self):
+    def test_check_uses_the_fit_period_of_each_catchment(self):
         with self.output.with_name('replaced_check.csv').open() as stream:
             rows = {(row['variable'], row['project_id']): row for row in csv.DictReader(stream)}
         self.assertEqual(int(rows['tmean_c', 'A']['days']), 730)
-        self.assertEqual(int(rows['tmean_c', 'B']['days']), 731)
+        self.assertEqual(int(rows['tmean_c', 'B']['days']), 1096)
         self.assertLess(float(rows['tmean_c', 'A']['corrected_mae']), .01)
 
     def test_an_aorc_table_without_era5_land_is_refused(self):

@@ -24,7 +24,8 @@ import numpy as np
 
 from .check import table_rows
 from .delivery_variables import AORC, ERA5, LAND, LAND_ORIGIN, REFERENCE, REQUESTED, SOURCE_NAMES
-from .export import _value_column, _write, digest
+from .export import _value_column, _write
+from .files import digest
 from .meteorology import hargreaves_pet
 
 

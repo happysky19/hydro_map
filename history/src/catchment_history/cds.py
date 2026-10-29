@@ -10,7 +10,6 @@ from contextlib import contextmanager
 import csv
 from datetime import date, datetime, timedelta, timezone
 import gzip
-import hashlib
 import json
 from math import ceil, floor
 from pathlib import Path, PurePosixPath
@@ -27,6 +26,7 @@ from .cds_fields import (ALIASES, ALL_FIELDS, LAND_STATES, LAND_ACCUMULATED, ERA
                         daily_schema, land_daily_fields, era_daily_fields)
 from .area_weights import fractional_weights, strict_area_mean
 from .catchments import forcing_metadata, read_catchments
+from .files import atomic_json, digest, json_hash
 
 DAILY_FIELDS = ['date', 'source', 'project_id', 'variable', 'value', 'units',
                 'expected_hours', 'valid_hours', 'min_valid_area_fraction', 'qc']
@@ -46,26 +46,6 @@ def transient(error):
     text = str(error)
     return (not any(item in text for item in PERMANENT_ERRORS)
             and (isinstance(error, OSError) or any(item in text for item in TRANSIENT_ERRORS)))
-
-
-def sha256(path):
-    digest = hashlib.sha256()
-    with Path(path).open('rb') as stream:
-        for block in iter(lambda: stream.read(1024*1024), b''):
-            digest.update(block)
-    return digest.hexdigest()
-
-
-def json_hash(value):
-    return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
-
-
-def atomic_json(path, value):
-    path = Path(path)
-    with tempfile.NamedTemporaryFile(mode='w', dir=path.parent, delete=False) as stream:
-        temporary = Path(stream.name)
-        json.dump(value, stream, indent=2, allow_nan=False); stream.write('\n')
-    temporary.replace(path)
 
 
 def dates(start, end):
@@ -383,7 +363,7 @@ def fetch_response(spec, cache_dir, manifest, client, cache_only=False, lock=Non
             # Another process sharing this cache may have completed the request.
             with _manifest_lock(cache_dir):
                 cached = dict(json.loads(manifest_path.read_text()).get(request_hash, {}))
-    if path.exists() and cached.get('request') == identity and cached.get('sha256') == sha256(path):
+    if path.exists() and cached.get('request') == identity and cached.get('sha256') == digest(path):
         with lock:
             manifest.setdefault(request_hash, cached)
         return path
@@ -399,7 +379,7 @@ def fetch_response(spec, cache_dir, manifest, client, cache_only=False, lock=Non
         temporary.replace(path)
     finally:
         temporary.unlink(missing_ok=True)
-    record = dict(request=identity, request_sha256=request_hash, sha256=sha256(path),
+    record = dict(request=identity, request_sha256=request_hash, sha256=digest(path),
                   provider=getattr(client, 'provider', CDS_PROVIDER),
                   bytes=path.stat().st_size, retrieved_utc=datetime.now(timezone.utc).isoformat())
     manifest_path = cache_dir/'requests.manifest.json'
@@ -497,10 +477,10 @@ def run_pipeline(geojson, product, output_dir, cache_dir, start, end, *, project
     dependencies = [Path(__file__), Path(__file__).with_name('cds_fields.py'),
                     Path(__file__).with_name('area_weights.py'), Path(__file__).with_name('meteorology.py'),
                     Path(__file__).with_name('catchments.py')]
-    run = dict(source=source, source_id=source, product=product, geometry_sha256=sha256(geojson),
+    run = dict(source=source, source_id=source, product=product, geometry_sha256=digest(geojson),
                start=start.isoformat(), end=end.isoformat(), day='UTC', projects=selected,
                **forcing, area_north_west_south_east=area, chunk_days=chunk_days,
-               daily_schema=daily_schema(product), code_sha256={p.name: sha256(p) for p in dependencies},
+               daily_schema=daily_schema(product), code_sha256={p.name: digest(p) for p in dependencies},
                methods=dict(provider=('Google ARCO-ERA5, a copy of the CDS dataset' if product == 'era5' and era5_source == 'arco'
                                       else 'DestinE Earth Data Hub copy of the CDS dataset'
                                       if product == 'era5-land' and land_source == 'edh'
@@ -551,7 +531,7 @@ def run_pipeline(geojson, product, output_dir, cache_dir, start, end, *, project
             return False
         status = json.loads(status_path.read_text())
         return (status.get('status') == 'complete' and status.get('configuration_sha256') == configuration_hash
-                and daily_path.exists() and status.get('daily_sha256') == sha256(daily_path))
+                and daily_path.exists() and status.get('daily_sha256') == digest(daily_path))
 
     def prefetch_year(year):
         """Queue a calendar year's uncached requests together, so finished years are usable early.
@@ -647,7 +627,7 @@ def run_pipeline(geojson, product, output_dir, cache_dir, start, end, *, project
                     loaded = []
                     for spec, path in responses:
                         path, fields = checked_response(spec, path, first)
-                        source_hashes[path.name] = sha256(path)
+                        source_hashes[path.name] = digest(path)
                         loaded.append((spec, fields))
                     for day in dates(first, last):
                         records = {}
@@ -668,7 +648,7 @@ def run_pipeline(geojson, product, output_dir, cache_dir, start, end, *, project
             temporary.replace(daily_path)
             atomic_json(status_path, dict(status='complete', source_id=source, start=month_start.isoformat(), end=month_end.isoformat(),
                                           rows=count, configuration_sha256=configuration_hash,
-                                          daily_sha256=sha256(daily_path), source_sha256=source_hashes))
+                                          daily_sha256=digest(daily_path), source_sha256=source_hashes))
             print(f'{month}: saved {count} daily values', flush=True)
         finally:
             temporary.unlink(missing_ok=True)

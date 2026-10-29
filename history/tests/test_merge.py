@@ -54,6 +54,14 @@ class MergeTests(unittest.TestCase):
         self.assertIsNone(january[0]['precipitation_mm'])
         self.assertEqual(january[0]['aorc_gap_filled'], 'precipitation_mm')
 
+    def test_the_first_file_can_be_extended_in_place(self):
+        new = self.root / 'new.csv'
+        table(new, date(2026, 1, 1), date(2026, 1, 3), 2.)
+        with redirect_stdout(io.StringIO()):
+            merge([self.old, new], self.old)
+        dates = pq.read_table(self.old)['date'].to_pylist()
+        self.assertEqual((dates[0], dates[-1], len(dates)), (date(2025, 11, 1), date(2026, 1, 3), 2 * (61 + 3)))
+
     def test_a_replaced_catchment_must_be_replaced_in_every_file(self):
         from unittest import mock
         new = self.root / 'new.csv'

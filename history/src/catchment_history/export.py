@@ -10,7 +10,6 @@ from contextlib import closing
 import csv
 from datetime import date, timedelta
 import gzip
-import hashlib
 import json
 import math
 from pathlib import Path
@@ -21,6 +20,7 @@ import tempfile
 from shapely.geometry import shape
 
 from .aggregate import DAILY_FIELDS
+from .files import digest, json_hash
 
 
 QUALITY = ('qc', 'valid_hours', 'expected_hours', 'min_valid_area_fraction')
@@ -33,14 +33,6 @@ UNIT_SUFFIXES = {
     'kg/m3': ('kg_m3', ('kg_m3', 'kgm3')), 'm3/m3': ('m3_m3', ('m3_m3', 'm3m3')),
     '%': ('pct', ('pct',)), '1': ('fraction', ('fraction',)),
 }
-
-
-def digest(path):
-    result = hashlib.sha256()
-    with Path(path).open('rb') as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b''):
-            result.update(chunk)
-    return result.hexdigest()
 
 
 def _date(text):
@@ -122,7 +114,7 @@ def _inputs(input_dirs, geo_hash, projects, start, end):
             raise ValueError(f'{source}: conflicting daily schemas across source runs')
         schemas[source] = schema
         intervals.setdefault(source, [])
-        configuration_hash = hashlib.sha256(json.dumps(run, sort_keys=True).encode()).hexdigest()
+        configuration_hash = json_hash(run)
         entry = dict(run_file=run_path.name, run_sha256=digest(run_path), metadata=run, periods=[])
         inputs.append(entry)
         paths.add(run_path.resolve())

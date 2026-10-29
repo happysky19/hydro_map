@@ -244,9 +244,8 @@ while snow courses show no drop ([data notes](data_notes.md)). In these
 catchments (`REPLACED` in `src/catchment_history/delivery_variables.py`) the `debias` command
 replaces every AORC column on every row, also where AORC exists, by ERA5-Land
 quantile-mapped onto AORC of `REFERENCE` (1996-2006). The mapping is fitted on
-the AORC and ERA5-Land columns of the `--aorc` full table over those dates, so
-`--era5` need not cover them; rain and snow and PET follow as for the 2026
-fill below. `aorc_gap_filled` names the replaced columns on every row. The
+the AORC and ERA5-Land columns of the `--aorc` full table over those dates; rain
+and snow and PET follow as for the 2026 fill below. `aorc_gap_filled` names the replaced columns on every row. The
 other catchments keep AORC, and the full table is not changed.
 
 Write the whole 1996-2025 period from the full table, then 2026 as below, and
@@ -258,8 +257,8 @@ catchment-history plot-debias --aorc outputs/catchment_daily_1996_2025_full.csv 
 ```
 
 Elsewhere AORC gaps are filled as in the 2026 table. `OUTPUT_check.csv`
-compares the replaced catchments with AORC in 1996-2006 only, each year fitted
-on the others; `catchments.pdf` shows their AORC beside the corrected ERA5-Land
+compares the replaced catchments with AORC in 1996-2006 and the others in
+2022-2025, each year fitted on the others; `catchments.pdf` shows their AORC beside the corrected ERA5-Land
 over the whole period. The `merge` command refuses to join a table in which these
 catchments are replaced with one in which they are not, and
 `merge-deliveries` names them in the README.
@@ -267,43 +266,44 @@ catchments are replaced with one in which they are not, and
 ### 2026: ERA5-Land corrected toward AORC
 
 The AORC archive ends at 2025-12-31 (no `2026.zarr` on 2026-10-20). For 2026,
-download ERA5-Land and ERA5 alone, from a few years before so that they overlap
-AORC, and map ERA5-Land onto AORC over the overlap:
+download ERA5-Land and ERA5 alone and map ERA5-Land onto AORC:
 
 ```bash
-catchment-history download-era5 --geojson outputs/projects43_independent/dam_catchments.geojson --start 2022-01-01 --end 2026-09-30 --output outputs/era5_2022_2026.csv --work-dir /scratch/hydro/era5_2022_2026
-catchment-history debias --aorc outputs/catchment_daily_1996_2025_full.csv --era5 outputs/era5_2022_2026.csv --output outputs/catchment_daily_2022_2026.csv
+catchment-history download --geojson outputs/projects43_independent/dam_catchments.geojson --primary era5-land --start 2026-01-01 --end 2026-09-30 --output outputs/era5_2026.csv --work-dir /scratch/hydro/era5_2026
+catchment-history debias --aorc outputs/catchment_daily_1996_2025_full.csv --era5 outputs/era5_2026_full.csv --output outputs/catchment_daily_2026.csv
 ```
 
-`download-era5` works from the latest month back, runs both products side by
-side and resumes like `download`; `progress` reads its
-working directory. Its table has the full-table layout without AORC columns.
-Requests for hours the Earth Data Hub does not hold yet go to the CDS queue.
-ERA5 after 2026-06-30 and the latest ERA5-Land months are preliminary (ERA5T,
-ERA5-Land-T) and may still be revised; download them again into a new working
-directory once the final data are out.
+`--primary era5-land` downloads ERA5-Land and ERA5 only; its full table
+`era5_2026_full.csv` has the full-table layout without AORC columns (the
+requested table beside it, with ERA5-Land in the AORC columns, is not used
+here). Requests for hours the Earth Data Hub does not hold yet go to the CDS
+queue. ERA5 after 2026-06-30 and the latest ERA5-Land months are preliminary
+(ERA5T, ERA5-Land-T) and may still be revised; download them again into a new
+working directory once the final data are out.
 
-The `debias` command needs a full table with AORC (here the 1996-2025 delivery). It
-keeps AORC where it exists, except in the replaced catchments above, and fills
-the rest from ERA5-Land, quantile-mapped per catchment and calendar month on
-the overlap days (the month and the months either side). Precipitation is
-split into rain and snow by a logistic curve of
-AORC's snow fraction against daily mean temperature, fitted for each catchment
-and applied to the corrected temperature; ERA5-Land's own split puts about 10%
-more of the 2022-2025 precipitation into snow than AORC's wet-bulb rule. PET is
-recalculated. The output has the requested-table columns; `aorc_gap_filled`
-names the filled columns. `OUTPUT_check.csv` corrects each overlap year with a
-fit on the other years and compares the mean, MAE, 99th percentile and wet-day
-fraction (> 0.1 mm) with AORC, beside the uncorrected ERA5-Land. The mapping
-corrects distributions, not the timing of individual storms, so keep filled
-days out of model calibration.
+The `debias` command fits every mapping on the `--aorc` full table, which holds
+both AORC and ERA5-Land: per catchment and calendar month (the month and the
+months either side), over `RECENT` (2022-2025) for the catchments that keep
+AORC and over `REFERENCE` for the replaced ones. The `--era5` table only
+supplies the days to write, so it can be as short as one day. AORC is kept
+where it exists, except in the replaced catchments, and the rest is filled
+from the mapped ERA5-Land. Precipitation is split into rain and snow by a
+logistic curve of AORC's snow fraction against daily mean temperature, fitted
+for each catchment and applied to the corrected temperature; ERA5-Land's own
+split puts about 10% more of the 2022-2025 precipitation into snow than AORC's
+wet-bulb rule. PET is recalculated. The output has the requested-table columns;
+`aorc_gap_filled` names the filled columns. `OUTPUT_check.csv` corrects each
+fitted year with a fit on the other years and compares the mean, MAE, 99th
+percentile and wet-day fraction (> 0.1 mm) with AORC, beside the uncorrected
+ERA5-Land. The mapping corrects distributions, not the timing of individual
+storms, so keep filled days out of model calibration.
 
 To see what the correction changes, plot AORC beside ERA5-Land before and after
 it (same inputs as the `debias` command; corrected values in AORC years are fitted
 without that year):
 
 ```bash
-catchment-history plot-debias --aorc outputs/catchment_daily_1996_2025_full.csv --era5 outputs/era5_2022_2026.csv --output-dir figures/debias
+catchment-history plot-debias --aorc outputs/catchment_daily_1996_2025_full.csv --era5 outputs/era5_2026_full.csv --output-dir figures/debias
 ```
 
 `timeseries.png` shows monthly means over all catchments, `monthly_bias.png`
@@ -312,12 +312,59 @@ distributions, `catchments.png` the difference in each catchment, and
 `catchments.pdf` the monthly means of each catchment.
 
 To extend the 1996-2025 table, join the tables. The first file is kept whole;
-each later one adds only the dates after it, so 2022-2025 stay as in the first
-and 2026 is appended. Columns, catchments and the run of dates must match:
+each later one adds only the dates after it. Columns, catchments and the run of
+dates must match:
 
 ```bash
-catchment-history merge outputs/catchment_daily_1996_2025_mapped.parquet outputs/catchment_daily_2022_2026.csv --output outputs/catchment_daily_1996_2026.parquet
+catchment-history merge outputs/catchment_daily_1996_2025_mapped.parquet outputs/catchment_daily_2026.csv --output outputs/catchment_daily_1996_2026.parquet
 ```
+
+### Daily update
+
+`scripts/daily_update.sh` appends the days published since the last run to
+the delivered table of both catchment sets (the AORC catchments and the Peace
+River catchments, [below](#era5-land-for-the-peace-river-catchments)):
+
+1. `download --primary era5-land --era5-source cds` of the new days for each
+   set, into a working folder named after the last day, with one download cache
+   shared by every run;
+2. `debias` of the AORC catchments with the unchanged 1996-2025 full table;
+3. `merge-deliveries` of the two sets for the new days;
+4. `merge` onto the delivered table, which is replaced only when the joined
+   table is complete.
+
+```bash
+export PYTHONPATH=src DELIVERY=outputs/catchment_daily_46.parquet \
+    AORC_FULL=outputs/catchment_daily_1996_2025_full.parquet \
+    COLUMBIA=outputs/projects43_independent/dam_catchments.geojson \
+    PEACE=outputs/projects_peace/dam_catchments.geojson WORK=/scratch/hydro/daily
+scripts/daily_update.sh
+```
+
+ERA5 and ERA5-Land reach the CDS about five days behind real time as ERA5T and
+ERA5-Land-T, and a day's ERA5-Land precipitation needs 00 UTC of the next day,
+so each run ends six days before today (UTC). The copies lag further: on
+2026-10-29 the Earth Data Hub held ERA5-Land to 2026-10-15 and ARCO-ERA5 held
+ERA5 to 2026-10-19. The newest days therefore come from the CDS queue, which
+can take minutes to hours. Once a day is enough; a run that finds nothing new
+stops, and one that finds a blank day appends nothing, so the next run catches
+up. Run it where the CDS key and Earth Data Hub token are set up and the
+internet is reachable, one run at a time, for example from cron:
+
+```text
+0 12 * * * cd /path/to/history && flock -n /tmp/catchment_daily.lock scripts/daily_update.sh >> daily_update.log 2>&1
+```
+
+- The appended days keep their preliminary ERA5T and ERA5-Land-T values. The
+  final data replace them on the CDS about two to three months later, usually
+  without change; to take them, rebuild the period after 2025 as in the 2026
+  section and join it again.
+- Keep the 1996-2025 full table unchanged: every run refits the mapping on it,
+  and the same table gives the same mapping.
+- The README and manifest beside the delivered table are those of its last
+  full build; the daily appends do not rewrite them.
+- When NOAA releases AORC after 2025, rebuild the delivery so that the AORC
+  catchments take AORC again.
 
 ## 1. Install
 
@@ -655,19 +702,19 @@ Modules are in `src/catchment_history/`; `cli.py` maps each command to its modul
 | Module | Command | Purpose |
 | --- | --- | --- |
 | `download.py` | `download` | One command for all three sources, daily processing, resume, checks and the final delivery |
-| `download_era5.py` | `download-era5` | ERA5-Land and ERA5 without AORC, latest months first, exported in the full-table layout |
 | `aorc.py`, `aorc_zarr.py` | | Retrieve native AORC fields and calculate polygon series and native-cell diagnostics |
 | `cds.py`, `cds_fields.py` | | Retrieve ERA5-Land/ERA5, calculate polygon statistics and write monthly daily files; variable definitions, soil weighting, humidity, wind and freezing level |
 | `arco_era5.py` | | ERA5 single-level requests answered from the public ARCO-ERA5 copy in the CDS response layout |
 | `edh_era5_land.py` | | ERA5-Land requests answered from the Earth Data Hub copy in the CDS response layout |
 | `catchments.py` | | Read the catchment GeoJSON and validate forcing groups and routing notes |
+| `files.py` | | File hashes and atomic JSON writes |
 | `area_weights.py` | | Fractional polygon weights of grid cells |
 | `meteorology.py` | | Humidity, wet bulb, rain/snow partition, wind speed and Hargreaves PET formulas |
 | `aggregate.py` | | Aggregate hourly polygon series with explicit UTC timing and coverage rules |
 | `export.py` | | Verify source artifacts and export aligned daily values and QC tables plus their manifest |
 | `check.py` | `check` | Check delivered values/QC, physical plausibility and AORC/ERA5-Land agreement; plot coverage and project time series |
 | `deliver.py` | `deliver` | Write the requested-variable table and README from a checked full delivery, without filling AORC gaps |
-| `delivery_variables.py` | | Requested columns: source, native or computed, definition and forecast counterparts; `REPLACED` and `REFERENCE` |
+| `delivery_variables.py` | | Requested columns: source, native or computed, definition and forecast counterparts; `REPLACED`, `REFERENCE` and `RECENT` |
 | `debias.py` | `debias` | Quantile-map ERA5-Land onto AORC, fill the AORC columns where AORC is blank or replaced, and check the fit year by year |
 | `merge.py` | `merge` | Join requested tables (CSV or Parquet) into one period: earlier files kept, later ones only extend the dates |
 | `merge_deliveries.py` | `merge-deliveries` | Merge the requested tables of separate deliveries (for example Columbia and Peace) into one table, README and catchment GeoJSON |

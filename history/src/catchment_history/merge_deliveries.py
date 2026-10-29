@@ -24,7 +24,7 @@ import tempfile
 
 from .deliver import FILL_COLUMN, column_units, companion, readme_text, requested_columns
 from .delivery_variables import AORC, LAND, REFERENCE, REPLACED
-from .export import digest
+from .files import digest
 
 
 def full_manifest(table):

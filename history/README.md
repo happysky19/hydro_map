@@ -60,21 +60,21 @@ onto AORC:
 catchment-history debias --aorc outputs/catchment_daily_1996_2025_full.csv --era5 outputs/catchment_daily_1996_2025_full.csv --output outputs/catchment_daily_1996_2025_mapped.parquet
 ```
 
-Dates after the AORC archive come from `download-era5` and the same mapping,
-joined with `merge`; catchments north of AORC (53°N) use `download --primary
-era5-land` and are joined with `merge-deliveries`. The full sequence is in the
-[pipeline guide](docs/pipeline.md).
+Dates after the AORC archive come from `download --primary era5-land` and the
+same mapping, joined with `merge`; catchments north of AORC (53°N) use
+`download --primary era5-land` alone and are joined with `merge-deliveries`.
+`scripts/daily_update.sh` appends the newly published days every day. The full
+sequence is in the [pipeline guide](docs/pipeline.md).
 
 ## Commands
 
 | Command | Does |
 | --- | --- |
 | `download` | AORC, ERA5-Land and ERA5 to the full table, its checks and the requested table |
-| `download-era5` | ERA5-Land and ERA5 only, in the full-table layout |
 | `check` | Checks of a full table, without downloading |
 | `deliver` | The requested table and README from a full table |
 | `debias` | ERA5-Land mapped onto AORC: gaps filled, `REPLACED` catchments replaced |
-| `merge` | Join requested tables of consecutive periods |
+| `merge` | Join requested tables of consecutive periods; also appends to a table in place |
 | `merge-deliveries` | Join requested tables of different catchments |
 | `plot` | Daily series from a working directory or a table |
 | `plot-debias` | AORC beside ERA5-Land before and after the mapping |
@@ -92,7 +92,8 @@ and the outlets upstream). Optional properties are described in
 ## Documentation
 
 - [Pipeline guide](docs/pipeline.md): workflow, long runs, the AORC replacement,
-  the 2026 extension, the Peace River catchments, plots and variables.
+  the 2026 extension, the daily update, the Peace River catchments, plots and
+  variables.
 - [Data notes](docs/data_notes.md): how to read the delivery, units, time
   conventions, missing values and the checks.
 

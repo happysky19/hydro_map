@@ -25,6 +25,7 @@ import requests
 from .aggregate import HOURLY_FIELDS, aggregate_daily, daily_schema
 from .aorc_zarr import BASE, VARIABLES, axis, check, decode, metadata, weights
 from .catchments import forcing_metadata, read_catchments
+from .files import atomic_json, digest, json_hash
 from .meteorology import DERIVED_FIELDS, DERIVED_METHODS, derive_native
 
 FIELDS = {
@@ -39,20 +40,6 @@ FIELDS = {
 }
 DERIVED_INPUTS = {'APCP_surface', 'TMP_2maboveground', 'SPFH_2maboveground',
                   'PRES_surface', 'UGRD_10maboveground', 'VGRD_10maboveground'}
-
-
-def digest(path):
-    value = hashlib.sha256()
-    with path.open('rb') as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b''):
-            value.update(chunk)
-    return value.hexdigest()
-
-
-def atomic_json(path, value):
-    temporary = path.with_suffix(path.suffix + '.tmp')
-    temporary.write_text(json.dumps(value, indent=2) + '\n')
-    temporary.replace(path)
 
 
 class Store:
@@ -293,7 +280,7 @@ def run(geojson, start, end, output_dir, cache_dir, *, projects=None, workers=16
                   code_sha256={name: digest(Path(__file__).with_name(name)) for name in
                            ('aorc.py', 'aggregate.py', 'aorc_zarr.py',
                             'catchments.py', 'meteorology.py')})
-    config_hash = hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()
+    config_hash = json_hash(config)
     config_path = output_dir / 'run.json'
     if config_path.exists():
         check(json.loads(config_path.read_text()) == config,

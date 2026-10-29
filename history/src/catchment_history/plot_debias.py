@@ -1,12 +1,12 @@
 """Plot AORC beside ERA5-Land before and after quantile mapping.
 
-    catchment-history plot-debias --aorc outputs/catchment_daily_1996_2025_full.csv --era5 outputs/era5_2022_2026.csv --output-dir figures/debias
+    catchment-history plot-debias --aorc outputs/catchment_daily_1996_2025_full.csv --era5 outputs/catchment_daily_1996_2025_full.csv --output-dir figures/debias
 
-Inputs are those of the debias command. Corrected ERA5-Land in a year with AORC is
-mapped with a fit on the other years, so it is compared with AORC out of sample;
-later years use a fit on every AORC year, as in the delivered table. The
-catchments whose AORC is replaced are fitted on, and compared with, AORC over
-the reference dates only.
+Inputs are those of the debias command. Corrected ERA5-Land in a year the
+mapping is fitted on is mapped with a fit on the other years, so it is compared
+with AORC out of sample; other years use the whole fit, as in the delivered
+table. The catchments whose AORC is replaced are compared with AORC over the
+reference dates only.
 
   timeseries.png    monthly means over all catchments
   monthly_bias.png  difference from AORC by calendar month, days with AORC only
@@ -22,7 +22,7 @@ import sys
 
 import numpy as np
 
-from .debias import WET_MM, fitting, held_out, inputs, uncorrected
+from .debias import WET_MM, held_out, inputs, uncorrected
 from .delivery_variables import REFERENCE, REPLACED
 from .plot import AXIS, GRID, INK, INK_SECONDARY, LABELS, SERIES, SURFACE, setup, style
 
@@ -210,7 +210,7 @@ def run(aorc_path, era5_path, output_dir):
     output_dir.mkdir(parents=True, exist_ok=True)
     keys, _, _, aorc, land, projects, dates, latitudes = inputs(aorc_path, era5_path)
     count = len(keys)
-    corrected = held_out(aorc, land, projects, dates, latitudes, fitting(projects, count))
+    corrected = held_out(aorc, land, projects, dates, latitudes, np.arange(count, len(projects)))
     projects, dates = projects[:count], dates[:count]
     every = np.arange(count)
     sources = {'AORC': {v: values[:count] for v, values in aorc.items()},
@@ -265,7 +265,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(prog='catchment-history plot-debias', description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--aorc', required=True, type=Path, help='Full table with AORC columns (catchment-history download)')
-    parser.add_argument('--era5', required=True, type=Path, help='Table written by catchment-history download-era5')
+    parser.add_argument('--era5', required=True, type=Path, help='Full table of the dates to compare')
     parser.add_argument('--output-dir', required=True, type=Path)
     args = parser.parse_args(argv)
     try:

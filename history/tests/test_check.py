@@ -9,7 +9,8 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from catchment_history.export import _value_column, digest
+from catchment_history.export import _value_column
+from catchment_history.files import digest
 
 
 class CheckDailyTests(unittest.TestCase):

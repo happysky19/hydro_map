@@ -13,7 +13,8 @@ import warnings
 
 import numpy as np
 
-from .export import QUALITY, digest
+from .export import QUALITY
+from .files import digest
 
 
 SOURCES = ('aorc_v1.1', 'era5_land_cds')

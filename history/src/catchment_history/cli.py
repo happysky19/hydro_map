@@ -6,7 +6,6 @@ import sys
 
 COMMANDS = {
     'download': ('download', 'AORC, ERA5-Land and ERA5 to the full table, its checks and the requested table'),
-    'download-era5': ('download_era5', 'ERA5-Land and ERA5 only, in the full-table layout'),
     'check': ('check', 'consistency, plausibility and source-agreement checks of a full table'),
     'deliver': ('deliver', 'the requested table and README from a full table'),
     'debias': ('debias', 'ERA5-Land mapped onto AORC: gaps filled, REPLACED catchments replaced'),

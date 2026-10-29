@@ -6,7 +6,8 @@ The files need the same columns in the same order and the same catchments on
 every date, and the dates must run on without a gap. A REPLACED catchment
 (delivery_variables.py) must have its AORC replaced by the debias command, every
 row flagged, in all the files or in none. CSV and Parquet inputs can be mixed;
-the output format follows its suffix.
+the output format follows its suffix. The output may be the first file: it is
+replaced only once the joined table is complete, which appends a daily update.
 """
 
 import argparse
@@ -46,8 +47,6 @@ def read(path):
 
 def merge(paths, output):
     paths, output = [Path(path) for path in paths], Path(output)
-    if output.resolve() in {path.resolve() for path in paths}:
-        raise ValueError('The output must not overwrite an input')
     tables = [read(path) for path in paths]
     header = tables[0][0]
     if header[:2] != ['date', 'project_id'] or header[-1] != FILL_COLUMN:

@@ -13,7 +13,8 @@ import json
 from pathlib import Path
 import time
 
-from .cds import accumulated_requests, batch_requests, date_chunks, json_hash
+from .cds import accumulated_requests, batch_requests, date_chunks
+from .files import json_hash
 
 
 def ago(seconds):
@@ -63,7 +64,7 @@ def cds_progress(folder, cache):
 def main(argv=None):
     parser = argparse.ArgumentParser(prog='catchment-history progress', description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('work_dir', type=Path, help='The --work-dir of catchment-history download or download-era5 (default OUTPUT.work)')
+    parser.add_argument('work_dir', type=Path, help='The --work-dir of catchment-history download (default OUTPUT.work)')
     parser.add_argument('--cache-dir', type=Path, help='The --cache-dir if it was set (default WORK_DIR/cache)')
     args = parser.parse_args(argv)
     cache = args.cache_dir or args.work_dir / 'cache'

@@ -22,6 +22,8 @@ LAND_ORIGIN = {'precipitation_mm': 'native tp', 'rainfall_mm': 'computed from tp
 REPLACED = ('MICA', 'REVELSTOKE', 'HUGH_KEENLEYSIDE', 'DUNCAN', 'CORRA_LINN', 'KOOTENAY_CANAL', 'BRILLIANT',
             'SEVEN_MILE', 'WANETA', 'LIBBY')
 REFERENCE = ('1996-01-01', '2006-12-31')
+# The other catchments are mapped with a fit on the last AORC years.
+RECENT = ('2022-01-01', '2025-12-31')
 NOT_AVAILABLE = 'not available'
 DERIVE = 'derive from T, humidity and pressure as here'
 SEASONAL = ('Mean of 24 hourly catchment means over seasonal-snow cells; ERA5-Land cells holding '
