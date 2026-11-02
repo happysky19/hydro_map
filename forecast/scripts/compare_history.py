@@ -46,7 +46,7 @@ def main():
     parser.add_argument('--lead', nargs='+', type=int, default=[1, 5, 10])
     args = parser.parse_args()
     for item in args.forecast:
-        paths = sorted(item.glob('*.parquet')) if item.is_dir() else [item]
+        paths = sorted(item.glob('[0-9]' * 10 + '.parquet')) if item.is_dir() else [item]
         print(f'\n{item}: {len(paths)} start tables; ensemble means against {args.history.name}')
         compare(paths, args.history, args.lead)
 
