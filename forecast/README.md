@@ -41,17 +41,17 @@ forecast come from the adjustment against the history tables.
 | Column | AIFS-ENS | WeatherNext 2 |
 | --- | --- | --- |
 | `precipitation_mm` | ✓ accumulated, differenced | ✓ 6 h amounts, summed |
-| `tmean_c`, `tmax_c`, `tmin_c` | ✓ | ✓ |
-| `u_wind_ms`, `v_wind_ms`, `wind_speed_ms` | ✓ | ✓ |
-| `relative_humidity_pct`, `vapor_pressure_deficit_kpa` | ✓ from 2d | – |
-| `shortwave_down_mean_wm2` | ✓ | – |
-| `pet_hargreaves_mm` | ✓ | ✓ |
+| `tmean_degC`, `tmax_degC`, `tmin_degC` | ✓ | ✓ |
+| `u_wind_m_s`, `v_wind_m_s`, `wind_speed_m_s` | ✓ | ✓ |
+| `relative_humidity_pct`, `vapor_pressure_deficit_kPa` | ✓ from 2d | – |
+| `shortwave_down_mean_W_m2` | ✓ | – |
+| `pet_hargreaves_mm_day` | ✓ | ✓ |
 
 To see how far the raw forecasts are from the history before any adjustment,
-compare their ensemble means with the history table:
+compare their ensemble means with the history table, each system on its own:
 
 ```bash
-python forecast/scripts/compare_history.py OUTPUT/aifs --history DELIVERY.parquet --lead 1 5 10
+python forecast/scripts/compare_history.py OUTPUT/aifs OUTPUT/wn2 --history DELIVERY.parquet --lead 1 5 10
 ```
 
 ## Download IFS ENS from TIGGE

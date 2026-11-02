@@ -66,22 +66,22 @@ def test_daily_values_follow_the_history_conventions(system):
     matrix = np.array([[1., 2., 0.], [0., 1., 1.]])
     out = aggregate.daily(synthetic(system, 3), UNITS[system], system, matrix, date(2024, 1, 1), [52., 46.])
     np.testing.assert_allclose(out['precipitation_mm'], 4.)
-    np.testing.assert_allclose(out['tmean_c'], 10.)
-    np.testing.assert_allclose(out['wind_speed_ms'], 5.)
-    assert out['pet_hargreaves_mm'].shape == (2, 2) and np.isfinite(out['pet_hargreaves_mm']).all()
+    np.testing.assert_allclose(out['tmean_degC'], 10.)
+    np.testing.assert_allclose(out['wind_speed_m_s'], 5.)
+    assert out['pet_hargreaves_mm_day'].shape == (2, 2) and np.isfinite(out['pet_hargreaves_mm_day']).all()
     if system == 'aifs':
-        np.testing.assert_allclose(out['shortwave_down_mean_wm2'], 100.)
+        np.testing.assert_allclose(out['shortwave_down_mean_W_m2'], 100.)
         expected = 100 * saturation_vapor_pressure_kpa(5.) / saturation_vapor_pressure_kpa(10.)
         np.testing.assert_allclose(out['relative_humidity_pct'], expected)
     else:
-        assert 'relative_humidity_pct' not in out and 'shortwave_down_mean_wm2' not in out
+        assert 'relative_humidity_pct' not in out and 'shortwave_down_mean_W_m2' not in out
 
 
 def test_a_missing_step_blanks_that_day_only():
     fields = synthetic('aifs', 3)
     del fields['2t', 30]
     out = aggregate.daily(fields, UNITS['aifs'], 'aifs', np.array([[1., 1., 1.]]), date(2024, 1, 1), [50.])
-    assert np.isfinite(out['tmean_c'][0]).all() and np.isnan(out['tmean_c'][1]).all()
+    assert np.isfinite(out['tmean_degC'][0]).all() and np.isnan(out['tmean_degC'][1]).all()
     assert np.isfinite(out['precipitation_mm']).all()
 
 
@@ -150,5 +150,5 @@ def test_archive_to_parquet(tmp_path, system):
     assert sorted(set(table['member'])) == (['p00', 'p01'] if system == 'aifs' else ['ckpt1_s000', 'ckpt1_s001'])
     assert table['valid_date'][:4] == [date(2024, 1, 1)] * 2 + [date(2024, 1, 2)] * 2
     np.testing.assert_allclose(table['precipitation_mm'], 4., rtol=1e-5)
-    np.testing.assert_allclose(table['tmean_c'], 10., atol=1e-3)
+    np.testing.assert_allclose(table['tmean_degC'], 10., atol=1e-3)
     assert shapely.__version__

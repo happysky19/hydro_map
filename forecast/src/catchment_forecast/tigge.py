@@ -31,21 +31,21 @@ STEPS = '0/to/360/by/6'
 MEMBERS = '1/to/50'
 # TIGGE parameter codes, by the column of the history table they feed.
 PARAMS = {
-    '2t': 167,          # tmean_c, relative humidity, vapour pressure deficit
+    '2t': 167,          # tmean_degC, relative humidity, vapour pressure deficit
     '2d': 168,          # relative humidity, vapour pressure deficit, rain-snow split
-    'mx2t6': 121,       # tmax_c
-    'mn2t6': 122,       # tmin_c
+    'mx2t6': 121,       # tmax_degC
+    'mn2t6': 122,       # tmin_degC
     'tp': 228228,       # precipitation_mm, accumulated from the start
     'sf': 228144,       # snowfall_mm, accumulated from the start
     'sd': 228141,       # snow_water_equivalent_mm
     'sm': 228039,       # soil moisture, top 20 cm
     'st': 228139,       # soil temperature, top 20 cm
     'sp': 134,          # humidity from 2t and 2d
-    '10u': 165,         # u_wind_ms, wind_speed_ms
-    '10v': 166,         # v_wind_ms, wind_speed_ms
-    'ssrd': 169,        # shortwave_down_mean_wm2, if the archive holds it
-    'ssr': 176,         # net_radiation_mean_wm2
-    'str': 177,         # net_radiation_mean_wm2
+    '10u': 165,         # u_wind_m_s, wind_speed_m_s
+    '10v': 166,         # v_wind_m_s, wind_speed_m_s
+    'ssrd': 169,        # shortwave_down_mean_W_m2, if the archive holds it
+    'ssr': 176,         # net_radiation_mean_W_m2
+    'str': 177,         # net_radiation_mean_W_m2
     'slhf': 147,        # actual_evapotranspiration_mm
     'tcc': 228164,      # cloud_cover_fraction
 }

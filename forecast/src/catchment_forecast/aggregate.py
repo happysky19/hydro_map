@@ -5,8 +5,9 @@
 
 ROOT holds one folder per start (YYYYMMDDHH) with one GRIB file per member.
 Each start becomes DIR/SYSTEM/YYYYMMDDHH.parquet with init_time, member,
-lead_day, valid_date, project_id and the history table's column names. A start
-already written is skipped, so a rerun picks up where an earlier one stopped.
+lead_day, valid_date, project_id and the column names of the delivered
+history table. A start already written is skipped, so a rerun picks up where
+an earlier one stopped.
 
 Nothing depends on the number of members: every file found is one member,
 named from its file name, and each member gets its own complete rows.
@@ -14,7 +15,7 @@ named from its file name, and each member gets its own complete rows.
 Lead day d covers hours 24(d-1) to 24d after the start, which for a 00 UTC
 start is a UTC day as in the history tables. Instantaneous fields are sampled
 at hours 0, 6, 12 and 18 of the day (WeatherNext 2 has no step 0, so its first
-day has three samples); tmean_c is their mean and tmax_c and tmin_c their
+day has three samples); tmean_degC is their mean and tmax_degC and tmin_degC their
 extremes, so the daily range is narrower than from hourly data until the
 values are mapped onto the history. Wind speed, relative humidity and vapour
 pressure deficit are computed at each grid point before the area mean, as in
@@ -56,7 +57,7 @@ def wn2_member(name):
 # amounts: {shortName: (column, accumulated from the start or not)}.
 SYSTEMS = {
     'aifs': dict(pattern='aifs_*p[0-9][0-9]*.grib*', member=aifs_member, first_step=0,
-                 amounts={'tp': ('precipitation_mm', True), 'ssrd': ('shortwave_down_mean_wm2', True)}),
+                 amounts={'tp': ('precipitation_mm', True), 'ssrd': ('shortwave_down_mean_W_m2', True)}),
     'wn2': dict(pattern='predictions_hres_*.grib', member=wn2_member, first_step=6,
                 amounts={'tp': ('precipitation_mm', False)}),
 }
@@ -64,9 +65,9 @@ INSTANT = ('2t', '2d', '10u', '10v')
 SAMPLE_HOURS = (0, 6, 12, 18)
 # Factor from a day's amount in the field's GRIB units to the column's units.
 DAILY = {'m': 1000., 'kg m**-2': 1., 'J m**-2': 1 / 86400}
-COLUMNS = ['precipitation_mm', 'tmean_c', 'tmax_c', 'tmin_c', 'relative_humidity_pct',
-           'vapor_pressure_deficit_kpa', 'shortwave_down_mean_wm2', 'u_wind_ms', 'v_wind_ms', 'wind_speed_ms',
-           'pet_hargreaves_mm']
+COLUMNS = ['precipitation_mm', 'tmean_degC', 'tmax_degC', 'tmin_degC', 'relative_humidity_pct',
+           'vapor_pressure_deficit_kPa', 'shortwave_down_mean_W_m2', 'u_wind_m_s', 'v_wind_m_s', 'wind_speed_m_s',
+           'pet_hargreaves_mm_day']
 
 
 class Catchments:
@@ -143,16 +144,16 @@ def daily(fields, units, system, matrix, start, latitudes):
         if name != '2t':
             continue
         t = kelvin - 273.15
-        at['tmean_c', step] = mean(t)
+        at['tmean_degC', step] = mean(t)
         if ('10u', step) in fields and ('10v', step) in fields:
             u, v = fields['10u', step], fields['10v', step]
-            at['u_wind_ms', step], at['v_wind_ms', step] = mean(u), mean(v)
-            at['wind_speed_ms', step] = mean(np.hypot(u, v))
+            at['u_wind_m_s', step], at['v_wind_m_s', step] = mean(u), mean(v)
+            at['wind_speed_m_s', step] = mean(np.hypot(u, v))
         if ('2d', step) in fields:
             saturation = saturation_vapor_pressure_kpa(t)
             vapour = saturation_vapor_pressure_kpa(fields['2d', step] - 273.15)
             at['relative_humidity_pct', step] = mean(100 * vapour / saturation)
-            at['vapor_pressure_deficit_kpa', step] = mean(np.maximum(saturation - vapour, 0.))
+            at['vapor_pressure_deficit_kPa', step] = mean(np.maximum(saturation - vapour, 0.))
 
     def samples(column, day):
         steps = [24 * (day - 1) + hour for hour in SAMPLE_HOURS if 24 * (day - 1) + hour >= spec['first_step']]
@@ -165,9 +166,9 @@ def daily(fields, units, system, matrix, start, latitudes):
     for column in {column for column, _ in at}:
         by_day = [samples(column, day) for day in range(1, days + 1)]
         out[column] = np.array([values.mean(axis=0) for values in by_day])
-        if column == 'tmean_c':
-            out['tmax_c'] = np.array([values.max(axis=0) for values in by_day])
-            out['tmin_c'] = np.array([values.min(axis=0) for values in by_day])
+        if column == 'tmean_degC':
+            out['tmax_degC'] = np.array([values.max(axis=0) for values in by_day])
+            out['tmin_degC'] = np.array([values.min(axis=0) for values in by_day])
 
     def amount(name, accumulated, day):
         """The day's amount at each grid point, or None when a step is missing."""
@@ -187,10 +188,10 @@ def daily(fields, units, system, matrix, start, latitudes):
     pet = np.full((days, matrix.shape[0]), np.nan)
     for day in range(days):
         for c, latitude in enumerate(latitudes):
-            stats = out['tmean_c'][day, c], out['tmin_c'][day, c], out['tmax_c'][day, c]
+            stats = out['tmean_degC'][day, c], out['tmin_degC'][day, c], out['tmax_degC'][day, c]
             if all(np.isfinite(stats)):
                 pet[day, c] = hargreaves_pet(*stats, latitude, start + timedelta(days=day))
-    out['pet_hargreaves_mm'] = pet
+    out['pet_hargreaves_mm_day'] = pet
     return {column: out[column] for column in COLUMNS if column in out}
 
 
@@ -210,12 +211,12 @@ def run_start(system, folder, catchments, output):
         fields, units, matrix = read_member(path, names, catchments)
         values = daily(fields, units, system, matrix, init.date(), catchments.latitudes)
         members.append((spec['member'](path.name), values))
-        print(f'{folder.name} {members[-1][0]}: {len(values["tmean_c"])} days in {time.time() - begin:.0f} s',
+        print(f'{folder.name} {members[-1][0]}: {len(values["tmean_degC"])} days in {time.time() - begin:.0f} s',
               flush=True)
     columns = [column for column in COLUMNS if any(column in values for _, values in members)]
     tables = []
     for member, values in members:
-        days = len(values['tmean_c'])
+        days = len(values['tmean_degC'])
         tables.append(pa.table({
             'init_time': pa.array([init] * days * count, pa.timestamp('s', tz='UTC')),
             'member': [member] * days * count,
