@@ -2,12 +2,13 @@
 
 from contextlib import redirect_stdout
 import csv
-from datetime import date
+from datetime import date, datetime, timezone
 import gzip
 import io
 import json
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -48,6 +49,16 @@ class ArcoTests(unittest.TestCase):
                      - arco_era5.EPOCH).total_seconds()) // 3600
         np.testing.assert_allclose(fields['deg0l']['data'][:, 0, 0], (first + np.arange(48)) % 1000)
         self.assertTrue(np.all(fields['z']['data'] == np.float32(100 * 9.80665)))
+
+    def test_hours_past_the_end_of_the_store_are_not_held(self):
+        client = arco_era5.ArcoClient()
+        last = datetime(2026, 10, 18, 23, tzinfo=timezone.utc)
+        held = f'{arco_era5.STORE}/total_cloud_cover/{int((last - arco_era5.EPOCH).total_seconds()) // 3600}.0.0'
+        head = lambda url, timeout: SimpleNamespace(status_code=200 if url == held else 404)
+        request = dict(year='2026', month='10', day=['18'], time=['00:00', '23:00'])
+        with patch.object(client.session, 'head', side_effect=head):
+            self.assertTrue(client.holds(request))
+            self.assertFalse(client.holds(dict(request, day=['18', '19'])))
 
     def test_pipeline_runs_on_arco_responses(self):
         with tempfile.TemporaryDirectory() as directory:

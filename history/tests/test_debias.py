@@ -93,6 +93,17 @@ def write_inputs(root):
                 other=other, aorc_path=aorc_path, era5_path=era5_path)
 
 
+def held_out_check(aorc_path, era5_path, path):
+    """The check plot-debias writes, as {(variable, project): row}."""
+    keys, _, _, aorc, land, projects, dates, latitudes = debias.inputs(aorc_path, era5_path)
+    train = np.arange(len(keys), len(projects))
+    corrected = debias.held_out(aorc, land, projects, dates, latitudes, train)
+    with redirect_stdout(io.StringIO()):
+        debias.check(aorc, land, projects, dates, latitudes, train, corrected, path)
+    with path.open() as stream:
+        return {(row['variable'], row['project_id']): row for row in csv.DictReader(stream)}
+
+
 class DebiasTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
@@ -144,8 +155,7 @@ class DebiasTests(unittest.TestCase):
                                    self.truth['pet_hargreaves_mm'][filled], rtol=1e-6)
 
     def test_check_compares_held_out_years(self):
-        with self.output.with_name('daily_check.csv').open() as stream:
-            rows = {(row['variable'], row['project_id']): row for row in csv.DictReader(stream)}
+        rows = held_out_check(self.aorc_path, self.era5_path, self.root / 'check.csv')
         tmean = rows['tmean_c', 'ALL']
         self.assertAlmostEqual(float(tmean['era5_land_mae']), 2, places=6)
         self.assertLess(float(tmean['corrected_mae']), .01)
@@ -153,6 +163,27 @@ class DebiasTests(unittest.TestCase):
         self.assertLess(abs(float(precipitation['corrected_wet_days']) - float(precipitation['aorc_wet_days'])), .03)
         self.assertGreater(float(precipitation['era5_land_wet_days']), float(precipitation['aorc_wet_days']) + .1)
         self.assertEqual(rows['tmean_c', 'A']['aorc_wet_days'], '')
+
+    def test_a_catchment_missing_from_the_aorc_table_takes_era5_land_as_it_is(self):
+        kept = self.projects == 'B'
+        keys = [key for key, keep in zip(self.keys, kept) if keep]
+        write_aorc(self.aorc_path, keys, {v: values[kept] for v, values in self.truth.items()},
+                   {v: values[kept] for v, values in self.land.items()})
+        land = dict(self.land, rainfall_mm=self.land['precipitation_mm'] - self.land['snowfall_mm'])
+        write_table(self.era5_path, self.keys, {**{(LAND, v): values for v, values in land.items()},
+                                                **{key: np.full(len(self.keys), value) for key, value in self.other.items()}})
+        output = self.root / 'north.csv'
+        with redirect_stdout(io.StringIO()):
+            debias.run(self.aorc_path, self.era5_path, output)
+        with output.open() as stream:
+            rows = [row for row in csv.DictReader(stream) if row['project_id'] == 'A']
+        north = ~kept
+        for variable in ('precipitation_mm', 'rainfall_mm', 'snowfall_mm', 'tmean_c', 'relative_humidity_pct'):
+            np.testing.assert_array_equal(self.series(variable, rows), land[variable][north], err_msg=variable)
+        pet = [hargreaves_pet(*s, LATITUDES['A'], d) for s, d in zip(
+            zip(*(land[v][north] for v in ('tmean_c', 'tmin_c', 'tmax_c'))), np.array(self.dates)[north])]
+        np.testing.assert_allclose(self.series('pet_hargreaves_mm', rows), pet)
+        self.assertFalse(any(row['aorc_gap_filled'] for row in rows))
 
     def test_short_overlap_is_refused(self):
         short = {v: np.where([d < date(2022, 2, 1) for d in self.dates], values, np.nan)
@@ -218,8 +249,7 @@ class ReplaceTests(unittest.TestCase):
         np.testing.assert_allclose(self.series('precipitation_mm')[kept], truth['precipitation_mm'][kept])
 
     def test_check_uses_the_fit_period_of_each_catchment(self):
-        with self.output.with_name('replaced_check.csv').open() as stream:
-            rows = {(row['variable'], row['project_id']): row for row in csv.DictReader(stream)}
+        rows = held_out_check(self.aorc_path, self.era5_path, self.root / 'check.csv')
         self.assertEqual(int(rows['tmean_c', 'A']['days']), 730)
         self.assertEqual(int(rows['tmean_c', 'B']['days']), 1096)
         self.assertLess(float(rows['tmean_c', 'A']['corrected_mae']), .01)

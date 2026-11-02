@@ -13,6 +13,8 @@ reference dates only.
   quantiles.png     quantiles of daily values against those of AORC
   catchments.png    difference from AORC in each catchment
   catchments.pdf    the monthly means of each catchment, one page each
+  check.csv         each fitted year corrected with a fit on the other years against AORC:
+                    mean, MAE, 99th percentile and wet days (> 0.1 mm), beside ERA5-Land
 """
 
 import argparse
@@ -22,7 +24,7 @@ import sys
 
 import numpy as np
 
-from .debias import WET_MM, held_out, inputs, uncorrected
+from .debias import WET_MM, check, held_out, inputs, uncorrected
 from .delivery_variables import REFERENCE, REPLACED
 from .plot import AXIS, GRID, INK, INK_SECONDARY, LABELS, SERIES, SURFACE, setup, style
 
@@ -210,7 +212,9 @@ def run(aorc_path, era5_path, output_dir):
     output_dir.mkdir(parents=True, exist_ok=True)
     keys, _, _, aorc, land, projects, dates, latitudes = inputs(aorc_path, era5_path)
     count = len(keys)
-    corrected = held_out(aorc, land, projects, dates, latitudes, np.arange(count, len(projects)))
+    train = np.arange(count, len(projects))
+    corrected = held_out(aorc, land, projects, dates, latitudes, train)
+    check(aorc, land, projects, dates, latitudes, train, corrected, output_dir / 'check.csv')
     projects, dates = projects[:count], dates[:count]
     every = np.arange(count)
     sources = {'AORC': {v: values[:count] for v, values in aorc.items()},

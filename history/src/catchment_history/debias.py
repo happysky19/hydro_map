@@ -12,13 +12,12 @@ wherever it exists, except in the REPLACED catchments, where every row takes
 the mapped ERA5-Land. Corrected precipitation is split into rain and snow by a
 curve of AORC's snow fraction against daily mean temperature, fitted for each
 catchment and applied to the corrected temperature, and PET is recalculated
-from the corrected temperatures.
+from the corrected temperatures. Catchments the --aorc table does not hold
+(north of AORC) take ERA5-Land as it is, as in a delivery made without AORC.
 
 OUTPUT has the requested-table columns for the --era5 dates, with
 aorc_gap_filled naming the filled or replaced columns of each row.
-OUTPUT_check.csv tests the method: each year with AORC to fit on is corrected
-with a fit on the other years and compared with AORC, beside the uncorrected
-ERA5-Land.
+plot-debias tests the method.
 """
 
 import argparse
@@ -34,7 +33,7 @@ import numpy as np
 
 from .check import table_rows
 from .delivery_variables import AORC, LAND, RECENT, REFERENCE, REPLACED, REQUESTED
-from .deliver import FILL_COLUMN, companion
+from .deliver import FILL_COLUMN
 from .export import _write
 from .files import digest
 from .meteorology import hargreaves_pet
@@ -235,14 +234,13 @@ def statistics(variable, project, a, r, c):
             *np.percentile([a, r, c], 99, axis=1), wet(a), wet(r), wet(c)]
 
 
-def check(aorc, land, projects, dates, latitudes, path, train):
-    """Correct each overlap year with a fit on the others and compare with AORC on the train rows."""
+def check(aorc, land, projects, dates, latitudes, train, corrected, path):
+    """Compare the held-out corrected values (held_out) with AORC on the train rows, beside ERA5-Land."""
     held = paired_rows(aorc, land, train)
     years = {dates[i].year for i in held}
     if len(years) < 2:
         print('Fewer than two overlap years; no check written', flush=True)
         return
-    corrected = held_out(aorc, land, projects, dates, latitudes, train)
     raw = uncorrected(land, projects, dates, latitudes, held)
     rows = []
     for v in VARIABLES:
@@ -284,7 +282,9 @@ def inputs(aorc_path, era5_path):
     if missing:
         raise ValueError(f'Missing columns: {", ".join(missing)}')
     other = [column for (source, _), column in columns.items() if source != AORC]
-    keys, data = read(era5_path, era5_manifest, sorted({*other, *(era5_columns[LAND, v] for v in land_names)}))
+    counterparts = [era5_columns[LAND, v] for v in VARIABLES if (LAND, v) in era5_columns]
+    keys, data = read(era5_path, era5_manifest,
+                      sorted({*other, *counterparts, *(era5_columns[LAND, v] for v in land_names)}))
     index = {key: i for i, key in enumerate(keys)}
     aorc = {v: np.full(len(keys), np.nan) for v in VARIABLES}
     present = {project for _, project in keys}
@@ -292,10 +292,11 @@ def inputs(aorc_path, era5_path):
               **{(LAND, v): aorc_columns.get((LAND, v)) for v in land_names}}
     if None in wanted.values():
         raise ValueError(f'{aorc_path.name} has no ERA5-Land columns to fit the mapping on')
-    extra, reference = [], {key: [] for key in wanted}
+    extra, reference, held = [], {key: [] for key in wanted}, set()
     number = lambda value: math.nan if value is None or value == '' else float(value)
     for record in table_rows(aorc_path, aorc_manifest['columns']):
         key = (str(record['date']), record['project_id'])
+        held.add(key[1])
         i = index.get(key)
         if i is not None:
             for v in VARIABLES:
@@ -306,7 +307,7 @@ def inputs(aorc_path, era5_path):
             for name, column in wanted.items():
                 reference[name].append(number(record[column]))
     found = Counter(project for _, project in extra)
-    for project in sorted(present):
+    for project in sorted(present & held):
         if found[project] < MIN_DAYS:
             start, end = fit_period(project)
             raise ValueError(f'{project}: {found[project]} days from {start} to {end} in {aorc_path.name}; '
@@ -315,10 +316,12 @@ def inputs(aorc_path, era5_path):
     land = {v: np.r_[data[era5_columns[LAND, v]], reference[LAND, v]] for v in land_names}
     projects = np.array([project for _, project in keys + extra])
     dates = [date.fromisoformat(day) for day, _ in keys + extra]
-    latitudes = next((entry['metadata'].get('pet_centroid_latitudes') or {} for entry in aorc_manifest['inputs']
-                      if entry['metadata'].get('source_id') == AORC), {})
+    latitudes = {**next((entry['metadata'].get('pet_centroid_latitudes') or {} for entry in aorc_manifest['inputs']
+                         if entry['metadata'].get('source_id') == AORC), {}),
+                 **era5_manifest.get('pet_centroid_latitudes', {})}
     if set(projects) - set(latitudes):
-        raise ValueError('The AORC table lacks PET centroid latitudes for some projects')
+        raise ValueError('The tables lack PET centroid latitudes for some projects')
+    columns.update({(LAND, v): era5_columns[LAND, v] for v in VARIABLES if (LAND, v) in era5_columns})
     return keys, columns, data, aorc, land, projects, dates, latitudes
 
 
@@ -328,11 +331,23 @@ def run(aorc_path, era5_path, output):
     count = len(keys)
     train = np.arange(count, len(projects))
     replaced = np.isin(projects[:count], REPLACED)
+    north = ~np.isin(projects[:count], projects[count:])
     values = {v: aorc[v][:count].copy() for v in VARIABLES}
     filled = {v: np.zeros(count, bool) for v in VARIABLES}
-    target = np.flatnonzero(replaced | np.logical_or.reduce([np.isnan(values[v]) for v in VARIABLES]))
-    print(f'{count:,} rows, {count - len(target):,} with complete AORC kept; '
+    target = np.flatnonzero(~north & (replaced | np.logical_or.reduce([np.isnan(values[v]) for v in VARIABLES])))
+    print(f'{count:,} rows, {count - len(target) - north.sum():,} with complete AORC kept; '
           f'filling {len(target):,} with quantile-mapped ERA5-Land', flush=True)
+    if north.any():
+        # As deliver.py writes a delivery without AORC: the ERA5-Land columns, and PET from their temperatures.
+        print(f'ERA5-Land as it is for {", ".join(sorted(set(projects[:count][north])))}', flush=True)
+        rows = np.flatnonzero(north)
+        for v in VARIABLES:
+            if (LAND, v) in columns:
+                values[v][rows] = data[columns[LAND, v]][rows]
+        stats = [data[columns[LAND, v]][rows] for v in ('tmean_c', 'tmin_c', 'tmax_c')]
+        values['pet_hargreaves_mm'][rows] = [
+            hargreaves_pet(*s, latitudes[projects[i]], dates[i]) if all(map(math.isfinite, s)) else math.nan
+            for i, *s in zip(rows, *stats)]
     if replaced.any():
         print(f'AORC replaced on every row of {", ".join(sorted(set(projects[:count][replaced])))}; '
               f'fitted on {REFERENCE[0]} to {REFERENCE[1]}, the other catchments on {RECENT[0]} to {RECENT[1]}',
@@ -343,14 +358,15 @@ def run(aorc_path, era5_path, output):
             use = replaced[target] | np.isnan(values[v][target])
             values[v][target[use]] = corrected[v][use]
             filled[v][target[use]] = np.isfinite(corrected[v][use])
-    names = {key: column.split('__', 1)[1] for key, column in columns.items()}
+    requested = [(item['source'], item['variable']) for item in REQUESTED]
+    names = {key: columns[key].split('__', 1)[1] for key in requested}
     header = ['date', 'project_id', *names.values(), FILL_COLUMN]
     blank = None if output.suffix == '.parquet' else ''
 
     def rows():
         for i, (day, project) in enumerate(keys):
             row = [values[variable][i] if source == AORC else data[columns[source, variable]][i]
-                   for source, variable in columns]
+                   for source, variable in requested]
             flag = ';'.join(names[AORC, v] for v in VARIABLES if filled[v][i])
             yield [day, project, *[blank if math.isnan(x) else x for x in row], flag or blank]
 
@@ -360,7 +376,6 @@ def run(aorc_path, era5_path, output):
     temporary.replace(output)
     counts = ', '.join(f'{names[AORC, v]} {int(filled[v].sum()):,}' for v in VARIABLES)
     print(f'Wrote {output}; filled values: {counts}', flush=True)
-    check(aorc, land, projects, dates, latitudes, companion(output, '_check', '.csv'), train)
 
 
 def main(argv=None):

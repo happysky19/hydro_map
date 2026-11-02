@@ -91,6 +91,8 @@ and the outlets upstream). Optional properties are described in
 
 ## Documentation
 
+- [Setting up and running](docs/running.md): host setup, building the table once
+  and the daily update.
 - [Pipeline guide](docs/pipeline.md): workflow, long runs, the AORC replacement,
   the 2026 extension, the daily update, the Peace River catchments, plots and
   variables.

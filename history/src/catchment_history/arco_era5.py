@@ -94,6 +94,12 @@ class ArcoClient:
         with self.lock:
             self.checked.add(chunk)
 
+    def holds(self, request):
+        """Whether the store has the last hour of a request yet; it trails the CDS by several days."""
+        index = int((request_times(request)[-1] - EPOCH).total_seconds()) // 3600
+        response = self.session.head(f"{STORE}/{FIELDS['total_cloud_cover'][1]}/{index}.0.0", timeout=self.timeout)
+        return response.status_code == 200
+
     def _field(self, array, index, rows, columns):
         data = np.frombuffer(self._get(f'{array}/{index}.0.0'), '<f4').reshape(len(LATITUDE), len(LONGITUDE))
         return data[np.ix_(rows, columns)]

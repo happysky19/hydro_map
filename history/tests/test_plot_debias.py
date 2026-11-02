@@ -17,6 +17,7 @@ class PlotDebiasTests(unittest.TestCase):
             inputs = write_inputs(root)
             with redirect_stdout(io.StringIO()):
                 plot_debias.run(inputs['aorc_path'], inputs['era5_path'], root / 'figures')
+            self.assertIn('precipitation_mm,ALL,', (root / 'figures' / 'check.csv').read_text())
             for name in ('timeseries.png', 'monthly_bias.png', 'quantiles.png', 'catchments.png'):
                 self.assertGreater((root / 'figures' / name).stat().st_size, 10000, name)
             pdf = (root / 'figures' / 'catchments.pdf').read_bytes()

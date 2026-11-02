@@ -62,6 +62,17 @@ class MergeTests(unittest.TestCase):
         dates = pq.read_table(self.old)['date'].to_pylist()
         self.assertEqual((dates[0], dates[-1], len(dates)), (date(2025, 11, 1), date(2026, 1, 3), 2 * (61 + 3)))
 
+    def test_end_drops_the_later_dates(self):
+        new = self.root / 'new.csv'
+        table(new, date(2026, 1, 1), date(2026, 1, 31), 2.)
+        output = self.root / 'until.parquet'
+        with redirect_stdout(io.StringIO()):
+            merge([self.old, new], output, end=date(2026, 1, 10))
+            merge([output], self.root / 'cut.parquet', end=date(2025, 11, 30))
+        self.assertEqual(max(pq.read_table(output)['date'].to_pylist()), date(2026, 1, 10))
+        self.assertEqual(pq.read_table(self.root / 'cut.parquet')['date'].to_pylist(),
+                         [date(2025, 11, 1) + timedelta(days=i // 2) for i in range(60)])
+
     def test_a_replaced_catchment_must_be_replaced_in_every_file(self):
         from unittest import mock
         new = self.root / 'new.csv'

@@ -8,6 +8,8 @@ every date, and the dates must run on without a gap. A REPLACED catchment
 row flagged, in all the files or in none. CSV and Parquet inputs can be mixed;
 the output format follows its suffix. The output may be the first file: it is
 replaced only once the joined table is complete, which appends a daily update.
+--end drops the dates after it, so one file with --end gives the table as it
+stood on that day.
 """
 
 import argparse
@@ -45,7 +47,7 @@ def read(path):
     return names, rows()
 
 
-def merge(paths, output):
+def merge(paths, output, end=None):
     paths, output = [Path(path) for path in paths], Path(output)
     tables = [read(path) for path in paths]
     header = tables[0][0]
@@ -62,7 +64,7 @@ def merge(paths, output):
             start, count = day, 0
             for row in source:
                 current = date.fromisoformat(row[0])
-                if start is not None and current <= start:
+                if (start is not None and current <= start) or (end is not None and current > end):
                     continue
                 if current != day:
                     if day is not None:
@@ -104,9 +106,10 @@ def main(argv=None):
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('tables', nargs='+', type=Path, help='Requested tables, earliest first')
     parser.add_argument('--output', required=True, type=Path)
+    parser.add_argument('--end', type=date.fromisoformat, help='Last date to keep (default: all)')
     args = parser.parse_args(argv)
     try:
-        merge(args.tables, args.output)
+        merge(args.tables, args.output, args.end)
     except (ValueError, OSError) as error:
         print(f'Failed: {error}', file=sys.stderr)
         return 1
