@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "catchment-forecast"
+version = "0.1.0"
+description = "Catchment forecasts and hindcasts from IFS ENS, AIFS-ENS and WeatherNext 2."
+requires-python = ">=3.10"
+# Also catchment-history (../history), installed or on PYTHONPATH.
+dependencies = [
+  "cdsapi>=0.7.7,<1",
+  "eccodes>=2.37",
+  "numpy>=1.24,<3",
+  "pyarrow>=14",
+  "shapely>=2.1,<3",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
