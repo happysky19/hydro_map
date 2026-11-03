@@ -21,7 +21,8 @@ def history_table(path):
     days = np.arange(np.datetime64('2022-12-01'), np.datetime64('2026-03-01'))
     rows = {name: [] for name in ('date', 'project_id', 'precipitation_mm', 'rainfall_mm', 'snowfall_mm',
                                   'tmean_degC', 'tmax_degC', 'tmin_degC', 'wind_speed_m_s', 'u_wind_m_s',
-                                  'v_wind_m_s', 'pet_hargreaves_mm_day')}
+                                  'v_wind_m_s', 'pet_hargreaves_mm_day', 'cloud_cover_fraction',
+                                  'soil_temperature_layer1_degC')}
     for project, latitude in PROJECTS.items():
         season = -np.cos(2 * np.pi * (days - np.datetime64('2023-01-15')).astype(int) / 365.25)
         tmean = 5 + 12 * season + rng.normal(0, 3, len(days))
@@ -29,12 +30,14 @@ def history_table(path):
         snow = precipitation / (1 + np.exp(tmean / 1.5))
         u, v = rng.normal(1, 2, len(days)), rng.normal(0, 2, len(days))
         tmax, tmin = tmean + 5, tmean - 4
+        cloud, soil = rng.beta(2, 2, len(days)), np.convolve(tmean, np.ones(9) / 9, 'same') + 2
         rows['date'] += list(days.astype(object))
         rows['project_id'] += [project] * len(days)
         for name, values in [('precipitation_mm', precipitation), ('rainfall_mm', precipitation - snow),
                              ('snowfall_mm', snow), ('tmean_degC', tmean), ('tmax_degC', tmax),
                              ('tmin_degC', tmin), ('wind_speed_m_s', np.hypot(u, v) + .5), ('u_wind_m_s', u),
-                             ('v_wind_m_s', v)]:
+                             ('v_wind_m_s', v), ('cloud_cover_fraction', cloud),
+                             ('soil_temperature_layer1_degC', soil)]:
             rows[name] += list(values)
         rows['pet_hargreaves_mm_day'] += [hargreaves_pet(a, c, b, latitude, d) for a, b, c, d in
                                           zip(tmean, tmax, tmin, days.astype(object))]
@@ -51,7 +54,8 @@ def write_starts(folder, index, history, members=8, first=date(2023, 1, 1), last
     while start <= last:
         rows = {name: [] for name in adjust.KEYS + ['precipitation_mm', 'tmean_degC', 'tmax_degC', 'tmin_degC',
                                                     'u_wind_m_s', 'v_wind_m_s', 'wind_speed_m_s',
-                                                    'pet_hargreaves_mm_day']}
+                                                    'pet_hargreaves_mm_day', 'cloud_cover_fraction',
+                                                    'soil_temperature_layer1_degC']}
         init = datetime(start.year, start.month, start.day, tzinfo=timezone.utc)
         for member in range(members):
             for lead in range(1, LEADS + 1):
@@ -73,6 +77,8 @@ def write_starts(folder, index, history, members=8, first=date(2023, 1, 1), last
                     rows['v_wind_m_s'].append(history['v_wind_m_s'][i])
                     rows['wind_speed_m_s'].append(1.3 * history['wind_speed_m_s'][i])
                     rows['pet_hargreaves_mm_day'].append(1.)
+                    rows['cloud_cover_fraction'].append(min(1., 1.3 * history['cloud_cover_fraction'][i]))
+                    rows['soil_temperature_layer1_degC'].append(history['soil_temperature_layer1_degC'][i] + 1.5)
         table = pa.table({**rows, 'init_time': pa.array(rows['init_time'], pa.timestamp('s', tz='UTC')),
                           'lead_day': pa.array(rows['lead_day'], pa.int16()),
                           'valid_date': pa.array(rows['valid_date'], pa.date32())})
@@ -110,12 +116,15 @@ def test_held_out_years_lose_the_bias(run):
             assert abs(float(row['raw_bias']) - 2) < .3
             assert abs(float(row['adjusted_bias'])) < .3
             assert float(row['adjusted_crps']) < float(row['raw_crps'])
-        if row['column'] in ('precipitation_mm', 'wind_speed_m_s'):
+        if row['column'] == 'soil_temperature_layer1_degC':
+            assert abs(float(row['raw_bias']) - 1.5) < .1 and abs(float(row['adjusted_bias'])) < .2
+        if row['column'] in ('precipitation_mm', 'wind_speed_m_s', 'cloud_cover_fraction'):
             assert abs(float(row['adjusted_bias'])) < .1 * float(row['history_mean'])
             assert abs(float(row['raw_bias'])) > .25 * float(row['history_mean'])
     assert {row['column'] for row in rows} == {'precipitation_mm', 'rainfall_mm', 'snowfall_mm', 'tmean_degC',
                                                'tmax_degC', 'tmin_degC', 'u_wind_m_s', 'v_wind_m_s',
-                                               'wind_speed_m_s', 'pet_hargreaves_mm_day'}
+                                               'wind_speed_m_s', 'pet_hargreaves_mm_day', 'cloud_cover_fraction',
+                                               'soil_temperature_layer1_degC'}
     assert {int(row['lead_day']) for row in rows} == set(range(1, LEADS + 1))
 
 
@@ -130,6 +139,7 @@ def test_adjusted_tables_are_consistent(run):
     assert (snow >= 0).all() and (rain >= 0).all()
     t, high, low = (np.array(table[name]) for name in ('tmean_degC', 'tmax_degC', 'tmin_degC'))
     assert (low <= t).all() and (t <= high).all()
+    assert max(table['cloud_cover_fraction']) <= 1
     i = 7
     expected = hargreaves_pet(t[i], low[i], high[i], PROJECTS[table['project_id'][i]], table['valid_date'][i])
     assert table['pet_hargreaves_mm_day'][i] == pytest.approx(expected, rel=1e-9)
@@ -166,3 +176,9 @@ def test_a_group_without_a_fit_stops_the_run():
     with pytest.raises(ValueError, match='No fit for ALPHA, lead days from 1, month 1'):
         adjust.adjust(rows, dict(projects=['ALPHA'], quantiles={'tmean_degC': (quantiles, quantiles)},
                                  curves={'ALPHA': (0., 1.)}, latitudes={'ALPHA': 50.}))
+
+
+def test_every_forecast_column_is_mapped_additively_or_by_ratio():
+    from catchment_forecast.aggregate import COLUMNS
+    assert set(COLUMNS) - {'pet_hargreaves_mm_day'} == adjust.ADDITIVE | adjust.RATIO
+    assert not adjust.ADDITIVE & adjust.RATIO

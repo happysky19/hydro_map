@@ -1,6 +1,6 @@
 """Grid cells of the forecast systems and catchment area weights on them.
 
-A regular latitude-longitude grid (WeatherNext 2, IFS from TIGGE) and a
+A regular latitude-longitude grid (WeatherNext 2, GEFS, IFS from TIGGE) and a
 reduced Gaussian grid (AIFS, N320) are both described cell by cell as
 longitude-latitude boxes: on the reduced grid each row has its own number of
 points, and rows meet halfway between their latitudes. A catchment's weight on
@@ -67,6 +67,17 @@ def weights(geometries, cells, margin=1.):
             raise ValueError(f'Catchment {row}: cells cover {matrix[row].sum():.6g} m2 of {expected:.6g} m2')
     used = matrix.any(axis=0)
     return near[used], matrix[:, used]
+
+
+def land_mean(matrix, values):
+    """Area-weighted means of point VALUES over the points that have a value (land fields are missing over
+    water); NaN for a catchment with none."""
+    values = np.asarray(values, float)
+    present = np.isfinite(values)
+    area = matrix * present
+    total = area.sum(axis=1)
+    with np.errstate(invalid='ignore', divide='ignore'):
+        return np.where(total > 0, np.where(present, values, 0.) @ area.T / total, np.nan)
 
 
 def area_mean(matrix, values):

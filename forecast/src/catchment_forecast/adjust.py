@@ -39,8 +39,13 @@ START = '[0-9]' * 10 + '.parquet'
 # First lead day of each group; the last group runs on to every later lead day.
 LEAD_GROUPS = (1, 2, 3, 4, 6, 8, 11, 15)
 # Beyond the fitted quantiles signed quantities shift and nonnegative ones scale (see debias.mapped).
-ADDITIVE = {'tmean_degC', 'tmax_degC', 'tmin_degC', 'relative_humidity_pct', 'u_wind_m_s', 'v_wind_m_s'}
-RATIO = {'precipitation_mm', 'shortwave_down_mean_W_m2', 'vapor_pressure_deficit_kPa', 'wind_speed_m_s'}
+ADDITIVE = {'tmean_degC', 'tmax_degC', 'tmin_degC', 'relative_humidity_pct', 'u_wind_m_s', 'v_wind_m_s',
+            'net_radiation_mean_W_m2', 'actual_evapotranspiration_mm', 'freezing_level_above_sea_level_m',
+            *(f'soil_temperature_layer{i}_degC' for i in range(1, 5))}
+RATIO = {'precipitation_mm', 'shortwave_down_mean_W_m2', 'vapor_pressure_deficit_kPa', 'wind_speed_m_s',
+         'cloud_cover_fraction', 'snow_water_equivalent_mm', 'snow_depth_m', 'snowmelt_mm',
+         'freezing_level_above_ground_m', 'soil_moisture_layer1_m3_m3', 'root_zone_soil_moisture_0_100cm_m3_m3',
+         'soil_moisture_layer4_m3_m3'}
 MIN_ROWS = 200
 PHASE = ('precipitation_mm', 'snowfall_mm', 'tmean_degC')
 OUTPUT = ['precipitation_mm', 'rainfall_mm', 'snowfall_mm', *COLUMNS[1:]]
@@ -139,6 +144,8 @@ def adjust(rows, mapping):
     values['tmax_degC'] = np.fmax(values['tmax_degC'], t)
     if 'relative_humidity_pct' in values:
         values['relative_humidity_pct'] = np.clip(values['relative_humidity_pct'], 0, 100)
+    if 'cloud_cover_fraction' in values:
+        values['cloud_cover_fraction'] = np.minimum(values['cloud_cover_fraction'], 1.)
     centre, width = np.array([mapping['curves'][project] for project in rows['project_id']]).T
     values['snowfall_mm'] = values['precipitation_mm'] * snow_fraction(t, centre, width)
     values['rainfall_mm'] = values['precipitation_mm'] - values['snowfall_mm']

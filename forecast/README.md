@@ -10,8 +10,9 @@ member and catchment, and nothing depends on how many members a system has.
 
 | Module | What it does |
 | --- | --- |
-| `aggregate` | AIFS-ENS and WeatherNext 2 GRIB archives to one Parquet table per start |
+| `aggregate` | AIFS-ENS, WeatherNext 2 and GEFS GRIB archives to one Parquet table per start |
 | `adjust` | Map the start tables onto the history table: hindcasts year by year, operational starts with a saved mapping |
+| `gefs` | Download GEFS (control and 30 members) from NOAA's archive on AWS, only the fields used, and aggregate each start |
 | `tigge` | Download IFS ENS (control and 50 members) from TIGGE on the ECMWF Data Store |
 
 ## Aggregate a hindcast archive
@@ -43,17 +44,28 @@ amount; temperatures, wind and humidity use the samples at 0, 6, 12 and 18 h of
 the day, so tmax and tmin come from four samples (three on WeatherNext 2's
 first day, which has no step 0). Amounts are converted from the units each
 GRIB field declares (m or kg/m2 of precipitation, J/m2 of radiation); other
-units stop the run. Rainfall, snowfall and the columns a system does not
-forecast come from the adjustment against the history tables.
+units stop the run. Rainfall and snowfall come from the adjustment against the
+history tables.
 
-| Column | AIFS-ENS | WeatherNext 2 |
-| --- | --- | --- |
-| `precipitation_mm` | ✓ accumulated, differenced | ✓ 6 h amounts, summed |
-| `tmean_degC`, `tmax_degC`, `tmin_degC` | ✓ | ✓ |
-| `u_wind_m_s`, `v_wind_m_s`, `wind_speed_m_s` | ✓ | ✓ |
-| `relative_humidity_pct`, `vapor_pressure_deficit_kPa` | ✓ from 2d | – |
-| `shortwave_down_mean_W_m2` | ✓ | – |
-| `pet_hargreaves_mm_day` | ✓ | ✓ |
+| Column | AIFS-ENS | WeatherNext 2 | GEFS |
+| --- | --- | --- | --- |
+| `precipitation_mm` | ✓ accumulated, differenced | ✓ 6 h amounts, summed | ✓ 6 h amounts, summed |
+| `tmean_degC`, `tmax_degC`, `tmin_degC` | ✓ | ✓ | ✓ |
+| `u_wind_m_s`, `v_wind_m_s`, `wind_speed_m_s` | ✓ | ✓ | ✓ |
+| `relative_humidity_pct`, `vapor_pressure_deficit_kPa` | ✓ from 2d | – | ✓ from 2 m dew point |
+| `shortwave_down_mean_W_m2` | ✓ | – | ✓ DSWRF |
+| `pet_hargreaves_mm_day` | ✓ | ✓ | ✓ |
+| `net_radiation_mean_W_m2` | – | – | ✓ DSWRF − USWRF + DLWRF − ULWRF |
+| `cloud_cover_fraction` | – | – | ✓ TCDC / 100 |
+| `actual_evapotranspiration_mm` | – | – | ✓ LHTFL × 86400 / 2.45e6 |
+| `snow_water_equivalent_mm`, `snow_depth_m` | – | – | ✓ WEASD, SNOD, without glacier cells |
+| `snowmelt_mm` | – | – | ✓ SNOHF × 86400 / 3.34e5 |
+| `freezing_level_above_ground_m`, `freezing_level_above_sea_level_m` | – | – | ✓ HGT at 0 °C, HGT of the surface |
+| `soil_moisture_layer1_m3_m3`, `root_zone_soil_moisture_0_100cm_m3_m3`, `soil_moisture_layer4_m3_m3` | – | – | ✓ SOILW 0-10 cm; 0-10, 10-40, 40-100 cm weighted 0.1/0.3/0.6; 1-2 m |
+| `soil_temperature_layer1_degC` to `layer4_degC` | – | – | ✓ TSOIL 0-10, 10-40, 40-100, 100-200 cm |
+
+The GEFS soil layers are not those of ERA5-Land (0-7, 7-28, 28-100,
+100-289 cm); the adjustment maps each onto its history column.
 
 To see how far the raw forecasts are from the history before any adjustment,
 compare their ensemble means with the history table, each system on its own:
@@ -61,6 +73,30 @@ compare their ensemble means with the history table, each system on its own:
 ```bash
 python forecast/scripts/compare_history.py OUTPUT/aifs OUTPUT/wn2 --history DELIVERY.parquet --lead 1 5 10
 ```
+
+## Download and aggregate GEFS
+
+```bash
+python -m catchment_forecast.gefs --start 2024-01-01 --end 2024-01-31 --archive ARCHIVE \
+    --geojson CATCHMENTS --output OUTPUT --delete
+```
+
+GEFS v12 runs a control and 30 members at 00 UTC to 35 days on a 0.5 degree
+grid. NOAA's archive on AWS keeps every run, with the same fields from 2023 on,
+and has each new run a few hours after its start, so it serves both as the
+hindcast and as the operational source. The GRIB index files tell where each
+field lies, and only the fields used are fetched: about 320 MB a member for 22
+days at 6 h steps, which took 12-20 s to download and 4-5 s to aggregate. Each
+start goes into `OUTPUT/gefs` as soon as it is down, and `--delete` then removes
+its GRIB files. The starts are those of the AI hindcasts; `--every-day` takes
+every day, as operations will. On a Slurm cluster whose compute nodes reach
+AWS, `scripts/gefs_hindcast.sbatch` runs one month per array task:
+
+```bash
+DELETE=1 sbatch --export=ALL -A ACCOUNT -p PARTITION forecast/scripts/gefs_hindcast.sbatch ARCHIVE CATCHMENTS OUTPUT
+```
+
+2023-2025 is 285 starts of 31 members, about 2.8 TB to download.
 
 ## Adjust to the history table
 
@@ -97,7 +133,8 @@ python -m catchment_forecast.adjust apply --mapping OUTPUT/aifs_adjusted/mapping
 A mapping holds for the model version and the lead days of the hindcast it
 was fitted on. A new model version needs new hindcasts and a new fit. Lead days
 beyond the hindcast take the mapping of the last lead group. All AIFS starts
-(about 6 million rows) take about 2.5 minutes and 6 GB of memory.
+(about 6 million rows, 10 columns) took 5.5 minutes and 6 GB of memory on the
+cluster; GEFS, with 31 members and 25 columns, has about 9 million rows.
 
 ## Download IFS ENS from TIGGE
 

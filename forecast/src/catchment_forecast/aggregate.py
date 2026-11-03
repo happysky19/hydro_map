@@ -1,4 +1,4 @@
-"""Daily catchment means of AI ensemble forecasts, one table per start, one row per member.
+"""Daily catchment means of ensemble forecasts, one table per start, one row per member.
 
     python -m catchment_forecast.aggregate --system aifs --archive ROOT --geojson CATCHMENTS \\
         --output DIR [--start 2024-01-01 --end 2024-12-31]
@@ -21,11 +21,21 @@ values are mapped onto the history. Wind speed, relative humidity and vapour
 pressure deficit are computed at each grid point before the area mean, as in
 the history tables. Amounts are summed over the day at each grid point:
 AIFS accumulates from the start, so the totals at the ends of the day are
-differenced; WeatherNext 2 gives 6 h amounts, which are added. Negative amounts
-from GRIB packing become 0, and units follow each field's GRIB units. PET is
-Hargreaves from the daily temperatures at the catchment centroid latitude.
-Rainfall, snowfall and every other history column come from the adjustment,
-which needs the history tables.
+differenced; WeatherNext 2 and GEFS give 6 h amounts, which are added. Negative
+amounts from GRIB packing become 0, and units follow each field's GRIB units.
+PET is Hargreaves from the daily temperatures at the catchment centroid
+latitude. Rainfall and snowfall come from the adjustment, which needs the
+history tables.
+
+GEFS (see gefs) also gives the land-surface columns, as the history table
+defines them: its states (snow, soil, the 0 degC level) are sampled like 2 m
+temperature, and its 6 h mean fluxes (radiation, cloud, latent heat, snow
+melting heat) are averaged over the four that end in the day. Snow and soil
+fields are missing over water and are averaged over a catchment's land cells;
+cells with 5 m or more of snow water are glaciers and are left out of the snow
+means, as in the history table. Its fields are told apart by their GRIB2 codes,
+which unlike eccodes short names do not change between eccodes versions, and
+every 6 h mean or amount must cover the 6 h ending at its step.
 """
 
 import argparse
@@ -40,7 +50,7 @@ import numpy as np
 from catchment_history.catchments import read_catchments
 from catchment_history.meteorology import hargreaves_pet, saturation_vapor_pressure_kpa
 
-from .grids import area_mean, reduced_gaussian_cells, regular_cells, weights
+from .grids import area_mean, land_mean, reduced_gaussian_cells, regular_cells, weights
 
 
 def aifs_member(name):
@@ -54,20 +64,91 @@ def wn2_member(name):
     return f'ckpt{match[2]}_s{int(match[1] or 0):03d}'
 
 
+def gefs_member(name):
+    """gefs_c00.grib2 (control) -> c00; gefs_p07.grib2 -> p07."""
+    return re.search(r'gefs_([cp]\d+)', name)[1]
+
+
+# GEFS fields by GRIB2 discipline, parameter category and number and type of first fixed surface, with the
+# height for fields above ground.
+GEFS_CODES = {
+    (0, 0, 0, 103, 2): '2t', (0, 0, 6, 103, 2): '2d', (0, 2, 2, 103, 10): '10u', (0, 2, 3, 103, 10): '10v',
+    (0, 1, 8, 1): 'tp', (0, 4, 192, 1): 'dswrf', (0, 4, 193, 1): 'uswrf', (0, 5, 192, 1): 'dlwrf',
+    (0, 5, 193, 1): 'ulwrf', (0, 6, 1, 10): 'tcc', (0, 0, 10, 1): 'lhtfl', (0, 0, 16, 1): 'snohf',
+    (0, 1, 13, 1): 'weasd', (0, 1, 11, 1): 'snod', (0, 3, 5, 4): 'hgt0c', (0, 3, 5, 1): 'orog',
+    (2, 0, 192, 106): 'soilw', (2, 0, 2, 106): 'tsoil',
+}
+LAYERS = ('0-0.1', '0.1-0.4', '0.4-1', '1-2')   # GEFS soil layers in m
+GLACIER_MM = 5000.
+VAPORIZATION = 2.45e6   # J/kg, latent heat flux to evapotranspiration
+FUSION = 3.34e5         # J/kg, snow phase-change heat flux to snowmelt
+
+
+def gefs_name(get):
+    """The name of a GEFS message (soil fields with their layer, soilw0.1-0.4), or None for a field not used."""
+    code = tuple(get(key, int) for key in ('discipline', 'parameterCategory', 'parameterNumber',
+                                             'typeOfFirstFixedSurface'))
+    depth = lambda which: (get(f'scaledValueOf{which}FixedSurface', int)
+                           / 10 ** get(f'scaleFactorOf{which}FixedSurface', int))
+    if code[3] == 103:
+        return GEFS_CODES.get(code + (round(depth('First')),))
+    name = GEFS_CODES.get(code)
+    if name is not None and code[3] == 106:
+        return f'{name}{depth("First"):g}-{depth("Second"):g}'
+    return name
+
+
+def seasonal(f, values):
+    """values without the glacier cells."""
+    return np.where(f('weasd') >= GLACIER_MM, np.nan, values)
+
+
+# GEFS columns beyond those of 2t, 2d, 10u, 10v and tp: {column: (point values from the fields f of one step,
+# over land cells only)}. States are sampled at SAMPLE_HOURS; fluxes are the 6 h means ending at hours 6 to 24.
+GEFS_STATES = {
+    'snow_water_equivalent_mm': (lambda f: seasonal(f, f('weasd')), True),
+    'snow_depth_m': (lambda f: seasonal(f, f('snod')), True),
+    'freezing_level_above_ground_m': (lambda f: np.maximum(f('hgt0c') - f('orog'), 0.), False),
+    'freezing_level_above_sea_level_m': (lambda f: np.maximum(f('hgt0c'), f('orog')), False),
+    'soil_moisture_layer1_m3_m3': (lambda f: f('soilw0-0.1'), True),
+    'root_zone_soil_moisture_0_100cm_m3_m3': (
+        lambda f: .1 * f('soilw0-0.1') + .3 * f('soilw0.1-0.4') + .6 * f('soilw0.4-1'), True),
+    'soil_moisture_layer4_m3_m3': (lambda f: f('soilw1-2'), True),
+    **{f'soil_temperature_layer{i}_degC': (lambda f, layer=layer: f(f'tsoil{layer}') - 273.15, True)
+       for i, layer in enumerate(LAYERS, 1)},
+}
+GEFS_FLUXES = {
+    'shortwave_down_mean_W_m2': (lambda f: f('dswrf'), False),
+    'net_radiation_mean_W_m2': (lambda f: f('dswrf') - f('uswrf') + f('dlwrf') - f('ulwrf'), False),
+    'cloud_cover_fraction': (lambda f: f('tcc') / 100, False),
+    'actual_evapotranspiration_mm': (lambda f: f('lhtfl') * 86400 / VAPORIZATION, False),
+    'snowmelt_mm': (lambda f: np.maximum(f('snohf'), 0.) * 86400 / FUSION, True),
+}
+# Fields read once, at whatever step they come.
+CONSTANT = ('orog',)
+
 # amounts: {shortName: (column, accumulated from the start or not)}.
 SYSTEMS = {
     'aifs': dict(pattern='aifs_*p[0-9][0-9]*.grib*', member=aifs_member, first_step=0,
                  amounts={'tp': ('precipitation_mm', True), 'ssrd': ('shortwave_down_mean_W_m2', True)}),
     'wn2': dict(pattern='predictions_hres_*.grib', member=wn2_member, first_step=6,
                 amounts={'tp': ('precipitation_mm', False)}),
+    'gefs': dict(pattern='gefs_*.grib2', member=gefs_member, first_step=0, naming=gefs_name, window=6,
+                 amounts={'tp': ('precipitation_mm', False)}, states=GEFS_STATES, fluxes=GEFS_FLUXES,
+                 fields={name for name in GEFS_CODES.values() if name not in ('soilw', 'tsoil')}
+                 | {f'{name}{layer}' for name in ('soilw', 'tsoil') for layer in LAYERS}),
 }
 INSTANT = ('2t', '2d', '10u', '10v')
 SAMPLE_HOURS = (0, 6, 12, 18)
+WINDOW_ENDS = (6, 12, 18, 24)
 # Factor from a day's amount in the field's GRIB units to the column's units.
 DAILY = {'m': 1000., 'kg m**-2': 1., 'J m**-2': 1 / 86400}
 COLUMNS = ['precipitation_mm', 'tmean_degC', 'tmax_degC', 'tmin_degC', 'relative_humidity_pct',
            'vapor_pressure_deficit_kPa', 'shortwave_down_mean_W_m2', 'u_wind_m_s', 'v_wind_m_s', 'wind_speed_m_s',
-           'pet_hargreaves_mm_day']
+           'pet_hargreaves_mm_day', 'net_radiation_mean_W_m2', 'cloud_cover_fraction', 'actual_evapotranspiration_mm',
+           'snow_water_equivalent_mm', 'snow_depth_m', 'snowmelt_mm', 'freezing_level_above_ground_m',
+           'freezing_level_above_sea_level_m', 'soil_moisture_layer1_m3_m3', 'root_zone_soil_moisture_0_100cm_m3_m3',
+           'soil_moisture_layer4_m3_m3', *(f'soil_temperature_layer{i}_degC' for i in range(1, 5))]
 
 
 class Catchments:
@@ -106,27 +187,43 @@ def grid_weights(eccodes, handle, catchments):
     raise ValueError(f'Unsupported grid {kind}')
 
 
-def read_member(path, names, catchments):
-    """({(shortName, end step in hours): values at the used points}, {shortName: units}, area matrix)."""
+def read_member(path, names, catchments, naming=None, window=None, required=()):
+    """({(name, end step in hours): values at the used points}, {name: units}, area matrix).
+
+    A field's name is its short name, or what naming makes of the message (None for a field not used). With
+    a window (hours), a field with a period must cover the window hours ending at its step, and is skipped at
+    step 0. Every required name must come at least once.
+    """
     import eccodes
     fields, units, grid = {}, {}, None
     with open(path, 'rb') as stream:
         while (handle := eccodes.codes_grib_new_from_file(stream)) is not None:
             try:
-                name = eccodes.codes_get(handle, 'shortName')
+                get = lambda key, kind=None: eccodes.codes_get(handle, key, kind)
+                name = naming(get) if naming else get('shortName')
                 if name not in names:
                     continue
                 grid = grid or grid_weights(eccodes, handle, catchments)
                 eccodes.codes_set(handle, 'stepUnits', 'h')
+                step = int(get('endStep'))
+                if window and get('stepType') != 'instant':
+                    if step == 0:
+                        continue
+                    if step - int(get('startStep')) != window:
+                        raise ValueError(f'{path.name}: {name} at step {step} covers {get("stepRange")} h, '
+                                         f'not the {window} h before')
                 values = eccodes.codes_get_values(handle)
-                if eccodes.codes_get(handle, 'bitmapPresent'):
-                    values[values == eccodes.codes_get(handle, 'missingValue')] = np.nan
-                fields[name, int(eccodes.codes_get(handle, 'endStep'))] = values[grid[0]]
-                units[name] = eccodes.codes_get(handle, 'units')
+                if get('bitmapPresent'):
+                    values[values == get('missingValue')] = np.nan
+                fields[name, step] = values[grid[0]]
+                units[name] = get('units')
             finally:
                 eccodes.codes_release(handle)
     if grid is None:
         raise ValueError(f'{path.name}: none of {", ".join(sorted(names))}')
+    missing = set(required) - {name for name, _ in fields}
+    if missing:
+        raise ValueError(f'{path.name}: no {", ".join(sorted(missing))}')
     if units.get('2t', 'K') != 'K':
         raise ValueError(f'{path.name}: 2t in {units["2t"]}, not K')
     return fields, units, grid[1]
@@ -185,6 +282,29 @@ def daily(fields, units, system, matrix, start, latitudes):
             totals = [amount(name, accumulated, day) for day in range(1, days + 1)]
             out[column] = np.array([blank if total is None else mean(np.maximum(total, 0.)) * DAILY[units[name]]
                                     for total in totals])
+
+    constant = {name: values for (name, _), values in fields.items() if name in CONSTANT}
+
+    def field(step):
+        def get(name):
+            values = fields.get((name, step), constant.get(name))
+            if values is None:
+                raise KeyError(name)
+            return values
+        return get
+
+    def day_mean(formula, land, steps):
+        """Mean over the steps of the catchment means of formula; NaN when a step lacks a field."""
+        try:
+            points = [formula(field(step)) for step in steps]
+        except KeyError:
+            return blank
+        return np.mean([(land_mean if land else area_mean)(matrix, values) for values in points], axis=0)
+
+    for kind, hours in (('states', SAMPLE_HOURS), ('fluxes', WINDOW_ENDS)):
+        for column, (formula, land) in spec.get(kind, {}).items():
+            out[column] = np.array([day_mean(formula, land, [24 * (day - 1) + hour for hour in hours])
+                                    for day in range(1, days + 1)])
     pet = np.full((days, matrix.shape[0]), np.nan)
     for day in range(days):
         for c, latitude in enumerate(latitudes):
@@ -204,11 +324,12 @@ def run_start(system, folder, catchments, output):
         print(f'{folder.name}: no member files', flush=True)
         return
     init = datetime.strptime(folder.name, '%Y%m%d%H').replace(tzinfo=timezone.utc)
-    names = set(INSTANT) | set(spec['amounts'])
+    names = set(INSTANT) | set(spec['amounts']) | spec.get('fields', set())
     count, members = len(catchments.ids), []
     for path in files:
         begin = time.time()
-        fields, units, matrix = read_member(path, names, catchments)
+        fields, units, matrix = read_member(path, names, catchments, spec.get('naming'), spec.get('window'),
+                                            spec.get('fields', ()))
         values = daily(fields, units, system, matrix, init.date(), catchments.latitudes)
         members.append((spec['member'](path.name), values))
         print(f'{folder.name} {members[-1][0]}: {len(values["tmean_degC"])} days in {time.time() - begin:.0f} s',

@@ -152,3 +152,129 @@ def test_archive_to_parquet(tmp_path, system):
     np.testing.assert_allclose(table['precipitation_mm'], 4., rtol=1e-5)
     np.testing.assert_allclose(table['tmean_degC'], 10., atol=1e-3)
     assert shapely.__version__
+
+
+def test_gefs_member_names_and_land_means():
+    assert aggregate.gefs_member('gefs_c00.grib2') == 'c00' and aggregate.gefs_member('gefs_p30.grib2') == 'p30'
+    matrix = np.array([[1., 3., 0.], [0., 0., 2.]])
+    np.testing.assert_allclose(grids.land_mean(matrix, [2., np.nan, 5.]), [2., 5.])
+    assert np.isnan(grids.land_mean(matrix, [2., 4., np.nan])[1])
+
+
+def gefs_fields(days=2):
+    """GEFS point fields at three points; the third is water (no land fields), the first a glacier 1800 m up."""
+    land = lambda value: np.array([value, value, np.nan])
+    fields = {('orog', 6): np.array([1800., 1000., 1000.])}
+    for step in range(0, 24 * days + 1, 6):
+        fields['2t', step], fields['2d', step] = np.full(3, 283.15), np.full(3, 278.15)
+        fields['10u', step], fields['10v', step] = np.full(3, 3.), np.full(3, 4.)
+        fields['weasd', step], fields['snod', step] = np.array([6000., 100., np.nan]), np.array([9., .5, np.nan])
+        fields['hgt0c', step] = np.full(3, 1500.)
+        for i, layer in enumerate(aggregate.LAYERS, 1):
+            fields[f'soilw{layer}', step] = land(i / 10)
+            fields[f'tsoil{layer}', step] = land(273.15 + i)
+        if step:
+            for name, value in (('tp', 1.), ('dswrf', 200.), ('uswrf', 50.), ('dlwrf', 300.), ('ulwrf', 350.),
+                                ('tcc', 40.), ('lhtfl', aggregate.VAPORIZATION / 86400)):
+                fields[name, step] = np.full(3, value)
+            fields['snohf', step] = land(2 * aggregate.FUSION / 86400)
+    return fields
+
+
+GEFS_EXPECTED = {
+    'precipitation_mm': [4., 4.], 'tmean_degC': [10., 10.], 'wind_speed_m_s': [5., 5.],
+    'shortwave_down_mean_W_m2': [200., 200.], 'net_radiation_mean_W_m2': [100., 100.],
+    'cloud_cover_fraction': [.4, .4], 'actual_evapotranspiration_mm': [1., 1.], 'snowmelt_mm': [2., 2.],
+    'snow_water_equivalent_mm': [100., 100.], 'snow_depth_m': [.5, .5],
+    'freezing_level_above_ground_m': [250., 500.], 'freezing_level_above_sea_level_m': [1650., 1500.],
+    'soil_moisture_layer1_m3_m3': [.1, .1], 'root_zone_soil_moisture_0_100cm_m3_m3': [.01 + .06 + .18] * 2,
+    'soil_moisture_layer4_m3_m3': [.4, .4], 'soil_temperature_layer3_degC': [3., 3.],
+}
+
+
+def test_gefs_daily_values_follow_the_history_definitions():
+    matrix = np.array([[1., 1., 0.], [0., 1., 1.]])
+    out = aggregate.daily(gefs_fields(), {'2t': 'K', 'tp': 'kg m**-2'}, 'gefs', matrix, date(2024, 1, 1),
+                          [52., 46.])
+    for column, expected in GEFS_EXPECTED.items():
+        np.testing.assert_allclose(out[column], [expected] * 2, err_msg=column)
+    assert set(out) == set(aggregate.COLUMNS)
+
+
+def test_a_gefs_day_missing_a_field_is_blank():
+    fields = gefs_fields()
+    del fields['dswrf', 36]
+    out = aggregate.daily(fields, {'2t': 'K', 'tp': 'kg m**-2'}, 'gefs', np.ones((1, 3)), date(2024, 1, 1), [50.])
+    assert np.isfinite(out['net_radiation_mean_W_m2'][0]).all() and np.isnan(out['net_radiation_mean_W_m2'][1]).all()
+    assert np.isfinite(out['cloud_cover_fraction']).all()
+
+
+GEFS_PERIOD = {'tp': 1, 'dswrf': 0, 'uswrf': 0, 'dlwrf': 0, 'ulwrf': 0, 'tcc': 0, 'lhtfl': 0, 'snohf': 0}
+
+
+def write_gefs(path, fields, window=6):
+    """GRIB2 messages with the GEFS codes on a 1 degree grid; land fields carry a bitmap where they are missing."""
+    codes = {name: code for code, name in aggregate.GEFS_CODES.items()}
+    with open(path, 'wb') as stream:
+        for (name, step), value in fields.items():
+            base = name.rstrip('0123456789.-')
+            code = codes[base]
+            handle = eccodes.codes_grib_new_from_samples('regular_ll_sfc_grib2')
+            eccodes.codes_set(handle, 'centre', 'kwbc')
+            for key, setting in (('Ni', 360), ('Nj', 181), ('latitudeOfFirstGridPointInDegrees', 90.),
+                                 ('longitudeOfFirstGridPointInDegrees', 0.), ('latitudeOfLastGridPointInDegrees', -90.),
+                                 ('longitudeOfLastGridPointInDegrees', 359.), ('iDirectionIncrementInDegrees', 1.),
+                                 ('jDirectionIncrementInDegrees', 1.)):
+                eccodes.codes_set(handle, key, setting)
+            if base in GEFS_PERIOD:
+                eccodes.codes_set(handle, 'productDefinitionTemplateNumber', 8)
+                eccodes.codes_set(handle, 'typeOfStatisticalProcessing', GEFS_PERIOD[base])
+            for key, setting in zip(('discipline', 'parameterCategory', 'parameterNumber', 'typeOfFirstFixedSurface'),
+                                    code):
+                eccodes.codes_set(handle, key, setting)
+            if code[3] == 103:
+                eccodes.codes_set(handle, 'scaleFactorOfFirstFixedSurface', 0)
+                eccodes.codes_set(handle, 'scaledValueOfFirstFixedSurface', code[4])
+            if code[3] == 106:
+                top, bottom = (float(depth) for depth in name[len(base):].split('-'))
+                for which, depth in (('First', top), ('Second', bottom)):
+                    eccodes.codes_set(handle, f'typeOf{which}FixedSurface', 106)
+                    eccodes.codes_set(handle, f'scaleFactorOf{which}FixedSurface', 2)
+                    eccodes.codes_set(handle, f'scaledValueOf{which}FixedSurface', round(depth * 100))
+            if base in GEFS_PERIOD:
+                eccodes.codes_set(handle, 'stepRange', f'{step - window}-{step}')
+            else:
+                eccodes.codes_set(handle, 'step', step)
+            values = np.full(360 * 181, value[1])
+            if np.isnan(value).any():   # water along 46 N, under SWIFT
+                eccodes.codes_set(handle, 'bitmapPresent', 1)
+                values[44 * 360:45 * 360] = eccodes.codes_get(handle, 'missingValue')
+            eccodes.codes_set_values(handle, values)
+            eccodes.codes_write(handle, stream)
+            eccodes.codes_release(handle)
+
+
+def test_gefs_archive_to_parquet(tmp_path):
+    pq = pytest.importorskip('pyarrow.parquet')
+    start = tmp_path / 'archive' / '2024010100'
+    start.mkdir(parents=True)
+    write_gefs(start / 'gefs_c00.grib2', gefs_fields())
+    geojson = tmp_path / 'catchments.geojson'
+    geojson.write_text(json.dumps(dict(type='FeatureCollection', features=[
+        dict(type='Feature', properties=dict(id=key, part='local'), geometry=mapping(geometry))
+        for key, geometry in CATCHMENTS.items()])))
+    assert aggregate.main(['--system', 'gefs', '--archive', str(tmp_path / 'archive'), '--geojson', str(geojson),
+                           '--output', str(tmp_path / 'out')]) == 0
+    table = pq.read_table(tmp_path / 'out' / 'gefs' / '2024010100.parquet').to_pydict()
+    assert len(table['member']) == 2 * 2 and set(table['member']) == {'c00'}
+    # Every point has the second point's values; SWIFT (rows 2 and 4) lies on water for the land fields.
+    expected = dict(shortwave_down_mean_W_m2=200., net_radiation_mean_W_m2=100., cloud_cover_fraction=.4,
+                    freezing_level_above_ground_m=500., snowmelt_mm=[2., np.nan] * 2,
+                    snow_water_equivalent_mm=[100., np.nan] * 2, soil_temperature_layer2_degC=[2., np.nan] * 2)
+    for column, value in expected.items():
+        np.testing.assert_allclose(table[column], value, rtol=1e-4, err_msg=column)   # GRIB packing
+    write_gefs(start / 'gefs_c00.grib2', gefs_fields(), window=12)
+    (tmp_path / 'out' / 'gefs' / '2024010100.parquet').unlink()
+    with pytest.raises(ValueError, match='not the 6 h before'):
+        aggregate.main(['--system', 'gefs', '--archive', str(tmp_path / 'archive'), '--geojson', str(geojson),
+                        '--output', str(tmp_path / 'out')])
