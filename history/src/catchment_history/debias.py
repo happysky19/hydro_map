@@ -81,13 +81,16 @@ def month_groups(projects, dates):
     return names, codes * 12 + np.array([day.month for day in dates]) - 1
 
 
-def fit(x, y, names, groups, rows):
-    """Quantile pairs per group, from the paired rows of that month and the months either side."""
+def fit(x, y, names, groups, rows, needed=None):
+    """Quantile pairs per group, from the paired rows of that month and the months either side;
+    needed limits the groups fitted, else every catchment and month."""
     rows = rows[np.argsort(groups[rows], kind='stable')]
     bounds = np.searchsorted(groups[rows], np.arange(len(names) * 12 + 1))
     maps = {}
     for code, project in enumerate(names):
         for month in range(12):
+            if needed is not None and code * 12 + month not in needed:
+                continue
             near = np.concatenate([rows[bounds[group]:bounds[group + 1]]
                                    for group in code * 12 + np.arange(month - 1, month + 2) % 12])
             if len(near) < MIN_DAYS:
@@ -184,12 +187,14 @@ def correct(aorc, land, projects, dates, latitudes, train, target, phase=None):
     """Corrected values on the target rows, mapped with a fit on the train rows; phase gives the
     snow-fraction curves if they are already fitted on those rows."""
     names, groups = month_groups(projects, dates)
+    # Only the groups of the target rows: the catchments without AORC never reach here.
+    needed = set(np.unique(groups[target]).tolist())
     values = {}
     for variable in MAPPED:
         x, y = land[variable], aorc[variable]
-        maps = fit(x, y, names, groups, train[np.isfinite(x[train]) & np.isfinite(y[train])])
+        maps = fit(x, y, names, groups, train[np.isfinite(x[train]) & np.isfinite(y[train])], needed)
         result = np.full(len(target), np.nan)
-        for group in np.unique(groups[target]):
+        for group in sorted(needed):
             at = groups[target] == group
             result[at] = mapped(x[target[at]], *maps[group], variable in RATIO)
         values[variable] = result

@@ -185,6 +185,28 @@ class DebiasTests(unittest.TestCase):
         np.testing.assert_allclose(self.series('pet_hargreaves_mm', rows), pet)
         self.assertFalse(any(row['aorc_gap_filled'] for row in rows))
 
+    def test_a_catchment_missing_from_the_aorc_table_beside_rows_to_fill(self):
+        """As in the daily update: every row after AORC is filled, and the catchments without AORC need no fit."""
+        kept = self.projects == 'B'
+        keys = [key for key, keep in zip(self.keys, kept) if keep]
+        overlap = np.array([d.year < 2025 for d in self.dates])
+        write_aorc(self.aorc_path, keys, {v: np.where(overlap, values, np.nan)[kept] for v, values in self.truth.items()},
+                   {v: values[kept] for v, values in self.land.items()})
+        output = self.root / 'north_filled.csv'
+        with redirect_stdout(io.StringIO()):
+            debias.run(self.aorc_path, self.era5_path, output)
+        with output.open() as stream:
+            rows = list(csv.DictReader(stream))
+        north = ~kept
+        for variable in ('precipitation_mm', 'tmean_c', 'relative_humidity_pct'):
+            np.testing.assert_array_equal(self.series(variable, rows)[north], self.land[variable][north],
+                                          err_msg=variable)
+        filled = kept & ~overlap
+        np.testing.assert_allclose(self.series('tmean_c', rows)[filled], self.truth['tmean_c'][filled],
+                                   rtol=1e-6, atol=1e-6)
+        flagged = np.array([bool(row['aorc_gap_filled']) for row in rows])
+        np.testing.assert_array_equal(flagged, filled)
+
     def test_short_overlap_is_refused(self):
         short = {v: np.where([d < date(2022, 2, 1) for d in self.dates], values, np.nan)
                  for v, values in self.truth.items()}
