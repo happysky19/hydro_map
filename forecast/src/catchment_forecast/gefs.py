@@ -1,15 +1,18 @@
 """Download GEFS forecasts from NOAA's archive on AWS, only the fields the catchment tables use.
 
     python -m catchment_forecast.gefs --start 2024-01-01 --end 2024-01-31 --archive ARCHIVE \\
-        [--geojson CATCHMENTS --output OUTPUT [--delete]] [--every-day] [--members 31]
+        [--geojson CATCHMENTS --output OUTPUT [--delete]] [--every-day] [--members 31] [--hours 528]
 
 GEFS v12 runs a control and 30 perturbed members; the 00 UTC run goes to 35
 days on a 0.5 degree grid. The archive holds every run since 2017, and each
 new run a few hours after its start. For each start and member the GRIB index
 files are read and only the fields in FIELDS are fetched, by byte ranges, at
-every 6 h step to 528 h (22 days), into ARCHIVE/YYYYMMDDHH/gefs_c00.grib2 to
-gefs_p30.grib2, about 0.4 GB a member. The starts are those of the AI
-hindcasts (00 UTC on days 1, 5, ..., 29), or every day with --every-day.
+every 6 h step to 528 h (22 days) or to --hours, into
+ARCHIVE/YYYYMMDDHH/gefs_c00.grib2 to gefs_p30.grib2, about 0.4 GB a member
+for 22 days. The starts are those of the AI hindcasts (00 UTC on days 1, 5,
+..., 29), or every day with --every-day. The first day of every run
+(--every-day --hours 24, a few members) is what bridges the days between the
+end of the history table and a forecast start.
 
 With --geojson and --output each start is aggregated into OUTPUT/gefs as soon
 as it is downloaded (see aggregate), and with --delete its GRIB files are then
@@ -177,17 +180,20 @@ def main(argv=None):
     parser.add_argument('--every-day', action='store_true', help='Every day, not only the AI hindcast days')
     parser.add_argument('--members', type=int, default=31, help='Control and perturbed members (default 31)')
     parser.add_argument('--workers', type=int, default=16, help='Parallel requests (default 16)')
+    parser.add_argument('--hours', type=int, default=HOURS, help=f'Last step, whole days (default {HOURS})')
     args = parser.parse_args(argv)
     if (args.geojson is None) != (args.output is None) or (args.delete and args.output is None):
         parser.error('--geojson and --output go together, and --delete needs them')
+    if args.hours < 24 or args.hours % 24:
+        parser.error('--hours must be a multiple of 24')
     catchments = output = None
     if args.output is not None:
         from .aggregate import Catchments
         catchments, output = Catchments(args.geojson), args.output / 'gefs'
         output.mkdir(parents=True, exist_ok=True)
     days = starts(args.start, args.end, args.every_day)
-    print(f'{len(days)} GEFS starts, {args.members} members, into {args.archive}', flush=True)
-    run(days, args.archive, members(args.members), args.workers, HOURS, catchments, output, args.delete)
+    print(f'{len(days)} GEFS starts, {args.members} members to {args.hours} h, into {args.archive}', flush=True)
+    run(days, args.archive, members(args.members), args.workers, args.hours, catchments, output, args.delete)
     return 0
 
 

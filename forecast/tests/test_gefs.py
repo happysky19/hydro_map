@@ -78,6 +78,17 @@ def test_a_field_missing_from_the_archive_stops_the_member(monkeypatch, tmp_path
     assert not list(tmp_path.iterdir())
 
 
+def test_main_passes_the_hours_and_members_on(monkeypatch, tmp_path):
+    seen = {}
+    monkeypatch.setattr(gefs, 'run', lambda days, archive, names, workers, hours, *rest:
+                        seen.update(days=days, names=names, hours=hours))
+    gefs.main(['--start', '2024-01-01', '--end', '2024-01-03', '--archive', str(tmp_path), '--every-day',
+               '--members', '3', '--hours', '24'])
+    assert seen['hours'] == 24 and seen['names'] == ['c00', 'p01', 'p02'] and len(seen['days']) == 3
+    with pytest.raises(SystemExit):
+        gefs.main(['--start', '2024-01-01', '--end', '2024-01-01', '--archive', str(tmp_path), '--hours', '30'])
+
+
 def test_run_skips_missing_starts_aggregates_and_deletes(monkeypatch, tmp_path, capsys):
     archive = Archive()
     monkeypatch.setattr(gefs, 'fetch', archive.fetch)

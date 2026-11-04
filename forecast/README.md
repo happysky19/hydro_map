@@ -12,6 +12,7 @@ member and catchment, and nothing depends on how many members a system has.
 | --- | --- |
 | `aggregate` | AIFS-ENS, WeatherNext 2 and GEFS GRIB archives to one Parquet table per start |
 | `adjust` | Map the start tables onto the history table: hindcasts year by year, operational starts with a saved mapping |
+| `complete` | Make every other history column for each member from its own adjusted weather: a degree-day snowpack, regressions and persistence fitted on the history |
 | `gefs` | Download GEFS (control and 30 members) from NOAA's archive on AWS, only the fields used, and aggregate each start |
 | `tigge` | Download IFS ENS (control and 50 members) from TIGGE on the ECMWF Data Store |
 
@@ -89,8 +90,11 @@ field lies, and only the fields used are fetched: about 320 MB a member for 22
 days at 6 h steps, which took 12-20 s to download and 4-5 s to aggregate. Each
 start goes into `OUTPUT/gefs` as soon as it is down, and `--delete` then removes
 its GRIB files. The starts are those of the AI hindcasts; `--every-day` takes
-every day, as operations will. On a Slurm cluster whose compute nodes reach
-AWS, `scripts/gefs_hindcast.sbatch` runs one month per array task:
+every day, as operations will. `--hours 24` fetches only the first day:
+`--every-day --members 3 --hours 24` is about 50 MB a day and gives the
+lead-day-1 tables that bridge the days between the end of the history table
+and a forecast start. On a Slurm cluster whose compute nodes reach AWS,
+`scripts/gefs_hindcast.sbatch` runs one month per array task:
 
 ```bash
 DELETE=1 sbatch --export=ALL -A ACCOUNT -p PARTITION forecast/scripts/gefs_hindcast.sbatch ARCHIVE CATCHMENTS OUTPUT
@@ -135,6 +139,37 @@ was fitted on. A new model version needs new hindcasts and a new fit. Lead days
 beyond the hindcast take the mapping of the last lead group. All AIFS starts
 (about 6 million rows, 10 columns) took 5.5 minutes and 6 GB of memory on the
 cluster; GEFS, with 31 members and 25 columns, has about 9 million rows.
+
+## Complete into the product
+
+```bash
+python -m catchment_forecast.complete fit --history DELIVERY.parquet --before 2023 --output OUTPUT/completion.json
+python -m catchment_forecast.complete run --fit OUTPUT/completion.json --history DELIVERY.parquet \
+    --forecast OUTPUT/aifs_adjusted OUTPUT/wn2_adjusted --gap OUTPUT/gefs_day1_adjusted --output OUTPUT/product
+```
+
+The inflow model takes every column of the history table, and the AI systems
+forecast only the weather. `complete` makes the other columns for each member
+from its own adjusted weather, as a hydrological model would, starting from
+the last day the history table has: the anchor day, 6 days before the start,
+which is how late the history runs in operations.
+
+| Columns | How |
+| --- | --- |
+| SWE, snowmelt | A degree-day snowpack from the history SWE on the anchor day, driven by the member's snowfall and mean temperature; melt factor and threshold fitted per catchment on the history over 27-day runs |
+| Humidity and shortwave where a system lacks them, net radiation, cloud, AET, the freezing levels, soil temperature layer 1, snow depth | Linear regressions per catchment and calendar month (with its neighbours) on the member's weather and SWE, fitted on the history; a system's own humidity and shortwave are predictors where it has them |
+| Soil moisture, soil temperature layers 2-4 | The history value on the anchor day plus the change of the day-of-year climatology |
+
+The five days between the anchor and the start come from the first lead day of
+GEFS's run of each day (`gefs --every-day --hours 24`, adjusted like any
+system), completed the same way and shared by every member. Each member is then
+one series from lead day -4 to its last lead day, and a start's table holds
+every system, with a `system` column. `fit` uses only history years before
+`--before`, so the hindcast product never sees its own years, and the same
+completion file serves operations. `run` writes `check.csv` against the history
+where it has the dates. On the cluster, once the start tables are there,
+`scripts/product_hindcast.sbatch HISTORY CATCHMENTS OUTPUT` runs the three
+adjustments, the fit and the completion in one job.
 
 ## Download IFS ENS from TIGGE
 
