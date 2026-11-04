@@ -220,6 +220,13 @@ def test_operations_run_one_start_with_other_members(world, tmp_path):
                    '--output', str(tmp_path / 'product')])
     table = pq.read_table(tmp_path / 'product' / '2024050100.parquet')
     assert len(set(table['member'].to_pylist())) == 7 and table.column_names == complete.KEYS + adjust.OUTPUT
+    # A start that only the second system has is made too, from that system alone.
+    write_adjusted(tmp_path / 'wn2_adjusted', WN2, ['ckpt1'], LEADS, [date(2024, 5, 5)], index)
+    complete.main(['run', '--fit', str(root / 'completion.json'), '--history', str(root / 'history.parquet'),
+                   '--forecast', str(tmp_path / 'aifs_adjusted'), str(tmp_path / 'wn2_adjusted'),
+                   '--gap', str(root / 'gefs_day1_adjusted'), '--output', str(tmp_path / 'product')])
+    later = pq.read_table(tmp_path / 'product' / '2024050500.parquet').to_pydict()
+    assert set(later['system']) == {'wn2'} and set(later['member']) == {'ckpt1'}
     # A start whose gap tables are missing stops with the missing day.
     write_adjusted(tmp_path / 'late' / 'aifs_adjusted', AIFS, ['p00'], LEADS, [date(2024, 7, 1)], index)
     with pytest.raises(FileNotFoundError, match='2024062600'):

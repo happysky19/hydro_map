@@ -319,7 +319,8 @@ def run_start(system, folder, catchments, output):
     import pyarrow as pa
     import pyarrow.parquet as pq
     spec = SYSTEMS[system]
-    files = sorted(folder.glob(spec['pattern']))
+    # Operational runs keep their member files one level down (a FCST folder).
+    files = sorted(folder.glob(spec['pattern'])) or sorted(folder.glob('*/' + spec['pattern']))
     if not files:
         print(f'{folder.name}: no member files', flush=True)
         return

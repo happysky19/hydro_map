@@ -171,6 +171,25 @@ where it has the dates. On the cluster, once the start tables are there,
 `scripts/product_hindcast.sbatch HISTORY CATCHMENTS OUTPUT` runs the three
 adjustments, the fit and the completion in one job.
 
+## Operations
+
+```bash
+sbatch --export=ALL -A ACCOUNT -p PARTITION forecast/scripts/daily_product.sbatch HISTORY CATCHMENTS HINDCAST AIFS_ROOT WN2_ROOT OPS [DATE]
+```
+
+One job makes the product of the 00 UTC start of `DATE` (default today) from
+the same code and files as the hindcast: `HINDCAST` is the folder of
+`product_hindcast.sbatch`, with the three mappings and `completion.json`;
+`AIFS_ROOT` and `WN2_ROOT` hold the operational runs as start folders
+`YYYYMMDDHH`, the member files in the folder or one level down. The job fetches
+the GEFS day-1 tables of the five days before the start that are not under
+`OPS` yet, aggregates and maps each system's run that is in, and completes
+them into `OPS/product/DATE00.parquet`. It needs the history table to reach six
+days before the start (`history/scripts/daily_update.sh`) and should run once
+the runs are in; run it again later and the product is remade with the
+systems that have arrived since. The member count does not matter: 51 AIFS
+members go through the mapping fitted on 21.
+
 ## Download IFS ENS from TIGGE
 
 ```bash

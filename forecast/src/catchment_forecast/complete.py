@@ -359,10 +359,11 @@ def run(fit_path, history_path, forecasts, gap, output, first=None, last=None):
     if history['projects'] != fitted['projects']:
         raise ValueError(f'{history_path} and {fit_path} have different catchments')
     systems = {folder.name.removesuffix('_adjusted'): folder for folder in forecasts}
-    paths = [path for path in sorted(forecasts[0].glob(START))
-             if (first is None or path.stem[:8] >= f'{first:%Y%m%d}') and (last is None or path.stem[:8] <= f'{last:%Y%m%d}')]
+    names = sorted({path.name for folder in forecasts for path in folder.glob(START)})
+    paths = [Path(name) for name in names
+             if (first is None or name[:8] >= f'{first:%Y%m%d}') and (last is None or name[:8] <= f'{last:%Y%m%d}')]
     if not paths:
-        raise ValueError(f'No start tables in {forecasts[0]} between {first} and {last}')
+        raise ValueError(f'No start tables in {", ".join(str(f) for f in forecasts)} between {first} and {last}')
     output.mkdir(parents=True, exist_ok=True)
     sums, written = {}, 0
     for path in paths:

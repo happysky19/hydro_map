@@ -154,6 +154,22 @@ def test_archive_to_parquet(tmp_path, system):
     assert shapely.__version__
 
 
+def test_operational_member_files_one_level_down_are_found(tmp_path):
+    pq = pytest.importorskip('pyarrow.parquet')
+    start = tmp_path / 'archive' / '2026110200' / 'FCST'
+    start.mkdir(parents=True)
+    for name in ('aifs_p00_N320.grib', 'aifs_p01_N320.grib', 'aifs_p02_N320.grib'):
+        write_grib(start / name, 'reduced_gg_pl_320_grib1', lambda handle: None, synthetic('aifs', 1))
+    geojson = tmp_path / 'catchments.geojson'
+    geojson.write_text(json.dumps(dict(type='FeatureCollection', features=[
+        dict(type='Feature', properties=dict(id=key, part='local'), geometry=mapping(geometry))
+        for key, geometry in CATCHMENTS.items()])))
+    aggregate.main(['--system', 'aifs', '--archive', str(tmp_path / 'archive'), '--geojson', str(geojson),
+                    '--output', str(tmp_path / 'out'), '--start', '2026-11-02', '--end', '2026-11-02'])
+    table = pq.read_table(tmp_path / 'out' / 'aifs' / '2026110200.parquet').to_pydict()
+    assert sorted(set(table['member'])) == ['p00', 'p01', 'p02'] and len(table['member']) == 3 * 2 * 2
+
+
 def test_gefs_member_names_and_land_means():
     assert aggregate.gefs_member('gefs_c00.grib2') == 'c00' and aggregate.gefs_member('gefs_p30.grib2') == 'p30'
     matrix = np.array([[1., 3., 0.], [0., 0., 2.]])
