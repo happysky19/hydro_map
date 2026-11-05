@@ -160,6 +160,13 @@ def test_operational_member_files_one_level_down_are_found(tmp_path):
     start.mkdir(parents=True)
     for name in ('aifs_p00_N320.grib', 'aifs_p01_N320.grib', 'aifs_p02_N320.grib'):
         write_grib(start / name, 'reduced_gg_pl_320_grib1', lambda handle: None, synthetic('aifs', 1))
+    # Beside them, one file per member and step, which are not members.
+    post = start.parent / 'POST'
+    post.mkdir()
+    for member in range(3):
+        for step in (6, 24):
+            write_grib(post / f'aifs_p{member:02d}_f{step:03d}.grib', 'reduced_gg_pl_320_grib1', lambda handle: None,
+                       {key: value for key, value in synthetic('aifs', 1).items() if key[1] == step})
     geojson = tmp_path / 'catchments.geojson'
     geojson.write_text(json.dumps(dict(type='FeatureCollection', features=[
         dict(type='Feature', properties=dict(id=key, part='local'), geometry=mapping(geometry))
@@ -168,6 +175,19 @@ def test_operational_member_files_one_level_down_are_found(tmp_path):
                     '--output', str(tmp_path / 'out'), '--start', '2026-11-02', '--end', '2026-11-02'])
     table = pq.read_table(tmp_path / 'out' / 'aifs' / '2026110200.parquet').to_pydict()
     assert sorted(set(table['member'])) == ['p00', 'p01', 'p02'] and len(table['member']) == 3 * 2 * 2
+
+
+def test_member_files_take_hindcast_and_operational_names_only(tmp_path):
+    names = ['aifs_f000-f528_p00.grib1', 'aifs_f000-f528_p20.grib1', 'FCST/aifs_p07_N320.grib',
+             'POST/aifs_p07_f024.grib', 'POST/aifs_p07_f000.grib', 'aifs_p07_f528.grib']
+    for name in names:
+        (tmp_path / name).parent.mkdir(exist_ok=True)
+        (tmp_path / name).touch()
+    patterns = aggregate.SYSTEMS['aifs']['patterns']
+    assert [path.name for path in aggregate.member_files(tmp_path, patterns)] == names[:2]
+    (tmp_path / names[0]).unlink(), (tmp_path / names[1]).unlink()
+    assert [path.name for path in aggregate.member_files(tmp_path, patterns)] == ['aifs_p07_N320.grib']
+    assert aggregate.member_files(tmp_path / 'POST', patterns) == []
 
 
 def test_gefs_member_names_and_land_means():

@@ -129,11 +129,13 @@ CONSTANT = ('orog',)
 
 # amounts: {shortName: (column, accumulated from the start or not)}.
 SYSTEMS = {
-    'aifs': dict(pattern='aifs_*p[0-9][0-9]*.grib*', member=aifs_member, first_step=0,
+    # Hindcast aifs_f000-f528_p07.grib1 and operational aifs_p07_N320.grib; not the per-step files beside them.
+    'aifs': dict(patterns=('aifs_*p[0-9][0-9].grib*', 'aifs_p[0-9][0-9]_N[0-9]*.grib*'), member=aifs_member,
+                 first_step=0,
                  amounts={'tp': ('precipitation_mm', True), 'ssrd': ('shortwave_down_mean_W_m2', True)}),
-    'wn2': dict(pattern='predictions_hres_*.grib', member=wn2_member, first_step=6,
+    'wn2': dict(patterns=('predictions_hres_*.grib',), member=wn2_member, first_step=6,
                 amounts={'tp': ('precipitation_mm', False)}),
-    'gefs': dict(pattern='gefs_*.grib2', member=gefs_member, first_step=0, naming=gefs_name, window=6,
+    'gefs': dict(patterns=('gefs_*.grib2',), member=gefs_member, first_step=0, naming=gefs_name, window=6,
                  amounts={'tp': ('precipitation_mm', False)}, states=GEFS_STATES, fluxes=GEFS_FLUXES,
                  fields={name for name in GEFS_CODES.values() if name not in ('soilw', 'tsoil')}
                  | {f'{name}{layer}' for name in ('soilw', 'tsoil') for layer in LAYERS}),
@@ -315,12 +317,20 @@ def daily(fields, units, system, matrix, start, latitudes):
     return {column: out[column] for column in COLUMNS if column in out}
 
 
+def member_files(folder, patterns):
+    """The member files of a start folder, or one level down, where operational runs keep them (FCST)."""
+    for prefix in ('', '*/'):
+        files = sorted({path for pattern in patterns for path in folder.glob(prefix + pattern)})
+        if files:
+            return files
+    return []
+
+
 def run_start(system, folder, catchments, output):
     import pyarrow as pa
     import pyarrow.parquet as pq
     spec = SYSTEMS[system]
-    # Operational runs keep their member files one level down (a FCST folder).
-    files = sorted(folder.glob(spec['pattern'])) or sorted(folder.glob('*/' + spec['pattern']))
+    files = member_files(folder, spec['patterns'])
     if not files:
         print(f'{folder.name}: no member files', flush=True)
         return
@@ -332,6 +342,8 @@ def run_start(system, folder, catchments, output):
         fields, units, matrix = read_member(path, names, catchments, spec.get('naming'), spec.get('window'),
                                             spec.get('fields', ()))
         values = daily(fields, units, system, matrix, init.date(), catchments.latitudes)
+        if not len(values['tmean_degC']):
+            raise ValueError(f'{path}: no whole lead day; is it a member file?')
         members.append((spec['member'](path.name), values))
         print(f'{folder.name} {members[-1][0]}: {len(values["tmean_degC"])} days in {time.time() - begin:.0f} s',
               flush=True)
