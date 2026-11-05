@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# The forecast product of one operational start, 00 UTC of DATE (default today, UTC), with the mappings and
-# the completion fitted on the hindcast.
+# The forecast product of one operational start, 00 UTC of DATE (default today, UTC), with the mappings fitted
+# on the hindcast and the completion fitted on every history year.
 #
 #   sbatch --export=ALL [-A ACCOUNT -p PARTITION] forecast/scripts/daily_product.sbatch \
 #       HISTORY GEOJSON HINDCAST AIFS_ROOT WN2_ROOT OPS [DATE]
 #
 # Submit from the repository root with the Python to use as PYTHON, once the history table reaches DATE - 6
 # (daily_update.sh) and the runs are in: it also runs as a plain script. HINDCAST is the folder of
-# product_hindcast.sbatch, with the three mappings and completion.json. AIFS_ROOT and WN2_ROOT hold the
+# product_hindcast.sbatch, with the three mappings and completion_ops.json. AIFS_ROOT and WN2_ROOT hold the
 # operational runs as start folders YYYYMMDDHH, the member files in the folder or one level down. Under OPS
 # the job keeps the GEFS day-1 tables of the five days before the start (fetched as needed, the GRIB files
 # deleted), the start tables of both systems, their adjusted tables and the product, OPS/product/DATE00.parquet.
@@ -68,5 +68,5 @@ if (( ${#forecasts[@]} == 0 )); then
     exit 1
 fi
 rm -f "$ops/product/$start.parquet"
-"$python" -m catchment_forecast.complete run --fit "$hindcast/completion.json" --history "$history" \
+"$python" -m catchment_forecast.complete run --fit "$hindcast/completion_ops.json" --history "$history" \
     --forecast "${forecasts[@]}" --gap "$ops/gefs_day1_adjusted" --output "$ops/product" --start "$day" --end "$day"

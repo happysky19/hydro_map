@@ -28,10 +28,12 @@ The GAP days between the anchor and the start come from the gap tables: one
 adjusted start table per day whose first lead day and first member give that
 day's weather, completed the same way; every member shares them. Each member
 is then one series from the day after the anchor (lead day 1 - GAP) to its
-last lead day. Everything is fitted on history years before --before, so the
-hindcasts never see their own years, and the same file serves operations.
-run writes one table per start, with a system column, and check.csv against
-the history where it has the dates.
+last lead day. fit uses the history years before --before, so the hindcasts
+never see their own years; operations use a fit on every year, as their
+mappings do. For the years from --before, fit also prints how close the snow
+model and the regressions come to the history when fed its own weather, beside
+persistence for SWE. run writes one table per start, with a system column, and
+check.csv against the history where it has the dates.
 """
 
 import argparse
@@ -64,8 +66,10 @@ BOUNDS = {'relative_humidity_pct': (0., 100.), 'cloud_cover_fraction': (0., 1.),
           **{column: (0., None) for column in ('vapor_pressure_deficit_kPa', 'shortwave_down_mean_W_m2',
                                                 'actual_evapotranspiration_mm', 'freezing_level_above_ground_m',
                                                 'snow_depth_m', *PERSISTED[:3])}}
-MELT_FACTORS = np.arange(1, 8.01, .5)
-THRESHOLDS = np.arange(-2, 2.01, .5)
+# Catchment means: a large basin's mean temperature runs warmer than its snowpack, so the fitted melt factor
+# can be far below a point value and the threshold well above 0 degC.
+MELT_FACTORS = np.arange(.25, 8.01, .25)
+THRESHOLDS = np.arange(-3, 5.01, .5)
 WINDOW = GAP + 22
 SMOOTH = 15
 MIN_FIT = 100
@@ -145,26 +149,71 @@ def fit_regression(history, use, month):
     return out
 
 
+def snow_runs(history, use):
+    """The WINDOW-day runs from every other day of use but its last WINDOW: the anchor days, the history SWE
+    on them (anchors x projects), and the snowfall, tmean and SWE of each run (WINDOW x anchors x projects)."""
+    grid = history['grid']
+    anchors = np.flatnonzero(use)[:-WINDOW:2]
+    windows = anchors[:, None] + np.arange(1, WINDOW + 1)
+    snowfall, tmean, swe = (grid[name][:, windows].transpose(2, 1, 0)
+                            for name in ('snowfall_mm', 'tmean_degC', 'snow_water_equivalent_mm'))
+    return anchors, grid['snow_water_equivalent_mm'][:, anchors].T, snowfall, tmean, swe
+
+
+def rmse(error):
+    """Per catchment, over the runs and their days (WINDOW x anchors x projects), skipping blanks."""
+    known = np.isfinite(error)
+    with np.errstate(invalid='ignore', divide='ignore'):
+        return np.sqrt((np.where(known, error, 0.) ** 2).sum(axis=(0, 1)) / known.sum(axis=(0, 1)))
+
+
 def fit_snow(history, use):
     """(melt factor, threshold, RMSE) per catchment: the grid point whose WINDOW-day runs from the history SWE
     on every other anchor day in use, driven by the history snowfall and tmean, stay closest to the history SWE."""
-    grid = history['grid']
-    swe, snow, t = (grid[name] for name in ('snow_water_equivalent_mm', 'snowfall_mm', 'tmean_degC'))
-    anchors = np.flatnonzero(use)[:-WINDOW:2]
-    windows = anchors[:, None] + np.arange(1, WINDOW + 1)
-    swe0 = swe[:, anchors].T
-    snowfall, tmean, target = (values[:, windows].transpose(2, 1, 0) for values in (snow, t, swe))
-    count = len(swe)
+    _, swe0, snowfall, tmean, target = snow_runs(history, use)
+    count = swe0.shape[1]
     best, factor, threshold = np.full(count, np.inf), np.full(count, 3.), np.zeros(count)
     for k in MELT_FACTORS:
         for t0 in THRESHOLDS:
-            error = degree_day(swe0, snowfall, tmean, k, t0)[0] - target
-            known = np.isfinite(error)
-            with np.errstate(invalid='ignore', divide='ignore'):
-                rmse = np.sqrt((np.where(known, error, 0.) ** 2).sum(axis=(0, 1)) / known.sum(axis=(0, 1)))
-            better = rmse < best
-            best[better], factor[better], threshold[better] = rmse[better], k, t0
+            error = rmse(degree_day(swe0, snowfall, tmean, k, t0)[0] - target)
+            better = error < best
+            best[better], factor[better], threshold[better] = error[better], k, t0
     return factor, threshold, best
+
+
+def snow_scores(history, use, factor, threshold, clim, doy):
+    """(degree-day, persistence) SWE RMSE per catchment over the runs from the anchor days in use; persistence
+    is the anchor SWE plus the change of clim (projects x 366), as the soil columns are made. None without runs."""
+    anchors, swe0, snowfall, tmean, target = snow_runs(history, use)
+    if not len(anchors):
+        return None
+    model = degree_day(swe0, snowfall, tmean, factor, threshold)[0]
+    windows = anchors[:, None] + np.arange(1, WINDOW + 1)
+    persisted = np.maximum(swe0 + (clim[:, doy[windows]] - clim[:, doy[anchors]][:, :, None]).transpose(2, 1, 0), 0.)
+    return rmse(model - target), rmse(persisted - target)
+
+
+def regression_scores(history, regression, use, month):
+    """{column: [(bias, MAE) per predictor set, None where the column is a predictor], history mean} of each
+    DERIVED column made from the history's own weather on the days in use, clipped as in the product."""
+    grid = history['grid']
+    out = {}
+    for column in DERIVED:
+        truth = grid[column][:, use]
+        scores = []
+        for predictors, coefs in zip(PREDICTORS, regression[column]):
+            if coefs is None:
+                scores.append(None)
+                continue
+            x = design({name: grid[name][:, use] for name in predictors}, predictors)
+            predicted = np.einsum('pdk,pdk->pd', x, coefs[:, month[use]])
+            if column in BOUNDS:
+                predicted = np.clip(predicted, *BOUNDS[column])
+            error = predicted - truth
+            known = np.isfinite(error)
+            scores.append((error[known].mean(), np.abs(error[known]).mean()))
+        out[column] = scores, np.nanmean(truth)
+    return out
 
 
 def climatology(values, doy):
@@ -184,17 +233,41 @@ def day_of_year(dates):
 
 
 def fit(history_path, before, output):
+    """Fit on the history years before before, or on every year if before is None."""
     history = load_history(history_path, sorted({*sum(PREDICTORS, ()), *DERIVED, *PERSISTED, *SNOW, 'snowfall_mm'}))
     days = history['first'] + np.arange(history['grid']['tmean_degC'].shape[1])
-    use = days < np.datetime64(f'{before}-01-01')
+    use = days < np.datetime64(f'{before}-01-01') if before else np.ones(len(days), bool)
     if use.sum() < 365 * 5:
         raise ValueError(f'{history_path} has {use.sum()} days before {before}; at least five years are needed')
     doy = day_of_year(days)
-    print(f'Fitting on {use.sum():,} history days before {before}, {len(history["projects"])} catchments', flush=True)
-    regression = fit_regression(history, use, days.astype('datetime64[M]').astype(int) % 12)
-    factor, threshold, rmse = fit_snow(history, use)
-    for project, k, t0, error in zip(history['projects'], factor, threshold, rmse):
-        print(f'{project}: melt {k:.1f} mm/degC/day above {t0:+.1f} degC, SWE RMSE {error:.1f} mm', flush=True)
+    month = days.astype('datetime64[M]').astype(int) % 12
+    print(f'Fitting on {use.sum():,} history days ({days[use][0]} to {days[use][-1]}), '
+          f'{len(history["projects"])} catchments', flush=True)
+    regression = fit_regression(history, use, month)
+    factor, threshold, error = fit_snow(history, use)
+    swe_clim = climatology(history['grid']['snow_water_equivalent_mm'][:, use], doy[use])
+    held = ~use
+    scores = snow_scores(history, held, factor, threshold, swe_clim, doy) if held.sum() > WINDOW else None
+    fitted_years = snow_scores(history, use, factor, threshold, swe_clim, doy)
+    for i, (project, k, t0) in enumerate(zip(history['projects'], factor, threshold)):
+        line = (f'{project}: melt {k:.2f} mm/degC/day above {t0:+.1f} degC; SWE RMSE {error[i]:.1f} mm, '
+                f'persistence {fitted_years[1][i]:.1f} mm')
+        if scores:
+            line += f'; from {before}: {scores[0][i]:.1f} mm, persistence {scores[1][i]:.1f} mm'
+        print(line, flush=True)
+    edge = [project for project, k, t0 in zip(history['projects'], factor, threshold)
+            if k in MELT_FACTORS[[0, -1]] or t0 in THRESHOLDS[[0, -1]]]
+    print(f'{len(edge)} catchments at an edge of the snow grid{": " + ", ".join(edge) if edge else ""}', flush=True)
+    if scores:
+        print(f'SWE RMSE from {before}, mean over catchments: degree-day {np.nanmean(scores[0]):.1f} mm, '
+              f'persistence {np.nanmean(scores[1]):.1f} mm', flush=True)
+        sets = ['all predictors'] + [f'without {", ".join(name for name in PREDICTORS[0] if name not in p)}'
+                                     for p in PREDICTORS[1:]]
+        print(f'Regressions on the history weather from {before}, bias / MAE with {" | ".join(sets)}; '
+              'history mean', flush=True)
+        for column, (sets, mean) in regression_scores(history, regression, held, month).items():
+            text = ' | '.join('-' if score is None else f'{score[0]:+.4g} / {score[1]:.4g}' for score in sets)
+            print(f'  {column}: {text}; mean {mean:.4g}', flush=True)
     result = dict(
         info=dict(history=history_path.name, before=before, anchor=ANCHOR, window=WINDOW, predictors=PREDICTORS),
         projects=history['projects'],
@@ -397,7 +470,8 @@ def main(argv=None):
     commands = parser.add_subparsers(dest='command', required=True)
     fit_parser = commands.add_parser('fit', help='Fit the snow model, regressions and climatology on the history')
     fit_parser.add_argument('--history', required=True, type=Path, help='Delivered history table (Parquet)')
-    fit_parser.add_argument('--before', required=True, type=int, help='Fit on years before this one')
+    fit_parser.add_argument('--before', type=int,
+                            help='Fit on the years before this one (hindcast); on every year if left out (operations)')
     fit_parser.add_argument('--output', required=True, type=Path, help='The completion file (JSON)')
     run_parser = commands.add_parser('run', help='Complete adjusted starts into product tables')
     run_parser.add_argument('--fit', required=True, type=Path, help='The completion file of fit')

@@ -165,11 +165,17 @@ GEFS's run of each day (`gefs --every-day --hours 24`, adjusted like any
 system), completed the same way and shared by every member. Each member is then
 one series from lead day -4 to its last lead day, and a start's table holds
 every system, with a `system` column. `fit` uses only history years before
-`--before`, so the hindcast product never sees its own years, and the same
-completion file serves operations. `run` writes `check.csv` against the history
-where it has the dates. On the cluster, once the start tables are there,
+`--before`, so the hindcast product never sees its own years; operations use a
+fit on every year (`fit` without `--before`), as their mappings use every
+hindcast year. For the years from `--before`, `fit` prints how close the snow
+model comes to the history SWE beside persistence (the anchor SWE plus the
+change of its climatology), and the bias and mean absolute error of each
+regression fed the history's own weather, which separates the completion's
+error from the forecasts'. `run` writes `check.csv` against the history where
+it has the dates. On the cluster, once the start tables are there,
 `scripts/product_hindcast.sbatch HISTORY CATCHMENTS OUTPUT` runs the three
-adjustments, the fit and the completion in one job.
+adjustments, the hindcast fit and completion, and the operational fit in one
+job.
 
 ## Operations
 
@@ -179,7 +185,7 @@ sbatch --export=ALL -A ACCOUNT -p PARTITION forecast/scripts/daily_product.sbatc
 
 One job makes the product of the 00 UTC start of `DATE` (default today) from
 the same code and files as the hindcast: `HINDCAST` is the folder of
-`product_hindcast.sbatch`, with the three mappings and `completion.json`;
+`product_hindcast.sbatch`, with the three mappings and `completion_ops.json`;
 `AIFS_ROOT` and `WN2_ROOT` hold the operational runs as start folders
 `YYYYMMDDHH`, the member files in the folder or one level down. The job fetches
 the GEFS day-1 tables of the five days before the start that are not under

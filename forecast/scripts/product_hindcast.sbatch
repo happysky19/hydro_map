@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 # The forecast product of the whole hindcast in one job: each system's start tables are mapped onto the
 # history (skipped where mapping.parquet exists), the completion is fitted on the history before the
-# hindcast years, and every start is completed into the columns of the history table.
+# hindcast years, and every start is completed into the columns of the history table. Operations get a
+# completion fitted on every history year, as their mappings are fitted on every hindcast year.
 #
 #   sbatch --export=ALL [-A ACCOUNT -p PARTITION] forecast/scripts/product_hindcast.sbatch HISTORY GEOJSON OUT
 #
 # Submit from the repository root with the Python to use as PYTHON. OUT holds the start tables of aggregate
 # (OUT/aifs, OUT/wn2) and of gefs with --hours 24 for every day (OUT/gefs_day1/gefs). The job writes
-# OUT/aifs_adjusted, OUT/wn2_adjusted, OUT/gefs_day1_adjusted, OUT/completion.json and OUT/product with its
-# check.csv. FIRST_YEAR (default 2023) is the first hindcast year; the completion is fitted before it.
+# OUT/aifs_adjusted, OUT/wn2_adjusted, OUT/gefs_day1_adjusted, OUT/completion.json, OUT/product with its
+# check.csv, and OUT/completion_ops.json. FIRST_YEAR (default 2023) is the first hindcast year; the hindcast
+# completion is fitted before it. Starts already in OUT/product are skipped.
 #SBATCH --job-name=fc-product
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=16G
@@ -35,3 +37,4 @@ done
     --output "$out/completion.json"
 "$python" -m catchment_forecast.complete run --fit "$out/completion.json" --history "$history" \
     --forecast "$out/aifs_adjusted" "$out/wn2_adjusted" --gap "$out/gefs_day1_adjusted" --output "$out/product"
+"$python" -m catchment_forecast.complete fit --history "$history" --output "$out/completion_ops.json"

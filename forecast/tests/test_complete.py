@@ -157,6 +157,37 @@ def test_fit_recovers_the_snow_model_and_the_relations(world):
     assert clim.shape == (3, 366) and np.isfinite(clim).all() and clim[:, 200].mean() > clim[:, 20].mean()
 
 
+def test_fit_scores_the_snow_model_and_the_regressions_on_the_held_out_years(world):
+    root, _ = world
+    fitted = complete.load_fit(root / 'completion.json')
+    columns = sorted({*sum(complete.PREDICTORS, ()), *complete.DERIVED, 'snowfall_mm'})
+    history = complete.load_history(root / 'history.parquet', columns)
+    days = history['first'] + np.arange(history['grid']['tmean_degC'].shape[1])
+    held, doy = days >= np.datetime64('2023-01-01'), complete.day_of_year(days)
+    clim = complete.climatology(history['grid']['snow_water_equivalent_mm'][:, ~held], doy[~held])
+    model, persisted = complete.snow_scores(history, held, fitted['snow']['melt_factor'],
+                                            fitted['snow']['threshold'], clim, doy)
+    # The history SWE is a degree-day snowpack, so the fitted model is far closer than persistence.
+    assert (model < .5 * persisted).all() and (persisted > 1).all()
+    assert complete.snow_scores(history, np.zeros(len(days), bool), 1., 0., clim, doy) is None
+    month = days.astype('datetime64[M]').astype(int) % 12
+    scores = complete.regression_scores(history, fitted['regression'], held, month)
+    assert set(scores) == set(complete.DERIVED) and scores['relative_humidity_pct'][0][0] is None
+    (bias, mae), mean = scores['freezing_level_above_sea_level_m'][0][1], scores['freezing_level_above_sea_level_m'][1]
+    assert abs(bias) < 20 and mae < 100 and 1000 < mean < 3000
+    assert abs(scores['cloud_cover_fraction'][0][0][0]) < .02
+
+
+def test_operations_fit_on_every_year(world, tmp_path, capsys):
+    root, _ = world
+    complete.main(['fit', '--history', str(root / 'history.parquet'), '--output', str(tmp_path / 'ops.json')])
+    out = capsys.readouterr().out
+    assert 'Fitting on 6,575 history days (2008-01-01 to 2025-12-31)' in out
+    assert 'persistence' in out and 'Regressions on' not in out and 'None' not in out
+    fitted = complete.load_fit(tmp_path / 'ops.json')
+    assert fitted['info']['before'] is None and fitted['projects'] == list(PROJECTS)
+
+
 def test_product_tables_hold_every_member_as_one_series(world):
     root, index = world
     paths = sorted((root / 'product').glob(adjust.START))
