@@ -52,8 +52,9 @@ Repeating the same command resumes from the finished years and months. A
 [long runs](docs/pipeline.md#long-runs-on-a-compute-host).
 
 The delivered table is written from the full table by `debias`, which fills
-AORC gaps and replaces AORC in the catchments listed in `REPLACED`
-(`src/catchment_history/delivery_variables.py`) with ERA5-Land quantile-mapped
+AORC gaps, replaces AORC in the catchments listed in `REPLACED`
+(`src/catchment_history/delivery_variables.py`) and, from 2023, AORC
+precipitation, rain and snow in every catchment, with ERA5-Land quantile-mapped
 onto AORC:
 
 ```bash

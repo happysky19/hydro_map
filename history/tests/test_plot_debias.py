@@ -5,13 +5,19 @@ import io
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
-from catchment_history import plot_debias
-from test_debias import LATITUDES, write_inputs
+from catchment_history import debias, plot_debias
+from test_debias import LATITUDES, patch_settings, write_inputs
 
 
 class PlotDebiasTests(unittest.TestCase):
     def test_figures_are_written(self):
+        # The synthetic years, 2022-2025, all count as AORC years here.
+        patch_settings(self, REPLACED_FROM='2030-01-01', RECENT=('2022-01-01', '2025-12-31'))
+        patcher = mock.patch.object(plot_debias, 'REPLACED_FROM', '2030-01-01')
+        patcher.start()
+        self.addCleanup(patcher.stop)
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             inputs = write_inputs(root)

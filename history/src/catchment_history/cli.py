@@ -8,7 +8,7 @@ COMMANDS = {
     'download': ('download', 'AORC, ERA5-Land and ERA5 to the full table, its checks and the requested table'),
     'check': ('check', 'consistency, plausibility and source-agreement checks of a full table'),
     'deliver': ('deliver', 'the requested table and README from a full table'),
-    'debias': ('debias', 'ERA5-Land mapped onto AORC: gaps filled, REPLACED catchments replaced'),
+    'debias': ('debias', 'ERA5-Land mapped onto AORC: gaps filled, REPLACED catchments and precipitation from 2023 replaced'),
     'merge': ('merge', 'join requested tables of consecutive periods'),
     'merge-deliveries': ('merge_deliveries', 'join requested tables of different catchments'),
     'plot': ('plot', 'daily series from a working directory or a table'),

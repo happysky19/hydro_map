@@ -25,7 +25,7 @@ import sys
 import numpy as np
 
 from .debias import WET_MM, check, held_out, inputs, uncorrected
-from .delivery_variables import REFERENCE, REPLACED
+from .delivery_variables import REFERENCE, REPLACED, REPLACED_FROM
 from .plot import AXIS, GRID, INK, INK_SECONDARY, LABELS, SERIES, SURFACE, setup, style
 
 
@@ -220,8 +220,10 @@ def run(aorc_path, era5_path, output_dir):
     sources = {'AORC': {v: values[:count] for v, values in aorc.items()},
                'ERA5-Land': uncorrected(land, projects, dates, latitudes, every),
                'ERA5-Land corrected': {v: values[:count] for v, values in corrected.items()}}
-    start, stop = (date.fromisoformat(day) for day in REFERENCE)
-    trusted = ~np.isin(projects, REPLACED) | np.array([start <= day <= stop for day in dates])
+    # AORC where it is the reference: over REFERENCE in the REPLACED catchments, before REPLACED_FROM elsewhere.
+    start, stop, since = (date.fromisoformat(day) for day in (*REFERENCE, REPLACED_FROM))
+    trusted = np.where(np.isin(projects, REPLACED), [start <= day <= stop for day in dates],
+                       [day < since for day in dates])
     paired = np.flatnonzero(trusted & np.logical_and.reduce(
         [np.isfinite(source[v]) for source in sources.values() for v in PANELS]))
     months = np.array([day.month for day in dates])

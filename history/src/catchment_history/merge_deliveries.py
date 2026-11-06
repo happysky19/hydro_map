@@ -15,6 +15,7 @@ polygons as OUTPUT_catchments.geojson.
 import argparse
 from collections import Counter
 import csv
+from datetime import date
 import gzip
 import json
 import os
@@ -23,7 +24,7 @@ import shutil
 import tempfile
 
 from .deliver import FILL_COLUMN, column_units, companion, readme_text, requested_columns
-from .delivery_variables import AORC, LAND, REFERENCE, REPLACED
+from .delivery_variables import AORC, LAND, RECENT, REFERENCE, REPLACED, REPLACED_FROM, REPLACED_VARIABLES
 from .files import digest
 
 
@@ -113,16 +114,25 @@ def merge(inputs, output, geojsons):
     # debias.py flags every row of a catchment whose AORC columns it replaces.
     unflagged = {project for project, flags in zip(catchments, fills) if not flags}
     replaced = sorted((set(REPLACED) & set(primary.get(AORC, []))) - unflagged)
+    # From REPLACED_FROM it also flags precipitation, rain and snow on every row of the other AORC catchments.
+    since, precipitation_replaced = date.fromisoformat(REPLACED_FROM), False
     filled, filled_dates = Counter(), set()
     for day, project, flags in zip(table['date'].to_pylist(), catchments, fills):
-        if flags and project not in replaced:
-            filled.update(flags.split(';'))
+        if not flags or project in replaced:
+            continue
+        names_flagged = flags.split(';')
+        if day >= since and project in primary.get(AORC, []) and set(REPLACED_VARIABLES) <= set(names_flagged):
+            precipitation_replaced = True
+            names_flagged = [name for name in names_flagged if name not in REPLACED_VARIABLES]
+        if names_flagged:
+            filled.update(names_flagged)
             filled_dates.add(day.isoformat())
     merged = dict(start=dates[0].isoformat(), end=dates[1].isoformat(), row_count=table.num_rows,
                   project_metadata=dict(sorted(metadata.items())), columns=manifest['columns'])
     readme = readme_text(merged, selected, output.name, missing,
                          dict(counts={name: filled[name] for name in names if filled[name]},
-                              dates=sorted(filled_dates)), primary=primary, replaced=replaced)
+                              dates=sorted(filled_dates)), primary=primary, replaced=replaced,
+                         precipitation_from=REPLACED_FROM if precipitation_replaced else None)
     output.parent.mkdir(parents=True, exist_ok=True)
     targets = {'table': output, 'readme': companion(output, '_README', '.md'),
                'manifest': Path(str(output) + '.manifest.json'),
@@ -143,6 +153,8 @@ def merge(inputs, output, geojsons):
                       output_sha256=digest(staged['table']), start=merged['start'], end=merged['end'], day='UTC',
                       row_count=table.num_rows, project_metadata=merged['project_metadata'], primary_sources=primary,
                       **(dict(aorc_replaced=dict(catchments=replaced, fitted_on=list(REFERENCE))) if replaced else {}),
+                      **(dict(aorc_precipitation_replaced=dict(since=REPLACED_FROM, columns=list(REPLACED_VARIABLES),
+                                                               fitted_on=list(RECENT))) if precipitation_replaced else {}),
                       fill_column=FILL_COLUMN,
                       requested_columns={name: dict(variable=item['variable'], units=column_units(manifest, full),
                                                     source=item['source'])

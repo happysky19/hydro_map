@@ -249,6 +249,15 @@ the AORC and ERA5-Land columns of the `--aorc` full table over those dates; rain
 and snow and PET follow as for the 2026 fill below. `aorc_gap_filled` names the replaced columns on every row. The
 other catchments keep AORC, and the full table is not changed.
 
+From 2023 AORC precipitation east of the Cascades has far more July-September
+wet days than before, relative to the SNOTEL gauges and to ERA5-Land, after
+tracking both through 2022, while its temperature, humidity and radiation did
+not change ([data notes](data_notes.md)). From `REPLACED_FROM` (2023-01-01)
+`debias` therefore replaces precipitation, rain and snow of every other AORC
+catchment by ERA5-Land quantile-mapped onto AORC of `RECENT` (2016-2022), split
+into rain and snow at AORC's own daily mean temperature; the other AORC columns
+keep AORC. `aorc_gap_filled` names the three columns on those rows.
+
 Write the whole 1996-2025 period from the full table, then 2026 as below, and
 join them:
 
@@ -259,7 +268,7 @@ catchment-history plot-debias --aorc outputs/catchment_daily_1996_2025_full.csv 
 
 Elsewhere AORC gaps are filled as in the 2026 table. The `check.csv` of
 `plot-debias` compares the replaced catchments with AORC in 1996-2006 and the
-others in 2022-2025, each year fitted on the others; `catchments.pdf` shows their AORC beside the corrected ERA5-Land
+others in 2016-2022, each year fitted on the others; `catchments.pdf` shows their AORC beside the corrected ERA5-Land
 over the whole period. The `merge` command refuses to join a table in which these
 catchments are replaced with one in which they are not, and
 `merge-deliveries` names them in the README.
@@ -284,11 +293,12 @@ working directory once the final data are out.
 
 The `debias` command fits every mapping on the `--aorc` full table, which holds
 both AORC and ERA5-Land: per catchment and calendar month (the month and the
-months either side), over `RECENT` (2022-2025) for the catchments that keep
+months either side), over `RECENT` (2016-2022) for the catchments that keep
 AORC and over `REFERENCE` for the replaced ones. The `--era5` table only
 supplies the days to write, so it can be as short as one day. AORC is kept
-where it exists, except in the replaced catchments, and the rest is filled
-from the mapped ERA5-Land. Precipitation is split into rain and snow by a
+where it exists, except in the replaced catchments and, from 2023, for
+precipitation, rain and snow everywhere; the rest is filled from the mapped
+ERA5-Land. Precipitation is split into rain and snow by a
 logistic curve of AORC's snow fraction against daily mean temperature, fitted
 for each catchment and applied to the corrected temperature; ERA5-Land's own
 split puts about 10% more of the 2022-2025 precipitation into snow than AORC's
@@ -734,7 +744,7 @@ Modules are in `src/catchment_history/`; `cli.py` maps each command to its modul
 | `export.py` | | Verify source artifacts and export aligned daily values and QC tables plus their manifest |
 | `check.py` | `check` | Check delivered values/QC, physical plausibility and AORC/ERA5-Land agreement; plot coverage and project time series |
 | `deliver.py` | `deliver` | Write the requested-variable table and README from a checked full delivery, without filling AORC gaps |
-| `delivery_variables.py` | | Requested columns: source, native or computed, definition and forecast counterparts; `REPLACED`, `REFERENCE` and `RECENT` |
+| `delivery_variables.py` | | Requested columns: source, native or computed, definition and forecast counterparts; `REPLACED`, `REFERENCE`, `RECENT` and `REPLACED_FROM` |
 | `debias.py` | `debias` | Quantile-map ERA5-Land onto AORC, fill the AORC columns where AORC is blank or replaced, and check the fit year by year |
 | `merge.py` | `merge` | Join requested tables (CSV or Parquet) into one period: earlier files kept, later ones only extend the dates |
 | `merge_deliveries.py` | `merge-deliveries` | Merge the requested tables of separate deliveries (for example Columbia and Peace) into one table, README and catchment GeoJSON |

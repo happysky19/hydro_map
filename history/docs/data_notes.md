@@ -223,6 +223,27 @@ quantile-mapped onto AORC of 1996-2006; see the
 [pipeline guide](pipeline.md#aorc-replaced-in-the-canadian-catchments).
 The full table keeps AORC.
 
+From 2023 AORC precipitation over the catchments east of the Cascades has far
+more July-September wet days than before. Relative to ERA5-Land, the
+July-September total of 38 of the 43 AORC catchments is 1.2-1.6 times its
+2010-2022 relation in 2023-2025, the other seasons are unchanged, the wet-day
+fraction (> 1 mm) of the 33 US catchments rises from 0.11 to 0.16 while the
+mean of a wet day stays at 4.9 mm, and the day-to-day correlation stays at
+0.86; temperature, humidity and shortwave do not change. Against 12 SNOTEL
+gauges in the Flathead basin, AORC over Hungry Horse tracked the gauges
+through 2022, including the dry summers of 2016-2022 (both at 0.78 of their
+2000-2015 July-September mean), and runs 20-45% above them in 2023-2025. The
+west-Cascades catchments (Swift, Mossyrock, Lookout Point, Detroit, Rocky
+Reach, Ross) show none of this. AORC's daily precipitation has been Stage IV
+without any adjustment since 2016
+([Fall et al. 2023](https://doi.org/10.1111/1752-1688.13143)), so it follows
+whatever the River Forecast Centers' estimates do; what changed in 2023 is not
+documented. From 2023-01-01 the `debias` command therefore replaces
+precipitation, rain and snow of every AORC catchment by ERA5-Land
+quantile-mapped onto AORC of 2016-2022, split at AORC's own temperature
+(`REPLACED_FROM` in `src/catchment_history/delivery_variables.py`). The full
+table keeps AORC.
+
 ## Interpret the checks
 
 - **15.5 MJ/m²/day of downward longwave is about 179.4 W/m².** That conversion
