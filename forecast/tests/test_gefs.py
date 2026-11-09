@@ -71,6 +71,15 @@ def test_a_member_file_holds_every_step_of_the_wanted_fields(monkeypatch, tmp_pa
     assert gefs.download_member(date(2024, 1, 5), 'p01', tmp_path, workers=4, hours=12) == 0
 
 
+def test_weather_fetches_only_the_fields_the_product_uses(monkeypatch, tmp_path):
+    monkeypatch.setattr(gefs, 'fetch', Archive().fetch)
+    gefs.download_member(date(2024, 1, 5), 'c00', tmp_path, workers=2, hours=12, weather=True)
+    messages = [m.rstrip(b'.').decode() for m in (tmp_path / 'gefs_c00.grib2').read_bytes().split(b'GRIB')[1:]]
+    assert set(messages) == set(gefs.WEATHER_FIELDS['a']) | set(gefs.WEATHER_FIELDS['b'])
+    # Step 0 has no APCP or DSWRF, and HGT:surface is not fetched.
+    assert len(messages) == 3 * 6 - 2
+
+
 def test_a_field_missing_from_the_archive_stops_the_member(monkeypatch, tmp_path):
     monkeypatch.setattr(gefs, 'fetch', Archive(missing={'SNOHF:surface'}).fetch)
     with pytest.raises(ValueError, match='no SNOHF:surface'):
@@ -81,10 +90,13 @@ def test_a_field_missing_from_the_archive_stops_the_member(monkeypatch, tmp_path
 def test_main_passes_the_hours_and_members_on(monkeypatch, tmp_path):
     seen = {}
     monkeypatch.setattr(gefs, 'run', lambda days, archive, names, workers, hours, *rest:
-                        seen.update(days=days, names=names, hours=hours))
+                        seen.update(days=days, names=names, hours=hours, weather=rest[-1]))
     gefs.main(['--start', '2024-01-01', '--end', '2024-01-03', '--archive', str(tmp_path), '--every-day',
                '--members', '3', '--hours', '24'])
     assert seen['hours'] == 24 and seen['names'] == ['c00', 'p01', 'p02'] and len(seen['days']) == 3
+    assert seen['weather'] is False
+    gefs.main(['--start', '2024-01-01', '--end', '2024-01-01', '--archive', str(tmp_path), '--weather'])
+    assert seen['weather'] is True and len(seen['days']) == 1
     with pytest.raises(SystemExit):
         gefs.main(['--start', '2024-01-01', '--end', '2024-01-01', '--archive', str(tmp_path), '--hours', '30'])
 

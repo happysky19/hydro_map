@@ -7,10 +7,11 @@
 #   sbatch --export=ALL [-A ACCOUNT -p PARTITION] forecast/scripts/product_hindcast.sbatch HISTORY GEOJSON OUT
 #
 # Submit from the repository root with the Python to use as PYTHON. OUT holds the start tables of aggregate
-# (OUT/aifs, OUT/wn2) and of gefs with --hours 24 for every day (OUT/gefs_day1/gefs). The job writes
-# OUT/aifs_adjusted, OUT/wn2_adjusted, OUT/gefs_day1_adjusted, OUT/completion.json, OUT/product with its
-# check.csv, and OUT/completion_ops.json. FIRST_YEAR (default 2023) is the first hindcast year; the hindcast
-# completion is fitted before it. Starts already in OUT/product are skipped.
+# (OUT/aifs, OUT/wn2) and of gefs with --hours 24 for every day (OUT/gefs_day1/gefs); OUT/gefs, when it is
+# there (gefs --weather on the hindcast starts), is a third ensemble mapped and completed like the AI systems.
+# The job writes the _adjusted folder of each, OUT/completion.json, OUT/product with its check.csv, and
+# OUT/completion_ops.json. FIRST_YEAR (default 2023) is the first hindcast year; the hindcast completion is
+# fitted before it. Starts already in OUT/product are skipped.
 #SBATCH --job-name=fc-product
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=16G
@@ -25,16 +26,23 @@ fi
 history=$1 geojson=$2 out=$3
 export PYTHONPATH=$PWD/forecast/src:$PWD/history/src
 python=${PYTHON:-python}
-for system in aifs wn2 gefs_day1; do
+forecasts=()
+for system in aifs wn2 gefs gefs_day1; do
     tables=$out/$system
     [[ $system == gefs_day1 ]] && tables=$out/gefs_day1/gefs
+    if [[ ! -d $tables ]]; then
+        [[ $system == gefs ]] && continue
+        echo "No start tables in $tables" >&2
+        exit 1
+    fi
     if [[ ! -f $out/${system}_adjusted/mapping.parquet ]]; then
         "$python" -m catchment_forecast.adjust hindcast --forecast "$tables" --history "$history" \
             --geojson "$geojson" --output "$out/${system}_adjusted"
     fi
+    [[ $system == gefs_day1 ]] || forecasts+=("$out/${system}_adjusted")
 done
 "$python" -m catchment_forecast.complete fit --history "$history" --before "${FIRST_YEAR:-2023}" \
     --output "$out/completion.json"
 "$python" -m catchment_forecast.complete run --fit "$out/completion.json" --history "$history" \
-    --forecast "$out/aifs_adjusted" "$out/wn2_adjusted" --gap "$out/gefs_day1_adjusted" --output "$out/product"
+    --forecast "${forecasts[@]}" --gap "$out/gefs_day1_adjusted" --output "$out/product"
 "$python" -m catchment_forecast.complete fit --history "$history" --output "$out/completion_ops.json"

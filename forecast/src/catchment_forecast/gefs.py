@@ -1,7 +1,7 @@
 """Download GEFS forecasts from NOAA's archive on AWS, only the fields the catchment tables use.
 
     python -m catchment_forecast.gefs --start 2024-01-01 --end 2024-01-31 --archive ARCHIVE \\
-        [--geojson CATCHMENTS --output OUTPUT [--delete]] [--every-day] [--members 31] [--hours 528]
+        [--geojson CATCHMENTS --output OUTPUT [--delete]] [--every-day] [--members 31] [--hours 528] [--weather]
 
 GEFS v12 runs a control and 30 perturbed members; the 00 UTC run goes to 35
 days on a 0.5 degree grid. The archive holds every run since 2017, and each
@@ -9,10 +9,14 @@ new run a few hours after its start. For each start and member the GRIB index
 files are read and only the fields in FIELDS are fetched, by byte ranges, at
 every 6 h step to 528 h (22 days) or to --hours, into
 ARCHIVE/YYYYMMDDHH/gefs_c00.grib2 to gefs_p30.grib2, about 0.4 GB a member
-for 22 days. The starts are those of the AI hindcasts (00 UTC on days 1, 5,
-..., 29), or every day with --every-day. The first day of every run
-(--every-day --hours 24, a few members) is what bridges the days between the
-end of the history table and a forecast start.
+for 22 days. With --weather only WEATHER_FIELDS are fetched, the fields the
+forecast product takes from a system's own weather (2 m temperature and dew
+point, 10 m wind, precipitation, downward shortwave), about 0.1 GB a member;
+the tables then hold the weather columns only, which is what a GEFS hindcast
+needs as a third ensemble beside the AI systems. The starts are those of the
+AI hindcasts (00 UTC on days 1, 5, ..., 29), or every day with --every-day.
+The first day of every run (--every-day --hours 24, a few members) is what
+bridges the days between the end of the history table and a forecast start.
 
 With --geojson and --output each start is aggregated into OUTPUT/gefs as soon
 as it is downloaded (see aggregate), and with --delete its GRIB files are then
@@ -47,6 +51,12 @@ FIELDS = {
 }
 # Fields that do not change, fetched at one step only.
 ONCE = {'b': ('HGT:surface',)}
+# The fields of --weather: those the forecast product takes from a system's own weather.
+WEATHER_FIELDS = {
+    'a': ('TMP:2 m above ground', 'UGRD:10 m above ground', 'VGRD:10 m above ground', 'APCP:surface',
+          'DSWRF:surface'),
+    'b': ('DPT:2 m above ground',),
+}
 ONCE_STEP = 6
 # Fields with a period (6 h means and amounts) are missing at step 0.
 PERIOD = {'APCP:surface', 'DSWRF:surface', 'USWRF:surface', 'DLWRF:surface', 'ULWRF:surface',
@@ -108,11 +118,11 @@ def ranges(index, wanted):
     return merged, {name for _, _, name in picked}
 
 
-def step_bytes(day, member, step):
+def step_bytes(day, member, step, weather=False):
     """The wanted messages of one member and step, from both files."""
     parts = []
-    for kind, wanted in FIELDS.items():
-        wanted = set(wanted) | (set(ONCE.get(kind, ())) if step == ONCE_STEP else set())
+    for kind, wanted in (WEATHER_FIELDS if weather else FIELDS).items():
+        wanted = set(wanted) | (set(ONCE.get(kind, ())) if step == ONCE_STEP and not weather else set())
         expected = wanted if step else wanted - PERIOD
         address = url(day, member, kind, step)
         found_ranges, found = ranges(fetch(address + '.idx').decode(), wanted)
@@ -126,13 +136,13 @@ def step_bytes(day, member, step):
     return b''.join(parts)
 
 
-def download_member(day, member, folder, workers=16, hours=HOURS):
+def download_member(day, member, folder, workers=16, hours=HOURS, weather=False):
     """ARCHIVE/YYYYMMDD00/gefs_MEMBER.grib2 with every step; returns its size in bytes (0 if it was there)."""
     path = folder / f'gefs_{member}.grib2'
     if path.exists():
         return 0
     with ThreadPoolExecutor(workers) as pool:
-        data = list(pool.map(lambda step: step_bytes(day, member, step), range(0, hours + 1, STEP)))
+        data = list(pool.map(lambda step: step_bytes(day, member, step, weather), range(0, hours + 1, STEP)))
     partial = path.with_suffix('.part')
     with partial.open('wb') as stream:
         for part in data:
@@ -141,7 +151,7 @@ def download_member(day, member, folder, workers=16, hours=HOURS):
     return path.stat().st_size
 
 
-def run(days, archive, names, workers=16, hours=HOURS, catchments=None, output=None, delete=False):
+def run(days, archive, names, workers=16, hours=HOURS, catchments=None, output=None, delete=False, weather=False):
     from .aggregate import run_start
     for day in days:
         folder = archive / f'{day:%Y%m%d}00'
@@ -157,7 +167,7 @@ def run(days, archive, names, workers=16, hours=HOURS, catchments=None, output=N
         try:
             for member in names:
                 begin = time.time()
-                size = download_member(day, member, folder, workers, hours)
+                size = download_member(day, member, folder, workers, hours, weather)
                 if size:
                     print(f'{folder.name} {member}: {size / 1e6:.0f} MB in {time.time() - begin:.0f} s', flush=True)
         except FileNotFoundError as error:
@@ -181,6 +191,9 @@ def main(argv=None):
     parser.add_argument('--members', type=int, default=31, help='Control and perturbed members (default 31)')
     parser.add_argument('--workers', type=int, default=16, help='Parallel requests (default 16)')
     parser.add_argument('--hours', type=int, default=HOURS, help=f'Last step, whole days (default {HOURS})')
+    parser.add_argument('--weather', action='store_true',
+                        help='Only the fields the product takes from the weather: temperature, dew point, wind, '
+                             'precipitation, shortwave (about a quarter of the bytes)')
     args = parser.parse_args(argv)
     if (args.geojson is None) != (args.output is None) or (args.delete and args.output is None):
         parser.error('--geojson and --output go together, and --delete needs them')
@@ -192,8 +205,10 @@ def main(argv=None):
         catchments, output = Catchments(args.geojson), args.output / 'gefs'
         output.mkdir(parents=True, exist_ok=True)
     days = starts(args.start, args.end, args.every_day)
-    print(f'{len(days)} GEFS starts, {args.members} members to {args.hours} h, into {args.archive}', flush=True)
-    run(days, args.archive, members(args.members), args.workers, args.hours, catchments, output, args.delete)
+    print(f'{len(days)} GEFS starts, {args.members} members to {args.hours} h'
+          f'{", weather fields only" if args.weather else ""}, into {args.archive}', flush=True)
+    run(days, args.archive, members(args.members), args.workers, args.hours, catchments, output, args.delete,
+        args.weather)
     return 0
 
 

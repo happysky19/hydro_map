@@ -66,7 +66,9 @@ history tables.
 | `soil_temperature_layer1_degC` to `layer4_degC` | – | – | ✓ TSOIL 0-10, 10-40, 40-100, 100-200 cm |
 
 The GEFS soil layers are not those of ERA5-Land (0-7, 7-28, 28-100,
-100-289 cm); the adjustment maps each onto its history column.
+100-289 cm); the adjustment maps each onto its history column. A GEFS member
+fetched with `gefs --weather` holds the fields of the first four rows only, and
+its table has those columns.
 
 To see how far the raw forecasts are from the history before any adjustment,
 compare their ensemble means with the history table, each system on its own:
@@ -100,7 +102,13 @@ and a forecast start. On a Slurm cluster whose compute nodes reach AWS,
 DELETE=1 sbatch --export=ALL -A ACCOUNT -p PARTITION forecast/scripts/gefs_hindcast.sbatch ARCHIVE CATCHMENTS OUTPUT
 ```
 
-2023-2025 is 285 starts of 31 members, about 2.8 TB to download.
+2023-2025 is 285 starts of 31 members, about 2.8 TB to download. `--weather`
+fetches only the fields the product takes from a system's own weather (2 m
+temperature and dew point, 10 m wind, precipitation, downward shortwave), about
+a quarter of the bytes, and the tables hold the weather columns only. That is
+what a GEFS hindcast needs as a third ensemble beside the AI systems: the
+control and 10 members with `--weather` is about 1 GB a start and 0.3 TB in
+all, and `MEMBERS=11 WEATHER=1 DELETE=1` passes this to `gefs_hindcast.sbatch`.
 
 ## Adjust to the history table
 
@@ -173,9 +181,9 @@ change of its climatology), and the bias and mean absolute error of each
 regression fed the history's own weather, which separates the completion's
 error from the forecasts'. `run` writes `check.csv` against the history where
 it has the dates. On the cluster, once the start tables are there,
-`scripts/product_hindcast.sbatch HISTORY CATCHMENTS OUTPUT` runs the three
-adjustments, the hindcast fit and completion, and the operational fit in one
-job.
+`scripts/product_hindcast.sbatch HISTORY CATCHMENTS OUTPUT` runs the
+adjustments (`OUTPUT/gefs` too, where it exists), the hindcast fit and
+completion, and the operational fit in one job.
 
 ## Operations
 
@@ -194,7 +202,10 @@ them into `OPS/product/DATE00.parquet`. It needs the history table to reach six
 days before the start (`history/scripts/daily_update.sh`) and should run once
 the runs are in; run it again later and the product is remade with the
 systems that have arrived since. The member count does not matter: 51 AIFS
-members go through the mapping fitted on 21.
+members go through the mapping fitted on 21. When `HINDCAST` has
+`gefs_adjusted`, the job also fetches the start's GEFS run from AWS
+(`GEFS_MEMBERS` members, default 11, weather fields only) and maps and
+completes it like the others.
 
 ## Download IFS ENS from TIGGE
 

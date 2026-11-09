@@ -10,8 +10,10 @@
 # product_hindcast.sbatch, with the three mappings and completion_ops.json. AIFS_ROOT and WN2_ROOT hold the
 # operational runs as start folders YYYYMMDDHH, the member files in the folder or one level down. Under OPS
 # the job keeps the GEFS day-1 tables of the five days before the start (fetched as needed, the GRIB files
-# deleted), the start tables of both systems, their adjusted tables and the product, OPS/product/DATE00.parquet.
-# A system whose run is not there yet is left out; the product is remade when the job runs again.
+# deleted), the start tables of each system, their adjusted tables and the product, OPS/product/DATE00.parquet.
+# When HINDCAST has gefs_adjusted (GEFS as a third ensemble), the start's GEFS run is fetched from AWS the same
+# way, GEFS_MEMBERS members (default 11) with the weather fields. A system whose run is not there yet is left
+# out; the product is remade when the job runs again.
 #SBATCH --job-name=fc-daily
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=8G
@@ -63,6 +65,17 @@ for system in aifs wn2; do
         forecasts+=("$ops/${system}_adjusted")
     fi
 done
+# The start's GEFS run, when the hindcast has GEFS as a third ensemble; left out until the run is complete.
+if [[ -f $hindcast/gefs_adjusted/mapping.parquet ]]; then
+    "$python" -m catchment_forecast.gefs --start "$day" --end "$day" --archive "$ops/gefs_archive" \
+        --geojson "$geojson" --output "$ops" --every-day --members "${GEFS_MEMBERS:-11}" --weather --delete \
+        || echo "gefs: the run $start is not complete yet"
+    if [[ -f $ops/gefs/$start.parquet ]]; then
+        "$python" -m catchment_forecast.adjust apply --mapping "$hindcast/gefs_adjusted/mapping.parquet" \
+            --forecast "$ops/gefs/$start.parquet" --output "$ops/gefs_adjusted"
+        forecasts+=("$ops/gefs_adjusted")
+    fi
+fi
 if (( ${#forecasts[@]} == 0 )); then
     echo "No run of $start is in yet" >&2
     exit 1

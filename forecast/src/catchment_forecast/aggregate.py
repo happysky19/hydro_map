@@ -135,10 +135,13 @@ SYSTEMS = {
                  amounts={'tp': ('precipitation_mm', True), 'ssrd': ('shortwave_down_mean_W_m2', True)}),
     'wn2': dict(patterns=('predictions_hres_*.grib',), member=wn2_member, first_step=6,
                 amounts={'tp': ('precipitation_mm', False)}),
+    # A gefs file holds every field, or the weather fields only (gefs --weather): the weather fields are
+    # required, and a state or flux whose fields come on no day is left out of the table.
     'gefs': dict(patterns=('gefs_*.grib2',), member=gefs_member, first_step=0, naming=gefs_name, window=6,
                  amounts={'tp': ('precipitation_mm', False)}, states=GEFS_STATES, fluxes=GEFS_FLUXES,
                  fields={name for name in GEFS_CODES.values() if name not in ('soilw', 'tsoil')}
-                 | {f'{name}{layer}' for name in ('soilw', 'tsoil') for layer in LAYERS}),
+                 | {f'{name}{layer}' for name in ('soilw', 'tsoil') for layer in LAYERS},
+                 required=('2t', '2d', '10u', '10v', 'tp', 'dswrf')),
 }
 INSTANT = ('2t', '2d', '10u', '10v')
 SAMPLE_HOURS = (0, 6, 12, 18)
@@ -305,8 +308,10 @@ def daily(fields, units, system, matrix, start, latitudes):
 
     for kind, hours in (('states', SAMPLE_HOURS), ('fluxes', WINDOW_ENDS)):
         for column, (formula, land) in spec.get(kind, {}).items():
-            out[column] = np.array([day_mean(formula, land, [24 * (day - 1) + hour for hour in hours])
-                                    for day in range(1, days + 1)])
+            values = np.array([day_mean(formula, land, [24 * (day - 1) + hour for hour in hours])
+                               for day in range(1, days + 1)])
+            if np.isfinite(values).any():   # the file has the fields on some day
+                out[column] = values
     pet = np.full((days, matrix.shape[0]), np.nan)
     for day in range(days):
         for c, latitude in enumerate(latitudes):
@@ -340,7 +345,7 @@ def run_start(system, folder, catchments, output):
     for path in files:
         begin = time.time()
         fields, units, matrix = read_member(path, names, catchments, spec.get('naming'), spec.get('window'),
-                                            spec.get('fields', ()))
+                                            spec.get('required', ()))
         values = daily(fields, units, system, matrix, init.date(), catchments.latitudes)
         if not len(values['tmean_degC']):
             raise ValueError(f'{path}: no whole lead day; is it a member file?')

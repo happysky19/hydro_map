@@ -245,6 +245,19 @@ def test_a_gefs_day_missing_a_field_is_blank():
     assert np.isfinite(out['cloud_cover_fraction']).all()
 
 
+GEFS_WEATHER = ('2t', '2d', '10u', '10v', 'tp', 'dswrf')
+WEATHER_COLUMNS = {'precipitation_mm', 'tmean_degC', 'tmax_degC', 'tmin_degC', 'relative_humidity_pct',
+                   'vapor_pressure_deficit_kPa', 'shortwave_down_mean_W_m2', 'u_wind_m_s', 'v_wind_m_s',
+                   'wind_speed_m_s', 'pet_hargreaves_mm_day'}
+
+
+def test_gefs_weather_fields_alone_give_the_weather_columns():
+    fields = {key: value for key, value in gefs_fields().items() if key[0] in GEFS_WEATHER}
+    out = aggregate.daily(fields, {'2t': 'K', 'tp': 'kg m**-2'}, 'gefs', np.ones((1, 3)), date(2024, 1, 1), [50.])
+    assert set(out) == WEATHER_COLUMNS
+    assert all(np.isfinite(out[column]).all() for column in out)
+
+
 GEFS_PERIOD = {'tp': 1, 'dswrf': 0, 'uswrf': 0, 'dlwrf': 0, 'ulwrf': 0, 'tcc': 0, 'lhtfl': 0, 'snohf': 0}
 
 
@@ -312,5 +325,17 @@ def test_gefs_archive_to_parquet(tmp_path):
     write_gefs(start / 'gefs_c00.grib2', gefs_fields(), window=12)
     (tmp_path / 'out' / 'gefs' / '2024010100.parquet').unlink()
     with pytest.raises(ValueError, match='not the 6 h before'):
+        aggregate.main(['--system', 'gefs', '--archive', str(tmp_path / 'archive'), '--geojson', str(geojson),
+                        '--output', str(tmp_path / 'out')])
+    # A file of the weather fields only (gefs --weather) gives the weather columns; one short of them is refused.
+    fields = {key: value for key, value in gefs_fields().items() if key[0] in GEFS_WEATHER}
+    write_gefs(start / 'gefs_c00.grib2', fields)
+    assert aggregate.main(['--system', 'gefs', '--archive', str(tmp_path / 'archive'), '--geojson', str(geojson),
+                           '--output', str(tmp_path / 'out')]) == 0
+    table = pq.read_table(tmp_path / 'out' / 'gefs' / '2024010100.parquet')
+    assert set(table.column_names) - {'init_time', 'member', 'lead_day', 'valid_date', 'project_id'} == WEATHER_COLUMNS
+    write_gefs(start / 'gefs_c00.grib2', {key: value for key, value in fields.items() if key[0] != 'dswrf'})
+    (tmp_path / 'out' / 'gefs' / '2024010100.parquet').unlink()
+    with pytest.raises(ValueError, match='no dswrf'):
         aggregate.main(['--system', 'gefs', '--archive', str(tmp_path / 'archive'), '--geojson', str(geojson),
                         '--output', str(tmp_path / 'out')])
