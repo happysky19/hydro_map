@@ -53,9 +53,8 @@ Repeating the same command resumes from the finished years and months. A
 
 The delivered table is written from the full table by `debias`, which fills
 AORC gaps, replaces AORC in the catchments listed in `REPLACED`
-(`src/catchment_history/delivery_variables.py`) and, from 2023, AORC
-precipitation, rain and snow in every catchment, with ERA5-Land quantile-mapped
-onto AORC:
+(`src/catchment_history/delivery_variables.py`) and, from 2016, every AORC
+column of the other catchments, with ERA5-Land quantile-mapped onto AORC:
 
 ```bash
 catchment-history debias --aorc outputs/catchment_daily_1996_2025_full.csv --era5 outputs/catchment_daily_1996_2025_full.csv --output outputs/catchment_daily_1996_2025_mapped.parquet

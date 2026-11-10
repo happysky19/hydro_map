@@ -229,20 +229,41 @@ July-September total of 38 of the 43 AORC catchments is 1.2-1.6 times its
 2010-2022 relation in 2023-2025, the other seasons are unchanged, the wet-day
 fraction (> 1 mm) of the 33 US catchments rises from 0.11 to 0.16 while the
 mean of a wet day stays at 4.9 mm, and the day-to-day correlation stays at
-0.86; temperature, humidity and shortwave do not change. Against 12 SNOTEL
-gauges in the Flathead basin, AORC over Hungry Horse tracked the gauges
-through 2022, including the dry summers of 2016-2022 (both at 0.78 of their
-2000-2015 July-September mean), and runs 20-45% above them in 2023-2025. The
-west-Cascades catchments (Swift, Mossyrock, Lookout Point, Detroit, Rocky
-Reach, Ross) show none of this. AORC's daily precipitation has been Stage IV
-without any adjustment since 2016
-([Fall et al. 2023](https://doi.org/10.1111/1752-1688.13143)), so it follows
-whatever the River Forecast Centers' estimates do; what changed in 2023 is not
-documented. From 2023-01-01 the `debias` command therefore replaces
-precipitation, rain and snow of every AORC catchment by ERA5-Land
-quantile-mapped onto AORC of 2016-2022, split at AORC's own temperature
-(`REPLACED_FROM` in `src/catchment_history/delivery_variables.py`). The full
-table keeps AORC.
+0.86. What changed in 2023 is not documented.
+
+A larger change comes earlier. From 2016 AORC takes its daily precipitation
+from Stage IV without its earlier monthly adjustment to the gauge
+climatologies, and its temperature from the URMA analysis
+([Fall et al. 2023](https://doi.org/10.1111/1752-1688.13143)). Against
+GHCN-Daily stations inside the US catchments with records over 1997-2025
+(about 80 NWS stations and 170 SNOTEL sites in October-March), each series
+taken against its own mean, 2017-2025 against 1997-2012 (median over the
+catchments):
+
+| | Stations | AORC | ERA5-Land |
+| --- | --- | --- | --- |
+| October-March precipitation | -2.0% | -9.7% | +2.1% |
+| April-June precipitation | -7.6% | -12.9% | -6.9% |
+| October-March temperature (NWS stations) | -0.07 °C | +0.48 °C | +0.21 °C |
+| July-September temperature (NWS stations) | +0.92 °C | +1.85 °C | +1.33 °C |
+
+AORC's temperature minus the stations' is about -0.2 °C in every October-March
+from 1996 to 2015 and +0.56 °C from 2016 on, a step; its precipitation drops at
+the same time. ERA5-Land drifts slowly against the stations, by about +4% in
+October-March precipitation and +0.2-0.4 °C in temperature, with no step. The
+catchments with the most stations show it best: at Lower Granite (25 stations)
+October-March precipitation changes by +3.6% at the stations, -11.9% in AORC
+and +6.0% in ERA5-Land; at Noxon Rapids (23) by +2.6%, -11.7% and +8.0%. AORC's
+warmer temperature also moves its rain-snow split: its October-March snow
+share falls by up to 0.16 from 1996-2009 to 2016-2022 (0.09 at Kerr, 0.12 at
+Albeni Falls), against at most 0.06 in ERA5-Land. Libby, Corra Linn and Seven
+Mile, already taken from ERA5-Land on every day, agree with their stations.
+From 2016-01-01 the `debias`
+command therefore replaces every AORC column of the other AORC catchments by
+ERA5-Land quantile-mapped onto AORC of 2006-2015, the last ten years before the
+change (`REPLACED_FROM` and `RECENT` in
+`src/catchment_history/delivery_variables.py`); this also covers the 2023
+change. The full table keeps AORC.
 
 ## Interpret the checks
 

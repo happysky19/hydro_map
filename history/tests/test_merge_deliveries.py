@@ -117,27 +117,28 @@ class MergeTests(unittest.TestCase):
                                aorc.root / 'plain.parquet', [aorc.geojson, north.geojson])
         self.assertNotIn('quantile-mapped onto AORC of', (aorc.root / 'plain_README.md').read_text())
 
-    def test_precipitation_replaced_from_2023_is_described_and_left_out_of_the_fill_counts(self):
+    def test_rows_replaced_from_2016_are_described_and_left_out_of_the_fill_counts(self):
         import pyarrow as pa
         import pyarrow.parquet as pq
         from catchment_history.deliver import FILL_COLUMN
         aorc, north = self.deliveries()
-        joined = aorc.root / 'joined' / 'columbia_1996_2026.parquet'   # a 2025 day, flagged as debias.py does from 2023
+        joined = aorc.root / 'joined' / 'columbia_1996_2026.parquet'   # a 2025 day, flagged as debias.py does from 2016
         joined.parent.mkdir()
         table = pq.read_table(aorc.root / 'columbia.parquet')
-        flags = pa.array(['precipitation_mm;rainfall_mm;snowfall_mm'] * table.num_rows, pa.string())
+        flags = pa.array(['precipitation_mm;rainfall_mm;snowfall_mm;tmean_degC'] * table.num_rows, pa.string())
         pq.write_table(table.set_column(table.column_names.index(FILL_COLUMN), FILL_COLUMN, flags), joined)
         output = aorc.root / 'merged' / 'all.parquet'
         merge_deliveries.merge([joined, north.root / 'peace.csv'], output, [aorc.geojson, north.geojson])
         readme = companion(output, '_README', '.md').read_text()
-        self.assertIn('From 2023-01-01 AORC precipitation', readme)
-        self.assertIn('quantile-mapped onto AORC of 2016-2022', readme)
-        self.assertIn('mapped onto AORC from 2023', readme)
+        self.assertIn('From 2016 AORC takes its daily precipitation from the Stage IV', readme)
+        self.assertIn('every AORC column of the other AORC catchments therefore holds ERA5-Land quantile-mapped '
+                      'onto AORC of 2006-2015', readme)
+        self.assertIn('mapped onto AORC from 2016', readme)
+        self.assertIn(', to 2015 |', readme)
         self.assertNotIn('Filled project-days', readme)
         manifest = json.loads((aorc.root / 'merged' / 'all.parquet.manifest.json').read_text())
-        self.assertEqual(manifest['aorc_precipitation_replaced'],
-                         {'since': '2023-01-01', 'columns': ['precipitation_mm', 'rainfall_mm', 'snowfall_mm'],
-                          'fitted_on': ['2016-01-01', '2022-12-31']})
+        self.assertEqual(manifest['aorc_replaced_from'],
+                         {'since': '2016-01-01', 'fitted_on': ['2006-01-01', '2015-12-31']})
 
     def test_overlapping_catchments_are_refused(self):
         aorc, _ = self.deliveries()

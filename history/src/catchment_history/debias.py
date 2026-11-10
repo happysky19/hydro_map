@@ -9,8 +9,8 @@ calendar month, fitted on the --aorc table's AORC and ERA5-Land on the days both
 have in that month and the months either side: over REFERENCE for the REPLACED
 catchments of delivery_variables.py, over RECENT for the others. AORC is kept
 wherever it exists, except in the REPLACED catchments, where every row takes
-the mapped ERA5-Land, and from REPLACED_FROM, where precipitation, rain and
-snow of every catchment do. Corrected precipitation is split into rain and snow by a
+the mapped ERA5-Land, and from REPLACED_FROM, where every row of the other
+catchments does. Corrected precipitation is split into rain and snow by a
 curve of AORC's snow fraction against daily mean temperature, fitted for each
 catchment and applied to the corrected temperature, and PET is recalculated
 from the corrected temperatures. Catchments the --aorc table does not hold
@@ -33,8 +33,7 @@ import sys
 import numpy as np
 
 from .check import table_rows
-from .delivery_variables import (AORC, LAND, RECENT, REFERENCE, REPLACED, REPLACED_FROM, REPLACED_VARIABLES,
-                                 REQUESTED)
+from .delivery_variables import AORC, LAND, RECENT, REFERENCE, REPLACED, REPLACED_FROM, REQUESTED
 from .deliver import FILL_COLUMN
 from .export import _write
 from .files import digest
@@ -341,12 +340,11 @@ def run(aorc_path, era5_path, output):
     north = ~np.isin(projects[:count], projects[count:])
     since = date.fromisoformat(REPLACED_FROM)
     values = {v: aorc[v][:count].copy() for v in VARIABLES}
-    # Rows whose AORC precipitation is overwritten; rows without it are filled like any gap.
-    stale = (~north & ~replaced & np.isfinite(values['precipitation_mm'])
-             & np.array([day >= since for day in dates[:count]], bool))
+    # Rows of the other AORC catchments from REPLACED_FROM: every AORC column is overwritten.
+    late = ~north & ~replaced & np.array([day >= since for day in dates[:count]], bool)
+    swapped = replaced | late
     filled = {v: np.zeros(count, bool) for v in VARIABLES}
-    target = np.flatnonzero(~north & (replaced | stale |
-                                      np.logical_or.reduce([np.isnan(values[v]) for v in VARIABLES])))
+    target = np.flatnonzero(~north & (swapped | np.logical_or.reduce([np.isnan(values[v]) for v in VARIABLES])))
     print(f'{count:,} rows, {count - len(target) - north.sum():,} with complete AORC kept; '
           f'filling {len(target):,} with quantile-mapped ERA5-Land', flush=True)
     if north.any():
@@ -362,25 +360,14 @@ def run(aorc_path, era5_path, output):
             for i, *s in zip(rows, *stats)]
     if replaced.any():
         print(f'AORC replaced on every row of {", ".join(sorted(set(projects[:count][replaced])))}; '
-              f'fitted on {REFERENCE[0]} to {REFERENCE[1]}, the other catchments on {RECENT[0]} to {RECENT[1]}',
-              flush=True)
-    if stale.any():
-        print(f'AORC {", ".join(REPLACED_VARIABLES)} replaced from {REPLACED_FROM} on {stale.sum():,} rows of '
-              f'{len(set(projects[:count][stale]))} catchments', flush=True)
+              f'fitted on {REFERENCE[0]} to {REFERENCE[1]}', flush=True)
+    if late.any():
+        print(f'AORC replaced from {REPLACED_FROM} on {late.sum():,} rows of '
+              f'{len(set(projects[:count][late]))} catchments; fitted on {RECENT[0]} to {RECENT[1]}', flush=True)
     if len(target):
         corrected = correct(aorc, land, projects, dates, latitudes, train, target)
-        # Rows that keep AORC's temperature split the mapped precipitation at that temperature.
-        own = stale[target] & np.isfinite(values['tmean_c'][target])
-        if own.any():
-            phase = best_curves(phase_errors(aorc, projects, train, np.zeros(len(projects), int)))
-            centre, width = np.array([phase[project] for project in projects[target[own]]]).reshape(-1, 2).T
-            snow = corrected['precipitation_mm'][own] * snow_fraction(values['tmean_c'][target[own]], centre, width)
-            corrected['snowfall_mm'][own] = snow
-            corrected['rainfall_mm'][own] = corrected['precipitation_mm'][own] - snow
         for v in VARIABLES:
-            use = replaced[target] | np.isnan(values[v][target])
-            if v in REPLACED_VARIABLES:
-                use |= stale[target]
+            use = swapped[target] | np.isnan(values[v][target])
             values[v][target[use]] = corrected[v][use]
             filled[v][target[use]] = np.isfinite(corrected[v][use])
     requested = [(item['source'], item['variable']) for item in REQUESTED]

@@ -292,24 +292,24 @@ class ReplaceTests(unittest.TestCase):
 
 
 class ReplacedFromTests(unittest.TestCase):
-    """From REPLACED_FROM the precipitation, rain and snow of every AORC catchment are mapped ERA5-Land fitted
-    on RECENT, split at AORC's own temperature; the other columns keep AORC."""
+    """From REPLACED_FROM every AORC column of the other catchments is mapped ERA5-Land fitted on RECENT, the
+    years before that date, so a step in AORC from then on does not reach the output."""
 
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
-        patch_settings(self, REPLACED_FROM='2023-01-01', RECENT=('2016-01-01', '2022-12-31'))
+        patch_settings(self, REPLACED_FROM='2023-01-01', RECENT=('2022-01-01', '2022-12-31'))
         for name, value in write_inputs(self.root).items():
             setattr(self, name, value)
-        # AORC is the truth to 2024, with 5 mm on most dry days from 2023, as the archive has from then.
+        # AORC is the truth in 2022 and drier and warmer from 2023, as the archive is from 2016.
         self.years = np.array([d.year for d in self.dates])
-        rng = np.random.default_rng(1)
-        extra = ((self.years >= 2023) & (self.years < 2025) & (self.truth['precipitation_mm'] == 0)
-                 & (rng.random(len(self.years)) < .8))
+        step = (self.years >= 2023) & (self.years < 2025)
         aorc = {v: np.where(self.years < 2025, values, np.nan) for v, values in self.truth.items()}
-        for v in ('precipitation_mm', 'rainfall_mm'):
-            aorc[v] = np.where(extra, 5., aorc[v])
+        for v in ('precipitation_mm', 'rainfall_mm', 'snowfall_mm'):
+            aorc[v] = np.where(step, .88 * aorc[v], aorc[v])
+        for v in ('tmean_c', 'tmin_c', 'tmax_c'):
+            aorc[v] = np.where(step, aorc[v] + .7, aorc[v])
         for values in aorc.values():
             values[self.gap] = np.nan
         write_aorc(self.aorc_path, self.keys, aorc, self.land)
@@ -320,41 +320,41 @@ class ReplacedFromTests(unittest.TestCase):
         self.log = out.getvalue()
         with self.output.open() as stream:
             self.rows = list(csv.DictReader(stream))
-        self.stale = (self.years >= 2023) & (self.years < 2025)
+        self.late = self.years >= 2023
 
     def series(self, variable):
         return np.array([float(row[variable]) if row[variable] else np.nan for row in self.rows])
 
-    def test_only_precipitation_is_replaced_from_the_date_and_flagged(self):
+    def test_every_column_is_replaced_from_the_date_and_flagged(self):
         names = [item['variable'] for item in REQUESTED if item['source'] == AORC]
         flags = np.array([row['aorc_gap_filled'] for row in self.rows])
-        stale = self.stale.copy()
-        stale[self.gap] = False
-        self.assertTrue(np.all(flags[stale] == 'precipitation_mm;rainfall_mm;snowfall_mm'))
-        self.assertTrue(np.all(flags[self.years < 2023] == ''))
-        self.assertTrue(np.all(flags[self.years == 2025] == ';'.join(names)))
-        self.assertEqual(flags[self.gap], ';'.join(names))
-        self.assertIn('replaced from 2023-01-01 on 1,461 rows of 2 catchments', self.log)
+        self.assertTrue(np.all(flags[self.late] == ';'.join(names)))
+        self.assertTrue(np.all(flags[~self.late] == ''))
+        self.assertIn(f'replaced from 2023-01-01 on {int(self.late.sum()):,} rows of 2 catchments; '
+                      'fitted on 2022-01-01 to 2022-12-31', self.log)
+        for variable in names:
+            np.testing.assert_allclose(self.series(variable)[~self.late], self.truth[variable][~self.late],
+                                       err_msg=variable)
+
+    def test_the_replaced_values_follow_the_relation_before_the_date(self):
+        late = self.late
         for variable in ('tmean_c', 'tmin_c', 'tmax_c', 'relative_humidity_pct', 'shortwave_down_mean_wm2',
                          'vapor_pressure_deficit_kpa', 'pet_hargreaves_mm'):
-            np.testing.assert_allclose(self.series(variable)[stale], self.truth[variable][stale], err_msg=variable)
-        kept = self.years < 2023
-        for variable in ('precipitation_mm', 'rainfall_mm', 'snowfall_mm'):
-            np.testing.assert_allclose(self.series(variable)[kept], self.truth[variable][kept], err_msg=variable)
-
-    def test_the_mapped_precipitation_follows_the_relation_before_the_date(self):
-        stale = self.stale
-        total, true = self.series('precipitation_mm')[stale], self.truth['precipitation_mm'][stale]
-        self.assertGreater(np.nanmean(self.written['precipitation_mm'][stale]), 1.2 * true.mean())
+            np.testing.assert_allclose(self.series(variable)[late], self.truth[variable][late], rtol=1e-6,
+                                       atol=1e-6, err_msg=variable)
+        total, true = self.series('precipitation_mm')[late], self.truth['precipitation_mm'][late]
+        stepped = late & (self.years < 2025)
+        self.assertLess(np.nanmean(self.written['precipitation_mm'][stepped]),
+                        .9 * self.truth['precipitation_mm'][stepped].mean())
         self.assertAlmostEqual(total.mean(), true.mean(), delta=.03 * true.mean())
         self.assertAlmostEqual(np.mean(total > 1), np.mean(true > 1), delta=.03)
-        rain, snow = self.series('rainfall_mm')[stale], self.series('snowfall_mm')[stale]
+        rain, snow = self.series('rainfall_mm')[late], self.series('snowfall_mm')[late]
         np.testing.assert_allclose(rain + snow, total)
-        # Split at AORC's own temperature: all snow where AORC is cold, none where it is warm.
-        warm, cold = self.truth['tmean_c'][stale] > 4, self.truth['tmean_c'][stale] < -2
+        # Split at the mapped temperature by the curve fitted before the date.
+        warm, cold = self.truth['tmean_c'][late] > 4, self.truth['tmean_c'][late] < -2
         self.assertLess(snow[warm].sum(), .02 * total[warm].sum())
         self.assertGreater(snow[cold].sum(), .98 * total[cold].sum())
-        true_snow = self.truth['snowfall_mm'][stale].sum()
+        true_snow = self.truth['snowfall_mm'][late].sum()
         self.assertAlmostEqual(snow.sum(), true_snow, delta=.05 * true_snow)
 
 

@@ -106,11 +106,11 @@ def _names(projects, identifiers):
     return ', '.join(names[:-1]) + ' and ' + names[-1] if len(names) > 1 else names[0]
 
 
-def readme_text(manifest, selected, name, missing, gaps=None, primary=None, replaced=(), precipitation_from=None):
+def readme_text(manifest, selected, name, missing, gaps=None, primary=None, replaced=(), replaced_from=None):
     """gaps gives the counts and dates of filled values (None: nothing is filled); primary maps AORC and
     ERA5-Land to the catchments whose AORC columns they supply; replaced lists the AORC catchments whose
-    AORC columns hold mapped ERA5-Land on every day; precipitation_from is the date from which the other
-    AORC catchments' precipitation, rain and snow hold mapped ERA5-Land."""
+    AORC columns hold mapped ERA5-Land on every day; replaced_from is the date from which the other
+    AORC catchments' AORC columns do."""
     start, end = manifest['start'], manifest['end']
     projects = manifest['project_metadata']
     role = lambda item: item.get('replaces', item['source'])
@@ -149,20 +149,22 @@ def readme_text(manifest, selected, name, missing, gaps=None, primary=None, repl
         '- Column names end with their units: `mm` is a daily amount (mm/day), `W_m2` a daily mean flux, '
         'and `degC`, `kPa`, `m3_m3`, `m_s`, `m`, `pct` (%) and `fraction` (0-1) are as written.',
         (f'- `{FILL_COLUMN}` lists the columns of that row filled where AORC has no data'
-         + (' or is replaced' if replaced or precipitation_from else '') + ' (see Limitations); it is empty otherwise.'
-         if replaced or precipitation_from or _gap_text(gaps) else f'- `{FILL_COLUMN}` is empty: no values are filled.'),
+         + (' or is replaced' if replaced or replaced_from else '') + ' (see Limitations); it is empty otherwise.'
+         if replaced or replaced_from or _gap_text(gaps) else f'- `{FILL_COLUMN}` is empty: no values are filled.'),
         f"- Blank values: {blanks or 'none'}.", '',
         '## Sources', '',
         _table([*([['AORC v1.1', 'NOAA Office of Water Prediction', 'Analysis of observations',
                     'Hourly, 30 arc-seconds (about 1 km)',
-                    used(AORC) + (f' (all catchments except {_names(projects, others)})' if others else '')]]
+                    used(AORC) + (f' (all catchments except {_names(projects, others)})' if others else '')
+                    + (f', to {int(replaced_from[:4]) - 1}' if replaced_from else '')]]
                   if AORC in primary else []),
                 ['ERA5-Land', 'ECMWF (Copernicus)', 'Land reanalysis', 'Hourly, 0.1° (about 9 km)',
                  used(LAND) + (f'; {used(AORC).lower()} for {_names(projects, north)}' if north else '')
                  + (f"; {'the same' if north else used(AORC).lower()} mapped onto AORC for "
                     f'{_names(projects, replaced)}' if replaced else '')
-                 + (f'; precipitation, rainfall and snowfall mapped onto AORC from {precipitation_from[:4]}'
-                    if precipitation_from else '')],
+                 + ((f'; the same mapped onto AORC from {replaced_from[:4]} for the other catchments'
+                     if north or replaced else f'; {used(AORC).lower()} mapped onto AORC from {replaced_from[:4]}')
+                    if replaced_from else '')],
                 ['ERA5', 'ECMWF (Copernicus)', 'Atmospheric reanalysis', 'Hourly, 0.25° (about 31 km)', used(ERA5)]],
                ['Source', 'Producer', 'Type', 'Grid', 'Used for']), '',
         *(['- **AORC** (Analysis of Record for Calibration) is the forcing NOAA uses to calibrate the National '
@@ -232,14 +234,19 @@ def readme_text(manifest, selected, name, missing, gaps=None, primary=None, repl
             'over the same years, and PET is recomputed from the mapped temperatures. The levels and seasonal '
             'cycle follow AORC of those years; the day-to-day and year-to-year changes follow ERA5-Land. '
             f'`{FILL_COLUMN}` names these columns on every row of these catchments.'] if replaced else []),
-        *([f'- From {precipitation_from} AORC precipitation east of the Cascades has far more July-September wet '
-           'days than before, relative to SNOTEL gauges and to ERA5-Land, after tracking both through 2022, while '
-           'its temperature, humidity and radiation did not change. From that date `precipitation_mm`, '
-           '`rainfall_mm` and `snowfall_mm` of every AORC catchment therefore hold ERA5-Land quantile-mapped onto '
-           f'AORC of {RECENT[0][:4]}-{RECENT[1][:4]} for that catchment and calendar month, split into rain and '
-           "snow by AORC's snow fraction against daily mean temperature at the day's own AORC temperature; the "
-           f'other AORC columns keep AORC. `{FILL_COLUMN}` names these three columns on those rows.']
-          if precipitation_from else []),
+        *([f'- From {replaced_from[:4]} AORC takes its daily precipitation from the Stage IV radar-gauge analyses '
+           'without its earlier monthly adjustment to the gauge climatologies, and its temperature from the URMA '
+           'analysis. Against about 400 NWS and SNOTEL stations inside the US catchments, its October-March '
+           'precipitation falls about 10% from 1997-2012 to 2017-2025 while the stations change by -2%, and its '
+           'temperature rises 0.6-0.8 °C more than the NWS stations, in one step in 2016; from 2023 its '
+           f'July-September precipitation also gains many wet days. From {replaced_from} every AORC column of the '
+           f'other AORC catchments therefore holds ERA5-Land quantile-mapped onto AORC of '
+           f'{RECENT[0][:4]}-{RECENT[1][:4]} for that catchment and calendar month. Precipitation is split into '
+           "rain and snow by AORC's snow fraction against daily mean temperature over the same years, and PET is "
+           'recomputed from the mapped temperatures. Against the same stations ERA5-Land drifts by about +4% in '
+           f'October-March precipitation and +0.3 °C in temperature, without a step. `{FILL_COLUMN}` names these '
+           'columns on those rows.']
+          if replaced_from else []),
         *_gap_text(gaps), '',
         '## Matching forecast variables', '',
         'Fields in operational forecasts that correspond to each column. IFS names are ECMWF open-data '

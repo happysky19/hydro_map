@@ -22,15 +22,14 @@ LAND_ORIGIN = {'precipitation_mm': 'native tp', 'rainfall_mm': 'computed from tp
 REPLACED = ('MICA', 'REVELSTOKE', 'HUGH_KEENLEYSIDE', 'DUNCAN', 'CORRA_LINN', 'KOOTENAY_CANAL', 'BRILLIANT',
             'SEVEN_MILE', 'WANETA', 'LIBBY')
 REFERENCE = ('1996-01-01', '2006-12-31')
-# The other catchments are mapped with a fit on the last AORC years before REPLACED_FROM: since 2016 AORC takes
-# its daily precipitation from Stage IV without adjustment and its temperature from URMA.
-RECENT = ('2016-01-01', '2022-12-31')
-# From 2023 AORC precipitation east of the Cascades has far more July-September wet days than before, relative
-# to SNOTEL gauges and to ERA5-Land, after tracking both through 2022, while its temperature, humidity and
-# radiation did not change. From this date debias.py replaces these columns of every other catchment by
-# ERA5-Land mapped onto AORC over RECENT, split into rain and snow at AORC's own daily mean temperature.
-REPLACED_FROM = '2023-01-01'
-REPLACED_VARIABLES = ('precipitation_mm', 'rainfall_mm', 'snowfall_mm')
+# From 2016 AORC takes its daily precipitation from Stage IV without its earlier monthly adjustment to the gauge
+# climatologies, and its temperature from URMA. Against NWS and SNOTEL stations inside the US catchments its
+# October-March precipitation then drops by about a tenth and its temperature rises 0.6-0.8 degC, in one step,
+# while the stations change little; from 2023 its July-September precipitation also gains many wet days. From
+# REPLACED_FROM debias.py therefore replaces every AORC column of the other catchments by ERA5-Land mapped onto
+# AORC over RECENT, the last ten years before it.
+REPLACED_FROM = '2016-01-01'
+RECENT = ('2006-01-01', '2015-12-31')
 NOT_AVAILABLE = 'not available'
 DERIVE = 'derive from T, humidity and pressure as here'
 SEASONAL = ('Mean of 24 hourly catchment means over seasonal-snow cells; ERA5-Land cells holding '
