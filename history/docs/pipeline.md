@@ -238,10 +238,12 @@ is retained in source `run.json` files and the final manifest.
 
 ### AORC replaced in the Canadian catchments
 
-From late 2007 to 2017 AORC precipitation over Mica, Revelstoke, Hugh
-Keenleyside, Duncan, Corra Linn, Kootenay Canal, Brilliant, Seven Mile, Waneta
-and Libby, which lie mostly in British Columbia, falls well below other years
-while snow courses show no drop ([data notes](data_notes.md)). In these
+From late 2007 to 2015 or 2017 AORC precipitation over Mica, Revelstoke, Hugh
+Keenleyside, Duncan, Corra Linn, Kootenay Canal, Brilliant, Seven Mile, Waneta,
+Libby, Wells and Ross, which lie mostly or in large part in British Columbia,
+departs far from other years: it falls well below them in the northern
+catchments while snow courses show no drop, and rises above them at Wells and
+Ross ([data notes](data_notes.md)). In these
 catchments (`REPLACED` in `src/catchment_history/delivery_variables.py`) the `debias` command
 replaces every AORC column on every row, also where AORC exists, by ERA5-Land
 quantile-mapped onto AORC of `REFERENCE` (1996-2006). The mapping is fitted on

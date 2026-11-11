@@ -217,7 +217,14 @@ CaPA without that adjustment
 ERA5-Land, AORC winter precipitation falls by two thirds to three quarters at
 Mica and Revelstoke, by half at Hugh Keenleyside and Duncan, and by about
 10-30% at Kootenay Canal, Brilliant, Seven Mile, Corra Linn, Waneta and Libby.
-For these ten catchments (`REPLACED` in `src/catchment_history/delivery_variables.py`)
+At Wells (56% of its area in the Okanagan) and Ross (40% in British Columbia) it
+goes the other way: AORC's October-March precipitation relative to ERA5-Land is
+1.34-1.61 times its 1996-2006 relation in every year from 2007 to 2015 but 2013
+at Wells and about 1.15 times at Ross, and from 2016 it is 0.72-0.93 and about
+0.85 times. Mapped onto AORC of 2006-2015 from 2016, the Wells October-March
+precipitation rose 26% from 1997-2012 to 2017-2025, against -4.6% at its five
+US stations and +20% at its three British Columbia stations.
+For these twelve catchments (`REPLACED` in `src/catchment_history/delivery_variables.py`)
 the `debias` command replaces every AORC column on every day by ERA5-Land
 quantile-mapped onto AORC of 1996-2006; see the
 [pipeline guide](pipeline.md#aorc-replaced-in-the-canadian-catchments).
@@ -263,7 +270,13 @@ command therefore replaces every AORC column of the other AORC catchments by
 ERA5-Land quantile-mapped onto AORC of 2006-2015, the last ten years before the
 change (`REPLACED_FROM` and `RECENT` in
 `src/catchment_history/delivery_variables.py`); this also covers the 2023
-change. The full table keeps AORC.
+change. The full table keeps AORC. With this, the delivered table's
+October-March change minus the stations' is about +3% in precipitation (-7.6%
+before) and about 0.0 °C in temperature (+0.6 °C before); a fit on 1996-2015
+or 1996-2007 gives the same precipitation but brings back ERA5-Land's warm
+drift (+0.2 and +0.4 °C). Priest Rapids, Wanapum, Ice Harbor and Little Goose,
+small dry catchments, stay 8-15% above their few stations, as ERA5-Land does
+there.
 
 ## Interpret the checks
 

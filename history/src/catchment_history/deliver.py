@@ -224,9 +224,10 @@ def readme_text(manifest, selected, name, missing, gaps=None, primary=None, repl
         'not calibrated for these catchments.',
         '- Freezing level above ground is 0 when ERA5 finds no 0 °C level; ERA5 stores this as about '
         '-0.0002 m, so small negative values mean 0.',
-        *([f'- From late 2007 to 2017 AORC precipitation over {_names(projects, replaced)} falls well below '
-            'other years, in winter to about a third in the northern catchments, while snow courses and snow '
-            "pillows in the Mica basin show no drop. Until 2015 AORC's Canadian precipitation is NLDAS-2 "
+        *([f'- From late 2007 to 2015 or 2017 AORC precipitation over {_names(projects, replaced)}, all with a '
+            'large part in British Columbia, departs far from other years: in winter it falls to about a third '
+            'in the northern catchments, while snow courses and snow pillows in the Mica basin show no drop, and '
+            "rises by up to half in others. Until 2015 AORC's Canadian precipitation is NLDAS-2 "
             'adjusted to the Livneh gauge climatology; from 2016 it follows gauge analyses without that '
             'adjustment. In these catchments every AORC column therefore holds ERA5-Land quantile-mapped onto '
             f'AORC of {REFERENCE[0][:4]}-{REFERENCE[1][:4]} for that catchment and calendar month, on every day. '
@@ -244,7 +245,9 @@ def readme_text(manifest, selected, name, missing, gaps=None, primary=None, repl
            f'{RECENT[0][:4]}-{RECENT[1][:4]} for that catchment and calendar month. Precipitation is split into '
            "rain and snow by AORC's snow fraction against daily mean temperature over the same years, and PET is "
            'recomputed from the mapped temperatures. Against the same stations ERA5-Land drifts by about +4% in '
-           f'October-March precipitation and +0.3 °C in temperature, without a step. `{FILL_COLUMN}` names these '
+           f'October-March precipitation and +0.3 °C in temperature, without a step; the table then changes about '
+           '3 points more than the stations in October-March precipitation and as much as they do in temperature. '
+           f'`{FILL_COLUMN}` names these '
            'columns on those rows.']
           if replaced_from else []),
         *_gap_text(gaps), '',
