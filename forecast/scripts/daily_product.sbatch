@@ -11,8 +11,10 @@
 # operational runs as start folders YYYYMMDDHH, the member files in the folder or one level down. Under OPS
 # the job keeps the GEFS day-1 tables of the five days before the start (fetched as needed, the GRIB files
 # deleted), the start tables of each system, their adjusted tables and the product, OPS/product/DATE00.parquet.
-# When HINDCAST has gefs_adjusted (GEFS as a third ensemble), the start's GEFS run is fetched from AWS the same
-# way, GEFS_MEMBERS members (default 11) with the weather fields. A system whose run is not there yet is left
+# When HINDCAST has gefs_adjusted (GEFS as a third ensemble), the start's GEFS run is fetched the same way,
+# GEFS_MEMBERS members (default 11) with the weather fields to GEFS_HOURS (default 528; 384 for a morning run,
+# as GEFS reaches 16 days about 06:30 UTC and 22 days only the next day). GEFS comes from NOAA's archive on AWS,
+# or from GEFS_SOURCE (an address or folder with the same layout). A system whose run is not there yet is left
 # out; the product is remade when the job runs again.
 #SBATCH --job-name=fc-daily
 #SBATCH --cpus-per-task=2
@@ -34,10 +36,13 @@ print(date.fromisoformat(sys.argv[1]) if len(sys.argv) > 1 else datetime.now(tim
 before() { "$python" -c 'import sys; from datetime import date, timedelta
 print(date.fromisoformat(sys.argv[1]) - timedelta(days=int(sys.argv[2])))' "$day" "$1"; }
 start=${day//-/}00
+source=()
+[[ -n ${GEFS_SOURCE:-} ]] && source=(--source "$GEFS_SOURCE")
 
 # The five days before the start, from the GEFS archive on AWS; days already there are skipped.
 "$python" -m catchment_forecast.gefs --start "$(before 5)" --end "$(before 1)" --archive "$ops/gefs_day1_archive" \
-    --geojson "$geojson" --output "$ops/gefs_day1" --every-day --members 3 --hours 24 --delete
+    --geojson "$geojson" --output "$ops/gefs_day1" --every-day --members 3 --hours 24 --delete \
+    ${source[@]+"${source[@]}"}
 gap=()
 for i in 5 4 3 2 1; do
     table=$ops/gefs_day1/gefs/$(before $i | tr -d -)00.parquet
@@ -68,8 +73,8 @@ done
 # The start's GEFS run, when the hindcast has GEFS as a third ensemble; left out until the run is complete.
 if [[ -f $hindcast/gefs_adjusted/mapping.parquet ]]; then
     "$python" -m catchment_forecast.gefs --start "$day" --end "$day" --archive "$ops/gefs_archive" \
-        --geojson "$geojson" --output "$ops" --every-day --members "${GEFS_MEMBERS:-11}" --weather --delete \
-        || echo "gefs: the run $start is not complete yet"
+        --geojson "$geojson" --output "$ops" --every-day --members "${GEFS_MEMBERS:-11}" --hours "${GEFS_HOURS:-528}" \
+        --weather --delete ${source[@]+"${source[@]}"} || echo "gefs: the run $start is not complete yet"
     if [[ -f $ops/gefs/$start.parquet ]]; then
         "$python" -m catchment_forecast.adjust apply --mapping "$hindcast/gefs_adjusted/mapping.parquet" \
             --forecast "$ops/gefs/$start.parquet" --output "$ops/gefs_adjusted"

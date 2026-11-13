@@ -122,3 +122,26 @@ def test_run_skips_missing_starts_aggregates_and_deletes(monkeypatch, tmp_path, 
     requests = archive.requests
     gefs.run(days[:1], tmp_path / 'archive', gefs.members(2), 2, 6, catchments=None, output=output, delete=True)
     assert archive.requests == requests and written == ['2024010500']
+
+
+def test_a_source_on_disk_is_read_like_the_archive(monkeypatch, tmp_path):
+    data, index = inventory(['TMP:2 m above ground', 'APCP:surface'])
+    folder = tmp_path / 'mirror' / 'gefs.20240105' / '00' / 'atmos' / 'pgrb2ap5'
+    folder.mkdir(parents=True)
+    (folder / 'gec00.t00z.pgrb2a.0p50.f006').write_bytes(data)
+    (folder / 'gec00.t00z.pgrb2a.0p50.f006.idx').write_text(index)
+    monkeypatch.setattr(gefs, 'BUCKET', str(tmp_path / 'mirror'))
+    address = gefs.url(date(2024, 1, 5), 'c00', 'a', 6)
+    assert gefs.fetch(address + '.idx').decode() == index
+    assert gefs.fetch(address, 10, 19) == data[10:20] and gefs.fetch(address, 10) == data[10:]
+    with pytest.raises(FileNotFoundError):
+        gefs.fetch(gefs.url(date(2024, 1, 5), 'c00', 'a', 12))
+
+
+def test_main_takes_the_source(monkeypatch, tmp_path):
+    monkeypatch.setattr(gefs, 'BUCKET', gefs.BUCKET)
+    monkeypatch.setattr(gefs, 'run', lambda *args: None)
+    gefs.main(['--start', '2024-01-01', '--end', '2024-01-01', '--archive', str(tmp_path), '--hours', '384',
+               '--source', 'https://example.org/gens/prod/'])
+    assert gefs.url(date(2024, 1, 1), 'p01', 'a', 384) == (
+        'https://example.org/gens/prod/gefs.20240101/00/atmos/pgrb2ap5/gep01.t00z.pgrb2a.0p50.f384')

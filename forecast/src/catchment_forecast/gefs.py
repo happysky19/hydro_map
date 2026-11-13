@@ -1,7 +1,8 @@
 """Download GEFS forecasts from NOAA's archive on AWS, only the fields the catchment tables use.
 
     python -m catchment_forecast.gefs --start 2024-01-01 --end 2024-01-31 --archive ARCHIVE \\
-        [--geojson CATCHMENTS --output OUTPUT [--delete]] [--every-day] [--members 31] [--hours 528] [--weather]
+        [--geojson CATCHMENTS --output OUTPUT [--delete]] [--every-day] [--members 31] [--hours 528] [--weather] \\
+        [--source ADDRESS]
 
 GEFS v12 runs a control and 30 perturbed members; the 00 UTC run goes to 35
 days on a 0.5 degree grid. The archive holds every run since 2017, and each
@@ -17,6 +18,11 @@ needs as a third ensemble beside the AI systems. The starts are those of the
 AI hindcasts (00 UTC on days 1, 5, ..., 29), or every day with --every-day.
 The first day of every run (--every-day --hours 24, a few members) is what
 bridges the days between the end of the history table and a forecast start.
+
+--source reads another copy with the same layout (gefs.YYYYMMDD/00/atmos/...
+with the .idx files beside the GRIB files): NCEP's own server, or a folder on
+disk. The 00 UTC run reaches 16 days (384 h) about 06:30 UTC and the rest
+about a day later, so a morning product takes --hours 384.
 
 With --geojson and --output each start is aggregated into OUTPUT/gefs as soon
 as it is downloaded (see aggregate), and with --delete its GRIB files are then
@@ -85,7 +91,15 @@ def url(day, member, kind, step):
 
 
 def fetch(address, first=None, last=None):
-    """Bytes of address, or of the byte range first-last (last None: to the end). A 404 raises FileNotFoundError."""
+    """Bytes of address, or of the byte range first-last (last None: to the end). A 404 raises FileNotFoundError.
+    An address that is not http(s) is a file on disk."""
+    if not address.startswith(('http://', 'https://')):
+        path = Path(address)
+        if not path.is_file():
+            raise FileNotFoundError(address)
+        with path.open('rb') as stream:
+            stream.seek(first or 0)
+            return stream.read() if last is None else stream.read(last - (first or 0) + 1)
     request = urllib.request.Request(address)
     if first is not None:
         request.add_header('Range', f'bytes={first}-{"" if last is None else last}')
@@ -180,6 +194,7 @@ def run(days, archive, names, workers=16, hours=HOURS, catchments=None, output=N
 
 
 def main(argv=None):
+    global BUCKET
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--start', required=True, type=date.fromisoformat, help='First start date')
     parser.add_argument('--end', required=True, type=date.fromisoformat, help='Last start date')
@@ -194,6 +209,8 @@ def main(argv=None):
     parser.add_argument('--weather', action='store_true',
                         help='Only the fields the product takes from the weather: temperature, dew point, wind, '
                              'precipitation, shortwave (about a quarter of the bytes)')
+    parser.add_argument('--source', default=BUCKET,
+                        help=f'Address or folder holding gefs.YYYYMMDD/ (default {BUCKET})')
     args = parser.parse_args(argv)
     if (args.geojson is None) != (args.output is None) or (args.delete and args.output is None):
         parser.error('--geojson and --output go together, and --delete needs them')
@@ -204,9 +221,10 @@ def main(argv=None):
         from .aggregate import Catchments
         catchments, output = Catchments(args.geojson), args.output / 'gefs'
         output.mkdir(parents=True, exist_ok=True)
+    BUCKET = args.source.rstrip('/')
     days = starts(args.start, args.end, args.every_day)
     print(f'{len(days)} GEFS starts, {args.members} members to {args.hours} h'
-          f'{", weather fields only" if args.weather else ""}, into {args.archive}', flush=True)
+          f'{", weather fields only" if args.weather else ""}, from {BUCKET} into {args.archive}', flush=True)
     run(days, args.archive, members(args.members), args.workers, args.hours, catchments, output, args.delete,
         args.weather)
     return 0

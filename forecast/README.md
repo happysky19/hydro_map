@@ -204,8 +204,23 @@ the runs are in; run it again later and the product is remade with the
 systems that have arrived since. The member count does not matter: 51 AIFS
 members go through the mapping fitted on 21. When `HINDCAST` has
 `gefs_adjusted`, the job also fetches the start's GEFS run from AWS
-(`GEFS_MEMBERS` members, default 11, weather fields only) and maps and
-completes it like the others.
+(`GEFS_MEMBERS` members, default 11, weather fields only, to `GEFS_HOURS`,
+default 528) and maps and completes it like the others. The GEFS 00 UTC run
+reaches 16 days about 06:30 UTC and 22 days only the next day, so a morning
+run sets `GEFS_HOURS=384`; `GEFS_SOURCE` reads GEFS from another copy with the
+same layout, NCEP's own server or a folder on disk.
+
+```bash
+sbatch -A ACCOUNT -p PARTITION forecast/scripts/daily_ops.sh CONFIG
+```
+
+runs the whole day: the history update to six days before today, then the
+product of today, and prints each system's members, lead days and blank
+values. `CONFIG` is a file of settings kept outside the repository (listed at
+the top of the script). Run it from `scrontab` once the runs are in, more than
+once a morning if wanted: a run that finds another going stops, and a later
+one finds the history up to date and remakes the product with what has
+arrived since.
 
 ## Download IFS ENS from TIGGE
 
