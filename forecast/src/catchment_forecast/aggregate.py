@@ -84,18 +84,80 @@ VAPORIZATION = 2.45e6   # J/kg, latent heat flux to evapotranspiration
 FUSION = 3.34e5         # J/kg, snow phase-change heat flux to snowmelt
 
 
-def gefs_name(get):
-    """The name of a GEFS message (soil fields with their layer, soilw0.1-0.4), or None for a field not used."""
-    code = tuple(get(key, int) for key in ('discipline', 'parameterCategory', 'parameterNumber',
-                                             'typeOfFirstFixedSurface'))
-    depth = lambda which: (get(f'scaledValueOf{which}FixedSurface', int)
-                           / 10 ** get(f'scaleFactorOf{which}FixedSurface', int))
-    if code[3] == 103:
-        return GEFS_CODES.get(code + (round(depth('First')),))
-    name = GEFS_CODES.get(code)
-    if name is not None and code[3] == 106:
-        return f'{name}{depth("First"):g}-{depth("Second"):g}'
+def coded(codes):
+    """The naming of messages told apart by GRIB2 codes, keyed as GEFS_CODES: soil fields get their layer, as in
+    soilw0.1-0.4, and a field not in codes gets None."""
+    def name(get):
+        code = tuple(get(key, int) for key in ('discipline', 'parameterCategory', 'parameterNumber',
+                                                 'typeOfFirstFixedSurface'))
+        depth = lambda which: (get(f'scaledValueOf{which}FixedSurface', int)
+                               / 10 ** get(f'scaleFactorOf{which}FixedSurface', int))
+        if code[3] == 103:
+            return codes.get(code + (round(depth('First')),))
+        found = codes.get(code)
+        if found is not None and code[3] == 106:
+            return f'{found}{depth("First"):g}-{depth("Second"):g}'
+        return found
     return name
+
+
+gefs_name = coded(GEFS_CODES)
+
+# CFSv2 time series: every message is coded as instantaneous at its step, but the precipitation rate and the
+# radiation fluxes are means, and tmax and tmin extremes, over the 6 h ending at the step.
+CFS_CODES = {
+    (0, 0, 0, 103, 2): '2t', (0, 0, 4, 103, 2): 'tmax', (0, 0, 5, 103, 2): 'tmin', (0, 1, 0, 103, 2): 'q',
+    (0, 3, 0, 1): 'sp', (0, 2, 2, 103, 10): '10u', (0, 2, 3, 103, 10): '10v', (0, 1, 7, 1): 'prate',
+    (0, 4, 192, 1): 'dswrf', (0, 4, 193, 1): 'uswrf', (0, 5, 192, 1): 'dlwrf', (0, 5, 193, 1): 'ulwrf',
+    (0, 0, 0, 106): 'tsoil',
+}
+
+
+def vapour_kpa(q, pressure):
+    """Vapour pressure in kPa from specific humidity (kg/kg) and pressure (Pa)."""
+    return q * pressure / (0.622 + 0.378 * q) / 1000
+
+
+def humidity(f):
+    """(saturation, actual) vapour pressure in kPa from 2 m temperature, specific humidity and surface pressure."""
+    return saturation_vapor_pressure_kpa(f('2t') - 273.15), vapour_kpa(f('q'), f('sp'))
+
+
+CFS_STATES = {
+    'relative_humidity_pct': (lambda f: (lambda s, e: 100 * e / s)(*humidity(f)), False),
+    'vapor_pressure_deficit_kPa': (lambda f: (lambda s, e: np.maximum(s - e, 0.))(*humidity(f)), False),
+    'soil_temperature_layer1_degC': (lambda f: f('tsoil0-0.1') - 273.15, True),
+}
+CFS_FLUXES = {
+    'precipitation_mm': (lambda f: np.maximum(f('prate'), 0.) * 86400, False),
+    'shortwave_down_mean_W_m2': (lambda f: f('dswrf'), False),
+    'net_radiation_mean_W_m2': (lambda f: f('dswrf') - f('uswrf') + f('dlwrf') - f('ulwrf'), False),
+}
+
+
+def cfs_member(name):
+    """cfs_01.grib2 -> 01."""
+    return re.search(r'cfs_(\d+)', name)[1]
+
+
+def ifs_member(name):
+    """ifs_c00.grib2 (control) -> c00; ifs_p07.grib2 -> p07."""
+    return re.search(r'ifs_([cp]\d+)', name)[1]
+
+
+def ec46_member(name):
+    """ec46_c00.grib (control) -> c00; ec46_p007.grib -> p007; seas5_p007.grib -> p007."""
+    return re.search(r'(?:ec46|seas5)_([cp]\d+)', name)[1]
+
+
+def ec46_name(get):
+    """Daily means may carry ecCodes' avg_ prefix instead of the S2S parameter name."""
+    name = get('shortName')
+    return name[4:] if name in ('avg_2t', 'avg_2d', 'avg_st20') else name
+
+
+# Net radiation from the accumulated net shortwave and longwave, both signed.
+NET_RADIATION = {'ssr': ('net_radiation_mean_W_m2', True, True), 'str': ('net_radiation_mean_W_m2', True, True)}
 
 
 def seasonal(f, values):
@@ -127,7 +189,12 @@ GEFS_FLUXES = {
 # Fields read once, at whatever step they come.
 CONSTANT = ('orog',)
 
-# amounts: {shortName: (column, accumulated from the start or not)}.
+# amounts: {shortName: (column, accumulated from the start or not[, signed])}; amounts of one column add up, and
+# the column is left out unless all of them are there. Unsigned amounts below 0 (GRIB packing) count as 0.
+# sample_hours: the hours of the day whose instantaneous fields make tmean, wind and humidity (default
+# SAMPLE_HOURS; 24 for fields that are already a mean of the day ending at their step).
+# extremes: {column: (shortName, window in hours, 'max' or 'min')}, the extreme of the catchment means of the
+# windows that end in the day, which replaces tmax or tmin from the samples.
 SYSTEMS = {
     # Hindcast aifs_f000-f528_p07.grib1 and operational aifs_p07_N320.grib; not the per-step files beside them.
     'aifs': dict(patterns=('aifs_*p[0-9][0-9].grib*', 'aifs_p[0-9][0-9]_N[0-9]*.grib*'), member=aifs_member,
@@ -142,6 +209,34 @@ SYSTEMS = {
                  fields={name for name in GEFS_CODES.values() if name not in ('soilw', 'tsoil')}
                  | {f'{name}{layer}' for name in ('soilw', 'tsoil') for layer in LAYERS},
                  required=('2t', '2d', '10u', '10v', 'tp', 'dswrf')),
+    # IFS ENS from ECMWF's open data (ifs): the weather fields, as for AIFS.
+    'ifs': dict(patterns=('ifs_*.grib2',), member=ifs_member, first_step=0,
+                amounts={'tp': ('precipitation_mm', True), 'ssrd': ('shortwave_down_mean_W_m2', True)},
+                required=('2t', '2d', '10u', '10v', 'tp', 'ssrd')),
+    # CFSv2 time series (cfs), from step 6.
+    'cfs': dict(patterns=('cfs_*.grib2',), member=cfs_member, first_step=6, naming=coded(CFS_CODES),
+                amounts={}, states=CFS_STATES, fluxes=CFS_FLUXES,
+                extremes={'tmax_degC': ('tmax', 6, 'max'), 'tmin_degC': ('tmin', 6, 'min')},
+                fields=set(CFS_CODES.values()) - {'tsoil'} | {'tsoil0-0.1'},
+                required=('2t', 'tmax', 'tmin', 'q', 'sp', '10u', '10v', 'prate', 'dswrf', 'uswrf', 'dlwrf',
+                          'ulwrf', 'tsoil0-0.1')),
+    # ECMWF extended range from the S2S archive (ec46): 2 m temperature, dew point and soil temperature are
+    # means of the day ending at their step, and 10 m wind is at 00 UTC, so each day takes its value at hour 24.
+    'ec46': dict(patterns=('ec46_*.grib',), member=ec46_member, naming=ec46_name, first_step=0, sample_hours=(24,),
+                 amounts={'tp': ('precipitation_mm', True), 'ssrd': ('shortwave_down_mean_W_m2', True),
+                          **NET_RADIATION},
+                 extremes={'tmax_degC': ('mx2t6', 6, 'max'), 'tmin_degC': ('mn2t6', 6, 'min')},
+                 states={'soil_temperature_layer1_degC': (lambda f: f('st20') - 273.15, True)},
+                 fields={'mx2t6', 'mn2t6', 'st20'},
+                 required=('2t', '2d', '10u', '10v', 'tp', 'ssrd', 'ssr', 'str', 'mx2t6', 'mn2t6', 'st20')),
+    # SEAS5 (seas5): instantaneous fields every 6 h from step 6, extremes of the 24 h ending at each day's end.
+    'seas5': dict(patterns=('seas5_*.grib',), member=ec46_member, first_step=6,
+                  amounts={'tp': ('precipitation_mm', True), 'ssrd': ('shortwave_down_mean_W_m2', True),
+                           **NET_RADIATION},
+                  extremes={'tmax_degC': ('mx2t24', 24, 'max'), 'tmin_degC': ('mn2t24', 24, 'min')},
+                  states={'soil_temperature_layer1_degC': (lambda f: f('stl1') - 273.15, True)},
+                  fields={'mx2t24', 'mn2t24', 'stl1'},
+                  required=('2t', '2d', '10u', '10v', 'tp', 'ssrd', 'ssr', 'str', 'mx2t24', 'mn2t24', 'stl1')),
 }
 INSTANT = ('2t', '2d', '10u', '10v')
 SAMPLE_HOURS = (0, 6, 12, 18)
@@ -180,13 +275,22 @@ def grid_weights(eccodes, handle, catchments):
         rows = np.sort(eccodes.codes_get_array(handle, 'distinctLatitudes'))[::-1]
         counts = eccodes.codes_get_array(handle, 'pl')
         return catchments.on((kind, len(rows), int(counts.sum())), lambda: reduced_gaussian_cells(rows, counts))
+    if kind == 'regular_gg':
+        if get('iScansNegatively') or get('jScansPositively') or get('jPointsAreConsecutive') \
+                or get('longitudeOfFirstGridPointInDegrees') != 0:
+            raise ValueError('Gaussian grids must run north to south, rows from longitude 0 eastwards')
+        rows = np.sort(eccodes.codes_get_array(handle, 'distinctLatitudes'))[::-1]
+        counts = np.full(len(rows), get('Ni'))
+        return catchments.on((kind, len(rows), int(counts[0])), lambda: reduced_gaussian_cells(rows, counts))
     if kind == 'regular_ll':
         if get('iScansNegatively') or get('jPointsAreConsecutive'):
             raise ValueError('Regular grids must run west to east along rows')
         axis = lambda first, last, count: np.linspace(get(first + 'GridPointInDegrees'),
                                                       get(last + 'GridPointInDegrees'), get(count))
         latitudes = axis('latitudeOfFirst', 'latitudeOfLast', 'Nj')
-        longitudes = axis('longitudeOfFirst', 'longitudeOfLast', 'Ni')
+        # Rows run eastwards and may wrap past 180 (ECMWF's open data run from 180 to 179.75).
+        west, east_ = get('longitudeOfFirstGridPointInDegrees'), get('longitudeOfLastGridPointInDegrees')
+        longitudes = np.linspace(west, east_ + 360 if east_ < west else east_, get('Ni'))
         key = (kind, latitudes[0], latitudes[-1], len(latitudes), longitudes[0], longitudes[-1], len(longitudes))
         return catchments.on(key, lambda: regular_cells(latitudes, longitudes))
     raise ValueError(f'Unsupported grid {kind}')
@@ -234,12 +338,16 @@ def read_member(path, names, catchments, naming=None, window=None, required=()):
     return fields, units, grid[1]
 
 
-def daily(fields, units, system, matrix, start, latitudes):
-    """{column: lead days x catchments} from one member's point fields {(shortName, step): values}."""
+def daily(fields, units, system, matrix, start, latitudes, shift=0):
+    """{column: lead days x catchments} from one member's point fields {(shortName, step): values}.
+
+    Lead day d is the UTC day that begins shift + 24(d - 1) hours after the start: shift is 0 for a 00 UTC
+    start and 18 for 06 UTC, so every lead day is a whole UTC day; start is the date of lead day 1."""
     spec = SYSTEMS[system]
     mean = lambda values: area_mean(matrix, values)
-    days = max(step for _, step in fields) // 24
+    days = (max(step for _, step in fields) - shift) // 24
     blank = np.full(matrix.shape[0], np.nan)
+    begins = lambda day: shift + 24 * (day - 1)
     # Catchment means at each step, derived quantities first computed at each grid point.
     at = {}
     for (name, step), kelvin in fields.items():
@@ -256,9 +364,13 @@ def daily(fields, units, system, matrix, start, latitudes):
             vapour = saturation_vapor_pressure_kpa(fields['2d', step] - 273.15)
             at['relative_humidity_pct', step] = mean(100 * vapour / saturation)
             at['vapor_pressure_deficit_kPa', step] = mean(np.maximum(saturation - vapour, 0.))
+    sample_hours = spec.get('sample_hours', SAMPLE_HOURS)
+
+    def sample_steps(day, hours):
+        return [begins(day) + hour for hour in hours if begins(day) + hour >= spec['first_step']]
 
     def samples(column, day):
-        steps = [24 * (day - 1) + hour for hour in SAMPLE_HOURS if 24 * (day - 1) + hour >= spec['first_step']]
+        steps = sample_steps(day, sample_hours)
         values = [at.get((column, step)) for step in steps]
         if any(value is None for value in values):
             return np.full((len(steps), len(blank)), np.nan)
@@ -272,21 +384,41 @@ def daily(fields, units, system, matrix, start, latitudes):
             out['tmax_degC'] = np.array([values.max(axis=0) for values in by_day])
             out['tmin_degC'] = np.array([values.min(axis=0) for values in by_day])
 
-    def amount(name, accumulated, day):
+    def amount(name, accumulated, signed, day):
         """The day's amount at each grid point, or None when a step is missing."""
+        end = begins(day) + 24
         if accumulated:
-            end, begin = fields.get((name, 24 * day)), 0. if day == 1 else fields.get((name, 24 * (day - 1)))
-            return None if end is None or begin is None else end - begin
-        parts = [fields.get((name, step)) for step in range(24 * day - 18, 24 * day + 1, 6)]
-        return None if any(part is None for part in parts) else sum(np.maximum(part, 0.) for part in parts)
+            last, first = fields.get((name, end)), 0. if begins(day) == 0 else fields.get((name, begins(day)))
+            return None if last is None or first is None else last - first
+        parts = [fields.get((name, step)) for step in range(end - 18, end + 1, 6)]
+        if any(part is None for part in parts):
+            return None
+        return sum(part if signed else np.maximum(part, 0.) for part in parts)
 
-    for name, (column, accumulated) in spec['amounts'].items():
-        if name in units:
+    by_column = {}
+    for name, (column, accumulated, *signed) in spec['amounts'].items():
+        by_column.setdefault(column, []).append((name, accumulated, bool(signed and signed[0])))
+    for column, parts in by_column.items():
+        if any(name not in units for name, _, _ in parts):
+            continue
+        total = 0.
+        for name, accumulated, signed in parts:
             if units[name] not in DAILY:
                 raise ValueError(f'{name} in {units[name]}: no conversion to {column}')
-            totals = [amount(name, accumulated, day) for day in range(1, days + 1)]
-            out[column] = np.array([blank if total is None else mean(np.maximum(total, 0.)) * DAILY[units[name]]
-                                    for total in totals])
+            amounts = [amount(name, accumulated, signed, day) for day in range(1, days + 1)]
+            total = total + np.array([blank if value is None else
+                                      mean(value if signed else np.maximum(value, 0.)) * DAILY[units[name]]
+                                      for value in amounts])
+        out[column] = total
+
+    for column, (name, window, kind) in spec.get('extremes', {}).items():
+        if units.get(name) != 'K':
+            raise ValueError(f'{name} in {units.get(name)}, not K')
+        pick = np.max if kind == 'max' else np.min
+        steps = lambda day: range(begins(day) + window, begins(day) + 25, window)
+        out[column] = np.array([pick([mean(fields[name, step]) for step in steps(day)], axis=0) - 273.15
+                                if all((name, step) in fields for step in steps(day)) else blank
+                                for day in range(1, days + 1)])
 
     constant = {name: values for (name, _), values in fields.items() if name in CONSTANT}
 
@@ -306,10 +438,9 @@ def daily(fields, units, system, matrix, start, latitudes):
             return blank
         return np.mean([(land_mean if land else area_mean)(matrix, values) for values in points], axis=0)
 
-    for kind, hours in (('states', SAMPLE_HOURS), ('fluxes', WINDOW_ENDS)):
+    for kind, hours in (('states', sample_hours), ('fluxes', WINDOW_ENDS)):
         for column, (formula, land) in spec.get(kind, {}).items():
-            values = np.array([day_mean(formula, land, [24 * (day - 1) + hour for hour in hours])
-                               for day in range(1, days + 1)])
+            values = np.array([day_mean(formula, land, sample_steps(day, hours)) for day in range(1, days + 1)])
             if np.isfinite(values).any():   # the file has the fields on some day
                 out[column] = values
     pet = np.full((days, matrix.shape[0]), np.nan)
@@ -340,13 +471,16 @@ def run_start(system, folder, catchments, output):
         print(f'{folder.name}: no member files', flush=True)
         return
     init = datetime.strptime(folder.name, '%Y%m%d%H').replace(tzinfo=timezone.utc)
+    # Lead day 1 is the first whole UTC day of the run.
+    shift = (24 - init.hour) % 24
+    first = (init + timedelta(hours=shift)).date()
     names = set(INSTANT) | set(spec['amounts']) | spec.get('fields', set())
     count, members = len(catchments.ids), []
     for path in files:
         begin = time.time()
         fields, units, matrix = read_member(path, names, catchments, spec.get('naming'), spec.get('window'),
                                             spec.get('required', ()))
-        values = daily(fields, units, system, matrix, init.date(), catchments.latitudes)
+        values = daily(fields, units, system, matrix, first, catchments.latitudes, shift)
         if not len(values['tmean_degC']):
             raise ValueError(f'{path}: no whole lead day; is it a member file?')
         members.append((spec['member'](path.name), values))
@@ -360,7 +494,7 @@ def run_start(system, folder, catchments, output):
             'init_time': pa.array([init] * days * count, pa.timestamp('s', tz='UTC')),
             'member': [member] * days * count,
             'lead_day': np.repeat(np.arange(1, days + 1, dtype='int16'), count),
-            'valid_date': pa.array(np.repeat([init.date() + timedelta(days=d) for d in range(days)], count),
+            'valid_date': pa.array(np.repeat([first + timedelta(days=d) for d in range(days)], count),
                                    pa.date32()),
             'project_id': catchments.ids * days,
             **{column: values.get(column, np.full((days, count), np.nan)).ravel() for column in columns}}))

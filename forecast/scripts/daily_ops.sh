@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# The daily run: the history table to six days before today, then the forecast product of today's 00 UTC runs.
+# The daily run: the history table to six days before today, the forecast product of today's 00 UTC runs, then the
+# extended-range and seasonal table of today (daily_extended.sbatch), when the hindcast has its mappings.
 #
 #   sbatch [-A ACCOUNT -p PARTITION] forecast/scripts/daily_ops.sh CONFIG
 #
@@ -13,7 +14,8 @@
 #   AIFS_ROOT         the operational AIFS runs, start folders YYYYMMDDHH
 #   WN2_ROOT          the same for WN2; a folder that does not exist leaves WN2 out
 #   OPS               the operational folder; the product is OPS/product/YYYYMMDD00.parquet
-#   GEFS_MEMBERS, GEFS_HOURS, GEFS_SOURCE   optional, see daily_product.sbatch
+#   GEFS_MEMBERS, GEFS_HOURS, GEFS_SOURCE, IFS_MEMBERS, IFS_SOURCE, CFS_DAYS   optional, see daily_product.sbatch
+#                     and daily_extended.sbatch
 # Run it once the runs are in (GEFS to day 16 about 06:30 UTC, AIFS about 06:50 UTC). A later run finds the
 # history up to date and remakes the product with what has arrived since; a run while another is going stops.
 #SBATCH --job-name=daily-ops
@@ -63,4 +65,12 @@ for name in sorted(set(system)):
     rows = system == name
     print(f"{name}: {len(set(member[rows]))} members, lead days {lead[rows].min()} to {lead[rows].max()}, "
           f"{rows.sum():,} rows, {int(blank[rows].sum())} blank values")' "$product"
+for system in ec46 gefs35 cfs seas5; do
+    if [[ -f $HINDCAST/${system}_adjusted/mapping.parquet ]]; then
+        stamp "extended-range table of ${today}"
+        bash forecast/scripts/daily_extended.sbatch "${HISTORY%.*}_catchments.geojson" "$HINDCAST" "$OPS" "$today" \
+            || echo "extended-range table: not made"
+        break
+    fi
+done
 stamp "done: $product"

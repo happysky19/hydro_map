@@ -36,8 +36,10 @@ from .aggregate import COLUMNS, Catchments
 
 KEYS = ['init_time', 'member', 'lead_day', 'valid_date', 'project_id']
 START = '[0-9]' * 10 + '.parquet'
-# First lead day of each group; the last group runs on to every later lead day.
+# First lead day of each group; the last group runs on to every later lead day. A mapping keeps the groups
+# it was fitted with; the extended-range and seasonal systems take EXTENDED_GROUPS (weeks, then months).
 LEAD_GROUPS = (1, 2, 3, 4, 6, 8, 11, 15)
+EXTENDED_GROUPS = (1, 8, 15, 22, 29, 36, 46, 61, 91, 121, 151)
 # Beyond the fitted quantiles signed quantities shift and nonnegative ones scale (see debias.mapped).
 ADDITIVE = {'tmean_degC', 'tmax_degC', 'tmin_degC', 'relative_humidity_pct', 'u_wind_m_s', 'v_wind_m_s',
             'net_radiation_mean_W_m2', 'actual_evapotranspiration_mm', 'freezing_level_above_sea_level_m',
@@ -85,16 +87,16 @@ def lookup(path, projects, dates, columns):
     return out
 
 
-def group_codes(rows, projects):
-    """Group of each row: (catchment * len(LEAD_GROUPS) + lead group) * 12 + month of the valid date - 1."""
+def group_codes(rows, projects, groups=LEAD_GROUPS):
+    """Group of each row: (catchment * len(groups) + lead group) * 12 + month of the valid date - 1."""
     position = {project: i for i, project in enumerate(projects)}
     missing = set(rows['project_id']) - set(position)
     if missing:
         raise ValueError(f'No mapping for {", ".join(sorted(missing))}')
     codes = np.array([position[project] for project in rows['project_id']])
-    lead = np.searchsorted(LEAD_GROUPS, rows['lead_day'], side='right') - 1
+    lead = np.searchsorted(groups, rows['lead_day'], side='right') - 1
     month = rows['valid_date'].astype('datetime64[M]').astype(int) % 12
-    return (codes * len(LEAD_GROUPS) + lead) * 12 + month
+    return (codes * len(groups) + lead) * 12 + month
 
 
 def fit_quantiles(x, y, codes, count):
@@ -112,23 +114,23 @@ def fit_quantiles(x, y, codes, count):
     return xq, yq
 
 
-def fit(rows, history, columns, projects, curves, latitudes, info):
+def fit(rows, history, columns, projects, curves, latitudes, info, groups=LEAD_GROUPS):
     """The mapping of these forecast rows onto the history values of the same rows."""
-    codes = group_codes(rows, projects)
-    count = len(projects) * len(LEAD_GROUPS) * 12
-    return dict(projects=list(projects), curves=curves, latitudes=latitudes, info=info,
+    codes = group_codes(rows, projects, groups)
+    count = len(projects) * len(groups) * 12
+    return dict(projects=list(projects), curves=curves, latitudes=latitudes, info=info, lead_groups=tuple(groups),
                 quantiles={column: fit_quantiles(rows[column], history[column], codes, count) for column in columns})
 
 
-def map_column(values, codes, xq, yq, ratio, projects):
+def map_column(values, codes, xq, yq, ratio, projects, groups):
     result = np.full(len(values), np.nan)
     order = np.argsort(codes, kind='stable')
     for at in np.split(order, np.flatnonzero(np.diff(codes[order])) + 1):
         group = codes[at[0]]
         if np.isnan(xq[group, 0]):
             base, month = divmod(group, 12)
-            project, lead = divmod(base, len(LEAD_GROUPS))
-            raise ValueError(f'No fit for {projects[project]}, lead days from {LEAD_GROUPS[lead]}, month {month + 1}')
+            project, lead = divmod(base, len(groups))
+            raise ValueError(f'No fit for {projects[project]}, lead days from {groups[lead]}, month {month + 1}')
         q, index = np.unique(xq[group], return_inverse=True)
         result[at] = mapped(values[at], q, np.bincount(index, yq[group]) / np.bincount(index), ratio)
     return result
@@ -136,8 +138,9 @@ def map_column(values, codes, xq, yq, ratio, projects):
 
 def adjust(rows, mapping):
     """Adjusted columns of forecast rows: mapped, then rain and snow, ordered temperatures and PET."""
-    codes = group_codes(rows, mapping['projects'])
-    values = {column: map_column(rows[column], codes, xq, yq, column in RATIO, mapping['projects'])
+    groups = mapping['lead_groups']
+    codes = group_codes(rows, mapping['projects'], groups)
+    values = {column: map_column(rows[column], codes, xq, yq, column in RATIO, mapping['projects'], groups)
               for column, (xq, yq) in mapping['quantiles'].items() if column in rows}
     t = values['tmean_degC']
     values['tmin_degC'] = np.fmin(values['tmin_degC'], t)
@@ -151,7 +154,7 @@ def adjust(rows, mapping):
     values['rainfall_mm'] = values['precipitation_mm'] - values['snowfall_mm']
     # hargreaves_pet is (tmean + 17.8) sqrt(tmax - tmin) times a factor of latitude and day, its value at
     # tmean -16.8, tmin -16.8 and tmax -15.8; that factor is computed once per catchment and date.
-    keys, inverse = np.unique(np.c_[codes // (len(LEAD_GROUPS) * 12), rows['valid_date'].astype(int)],
+    keys, inverse = np.unique(np.c_[codes // (len(groups) * 12), rows['valid_date'].astype(int)],
                               axis=0, return_inverse=True)
     factor = np.array([hargreaves_pet(-16.8, -16.8, -15.8, mapping['latitudes'][mapping['projects'][code]],
                                       np.datetime64(int(day), 'D').astype(object)) for code, day in keys])
@@ -164,20 +167,20 @@ def adjust(rows, mapping):
 def save(mapping, path):
     import pyarrow as pa
     import pyarrow.parquet as pq
-    parts = []
+    parts, leads = [], mapping['lead_groups']
     for column, (xq, yq) in mapping['quantiles'].items():
         groups = np.flatnonzero(np.isfinite(xq[:, 0]))
         base, month = np.divmod(groups, 12)
-        project, lead = np.divmod(base, len(LEAD_GROUPS))
+        project, lead = np.divmod(base, len(leads))
         repeat = lambda array: np.repeat(array, len(LEVELS))
         parts.append(pa.table({
             'column': [column] * len(groups) * len(LEVELS),
             'project_id': repeat(np.array(mapping['projects'], dtype=object)[project]),
-            'first_lead_day': repeat(np.array(LEAD_GROUPS)[lead]).astype('int16'),
+            'first_lead_day': repeat(np.array(leads)[lead]).astype('int16'),
             'month': repeat(month + 1).astype('int8'),
             'level': np.tile(LEVELS, len(groups)),
             'forecast': xq[groups].ravel(), 'history': yq[groups].ravel()}))
-    info = dict(mapping['info'], projects=mapping['projects'], lead_groups=LEAD_GROUPS, levels=len(LEVELS),
+    info = dict(mapping['info'], projects=mapping['projects'], lead_groups=list(leads), levels=len(LEVELS),
                 curves=mapping['curves'], latitudes=mapping['latitudes'])
     table = pa.concat_tables(parts)
     pq.write_table(table.replace_schema_metadata({'catchment_forecast': json.dumps(info)}), path,
@@ -188,23 +191,24 @@ def load(path):
     import pyarrow.parquet as pq
     table = pq.read_table(path)
     info = json.loads(table.schema.metadata[b'catchment_forecast'])
-    if tuple(info['lead_groups']) != LEAD_GROUPS or info['levels'] != len(LEVELS):
-        raise ValueError(f'{path} was fitted with other lead groups or quantile levels')
-    projects = info['projects']
+    if info['levels'] != len(LEVELS):
+        raise ValueError(f'{path} was fitted with other quantile levels')
+    projects, groups = info['projects'], tuple(info.pop('lead_groups'))
     position = {project: i for i, project in enumerate(projects)}
-    count = len(projects) * len(LEAD_GROUPS) * 12
+    count = len(projects) * len(groups) * 12
     rows = {name: table[name].to_numpy(zero_copy_only=False) for name in table.column_names}
     quantiles = {}
     for column in np.unique(rows['column']):
         at = np.flatnonzero(rows['column'] == column)[::len(LEVELS)]
-        groups = ((np.array([position[p] for p in rows['project_id'][at]]) * len(LEAD_GROUPS)
-                   + np.searchsorted(LEAD_GROUPS, rows['first_lead_day'][at])) * 12 + rows['month'][at] - 1)
+        codes = ((np.array([position[p] for p in rows['project_id'][at]]) * len(groups)
+                  + np.searchsorted(groups, rows['first_lead_day'][at])) * 12 + rows['month'][at] - 1)
         xq, yq = np.full((count, len(LEVELS)), np.nan), np.full((count, len(LEVELS)), np.nan)
         span = at[:, None] + np.arange(len(LEVELS))
-        xq[groups], yq[groups] = rows['forecast'][span], rows['history'][span]
+        xq[codes], yq[codes] = rows['forecast'][span], rows['history'][span]
         quantiles[column] = xq, yq
     curves = {project: tuple(curve) for project, curve in info.pop('curves').items()}
-    return dict(projects=projects, curves=curves, latitudes=info.pop('latitudes'), info=info, quantiles=quantiles)
+    return dict(projects=projects, curves=curves, latitudes=info.pop('latitudes'), info=info, lead_groups=groups,
+                quantiles=quantiles)
 
 
 def write(tables, rows, values, output):
@@ -275,7 +279,7 @@ def check(tables, rows, values, history, path):
                             f'{total[key][lead, select].sum() / cases:.6g}' for key in CHECK[4:]])
 
 
-def hindcast(forecast, history_path, geojson, output):
+def hindcast(forecast, history_path, geojson, output, groups=LEAD_GROUPS, mapping_only=False):
     paths = sorted(forecast.glob(START))
     if not paths:
         raise ValueError(f'No start tables in {forecast}')
@@ -292,23 +296,27 @@ def hindcast(forecast, history_path, geojson, output):
     years = sorted(set(rows['year'].tolist()))
     print(f'{len(paths)} starts of {forecast.name}, {len(rows["year"]):,} rows, years {years}; '
           f'mapping {", ".join(columns)}', flush=True)
+    output.mkdir(parents=True, exist_ok=True)
+    info = dict(system=forecast.name, starts=[paths[0].stem, paths[-1].stem, len(paths)],
+                history=history_path.name)
+    if mapping_only:
+        save(fit(rows, history, columns, projects, curves, latitudes, info, groups), output / 'mapping.parquet')
+        print(f'Wrote mapping.parquet to {output}', flush=True)
+        return
     values = None
     for year in years:
         train, target = rows['year'] != year, rows['year'] == year
         mapping = fit({k: v[train] for k, v in rows.items()}, {k: v[train] for k, v in history.items()},
-                      columns, projects, curves, latitudes, {})
+                      columns, projects, curves, latitudes, {}, groups)
         part = adjust({k: v[target] for k, v in rows.items()}, mapping)
         if values is None:
             values = {column: np.full(len(target), np.nan) for column in part}
         for column, array in part.items():
             values[column][target] = array
         print(f'{year}: mapped with a fit on the other years', flush=True)
-    output.mkdir(parents=True, exist_ok=True)
     write(tables, rows, values, output)
     check(tables, rows, values, history, output / 'check.csv')
-    info = dict(system=forecast.name, starts=[paths[0].stem, paths[-1].stem, len(paths)],
-                history=history_path.name)
-    save(fit(rows, history, columns, projects, curves, latitudes, info), output / 'mapping.parquet')
+    save(fit(rows, history, columns, projects, curves, latitudes, info, groups), output / 'mapping.parquet')
     print(f'Wrote {len(paths)} adjusted starts, check.csv and mapping.parquet to {output}', flush=True)
 
 
@@ -340,13 +348,21 @@ def main(argv=None):
     fit_parser.add_argument('--history', required=True, type=Path, help='Delivered history table (Parquet)')
     fit_parser.add_argument('--geojson', required=True, type=Path, help='Catchment polygons, for PET latitudes')
     fit_parser.add_argument('--output', required=True, type=Path)
+    fit_parser.add_argument('--lead-groups', type=int, nargs='+', default=LEAD_GROUPS,
+                            help='First lead day of each group (default %(default)s; EXTENDED_GROUPS for the '
+                                 'extended-range and seasonal systems)')
+    fit_parser.add_argument('--mapping-only', action='store_true',
+                            help='Only the fit on every year, without the adjusted hindcasts and check.csv')
     apply_parser = commands.add_parser('apply', help='Map start tables with a saved mapping')
     apply_parser.add_argument('--mapping', required=True, type=Path)
     apply_parser.add_argument('--forecast', required=True, nargs='+', type=Path, help='Start tables')
     apply_parser.add_argument('--output', required=True, type=Path)
     args = parser.parse_args(argv)
     if args.command == 'hindcast':
-        hindcast(args.forecast, args.history, args.geojson, args.output)
+        if list(args.lead_groups) != sorted(set(args.lead_groups)) or args.lead_groups[0] != 1:
+            parser.error('--lead-groups must rise from 1')
+        hindcast(args.forecast, args.history, args.geojson, args.output, tuple(args.lead_groups),
+                 args.mapping_only)
     else:
         apply(args.mapping, args.forecast, args.output)
     return 0

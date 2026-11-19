@@ -1,8 +1,8 @@
 """Download GEFS forecasts from NOAA's archive on AWS, only the fields the catchment tables use.
 
     python -m catchment_forecast.gefs --start 2024-01-01 --end 2024-01-31 --archive ARCHIVE \\
-        [--geojson CATCHMENTS --output OUTPUT [--delete]] [--every-day] [--members 31] [--hours 528] [--weather] \\
-        [--source ADDRESS]
+        [--geojson CATCHMENTS --output OUTPUT [--delete]] [--every-day] [--members 31] [--hours 528] \\
+        [--weather | --extended] [--source ADDRESS]
 
 GEFS v12 runs a control and 30 perturbed members; the 00 UTC run goes to 35
 days on a 0.5 degree grid. The archive holds every run since 2017, and each
@@ -14,7 +14,10 @@ for 22 days. With --weather only WEATHER_FIELDS are fetched, the fields the
 forecast product takes from a system's own weather (2 m temperature and dew
 point, 10 m wind, precipitation, downward shortwave), about 0.1 GB a member;
 the tables then hold the weather columns only, which is what a GEFS hindcast
-needs as a third ensemble beside the AI systems. The starts are those of the
+needs as a third ensemble beside the AI systems. --extended adds the fields of
+net radiation and the top soil temperature (EXTENDED_FIELDS), for the
+extended-range table, which takes a run to 35 days (--hours 840); its tables go
+to OUTPUT/gefs35, apart from those of the product. The starts are those of the
 AI hindcasts (00 UTC on days 1, 5, ..., 29), or every day with --every-day.
 The first day of every run (--every-day --hours 24, a few members) is what
 bridges the days between the end of the history table and a forecast start.
@@ -62,6 +65,11 @@ WEATHER_FIELDS = {
     'a': ('TMP:2 m above ground', 'UGRD:10 m above ground', 'VGRD:10 m above ground', 'APCP:surface',
           'DSWRF:surface'),
     'b': ('DPT:2 m above ground',),
+}
+# The fields of --extended: the weather fields, net radiation and the top soil temperature.
+EXTENDED_FIELDS = {
+    'a': WEATHER_FIELDS['a'] + ('USWRF:surface', 'DLWRF:surface', 'ULWRF:surface', 'TSOIL:0-0.1 m below ground'),
+    'b': WEATHER_FIELDS['b'],
 }
 ONCE_STEP = 6
 # Fields with a period (6 h means and amounts) are missing at step 0.
@@ -133,9 +141,11 @@ def ranges(index, wanted):
 
 
 def step_bytes(day, member, step, weather=False):
-    """The wanted messages of one member and step, from both files."""
+    """The wanted messages of one member and step, from both files; weather is False (every field), True
+    (WEATHER_FIELDS) or 'extended' (EXTENDED_FIELDS)."""
     parts = []
-    for kind, wanted in (WEATHER_FIELDS if weather else FIELDS).items():
+    chosen = EXTENDED_FIELDS if weather == 'extended' else WEATHER_FIELDS if weather else FIELDS
+    for kind, wanted in chosen.items():
         wanted = set(wanted) | (set(ONCE.get(kind, ())) if step == ONCE_STEP and not weather else set())
         expected = wanted if step else wanted - PERIOD
         address = url(day, member, kind, step)
@@ -206,9 +216,12 @@ def main(argv=None):
     parser.add_argument('--members', type=int, default=31, help='Control and perturbed members (default 31)')
     parser.add_argument('--workers', type=int, default=16, help='Parallel requests (default 16)')
     parser.add_argument('--hours', type=int, default=HOURS, help=f'Last step, whole days (default {HOURS})')
-    parser.add_argument('--weather', action='store_true',
+    fields = parser.add_mutually_exclusive_group()
+    fields.add_argument('--weather', action='store_true',
                         help='Only the fields the product takes from the weather: temperature, dew point, wind, '
                              'precipitation, shortwave (about a quarter of the bytes)')
+    fields.add_argument('--extended', action='store_true',
+                        help='The weather fields, net radiation and top soil temperature, into OUTPUT/gefs35')
     parser.add_argument('--source', default=BUCKET,
                         help=f'Address or folder holding gefs.YYYYMMDD/ (default {BUCKET})')
     args = parser.parse_args(argv)
@@ -219,14 +232,16 @@ def main(argv=None):
     catchments = output = None
     if args.output is not None:
         from .aggregate import Catchments
-        catchments, output = Catchments(args.geojson), args.output / 'gefs'
+        catchments, output = Catchments(args.geojson), args.output / ('gefs35' if args.extended else 'gefs')
         output.mkdir(parents=True, exist_ok=True)
     BUCKET = args.source.rstrip('/')
     days = starts(args.start, args.end, args.every_day)
+    weather = 'extended' if args.extended else args.weather
     print(f'{len(days)} GEFS starts, {args.members} members to {args.hours} h'
-          f'{", weather fields only" if args.weather else ""}, from {BUCKET} into {args.archive}', flush=True)
+          f'{", weather fields only" if args.weather else ", extended fields" if args.extended else ""}, '
+          f'from {BUCKET} into {args.archive}', flush=True)
     run(days, args.archive, members(args.members), args.workers, args.hours, catchments, output, args.delete,
-        args.weather)
+        weather)
     return 0
 
 

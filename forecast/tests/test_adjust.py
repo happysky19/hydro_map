@@ -175,7 +175,8 @@ def test_a_group_without_a_fit_stops_the_run():
     quantiles = np.full((len(adjust.LEAD_GROUPS) * 12, len(adjust.LEVELS)), np.nan)
     with pytest.raises(ValueError, match='No fit for ALPHA, lead days from 1, month 1'):
         adjust.adjust(rows, dict(projects=['ALPHA'], quantiles={'tmean_degC': (quantiles, quantiles)},
-                                 curves={'ALPHA': (0., 1.)}, latitudes={'ALPHA': 50.}))
+                                 curves={'ALPHA': (0., 1.)}, latitudes={'ALPHA': 50.},
+                                 lead_groups=adjust.LEAD_GROUPS))
 
 
 def test_every_forecast_column_is_mapped_additively_or_by_ratio():

@@ -10,11 +10,16 @@ member and catchment, and nothing depends on how many members a system has.
 
 | Module | What it does |
 | --- | --- |
-| `aggregate` | AIFS-ENS, WeatherNext 2 and GEFS GRIB archives to one Parquet table per start |
+| `aggregate` | AIFS-ENS, WeatherNext 2, GEFS, IFS ENS, CFSv2, EC46 and SEAS5 GRIB files to one Parquet table per start |
 | `adjust` | Map the start tables onto the history table: hindcasts year by year, operational starts with a saved mapping |
 | `complete` | Make every other history column for each member from its own adjusted weather: a degree-day snowpack, regressions and persistence fitted on the history |
 | `gefs` | Download GEFS (control and 30 members) from NOAA's archive on AWS, only the fields used, and aggregate each start |
 | `tigge` | Download IFS ENS (control and 50 members) from TIGGE on the ECMWF Data Store |
+| `ifs` | Download IFS ENS from ECMWF's open data, the weather fields only, and aggregate each start |
+| `cfs` | Download CFSv2 runs (member 01, to six months) from NOAA's archive on AWS and aggregate each |
+| `s2s` | Download ECMWF's extended range (EC46) and its reforecasts from the S2S archive on the ECMWF Data Store |
+| `seas5` | Download SEAS5 starts from the Copernicus Climate Data Store |
+| `extended` | The extended-range and seasonal table of a day from the latest run of each system |
 
 ## Aggregate a hindcast archive
 
@@ -185,6 +190,10 @@ it has the dates. On the cluster, once the start tables are there,
 adjustments (`OUTPUT/gefs` too, where it exists), the hindcast fit and
 completion, and the operational fit in one job.
 
+`complete run --overwrite` rebuilds existing products through a temporary file,
+replacing each one only after its new table is written. The daily job uses this
+when a later system arrives. Without the flag, existing products are skipped.
+
 ## Operations
 
 ```bash
@@ -221,6 +230,77 @@ the top of the script). Run it from `scrontab` once the runs are in, more than
 once a morning if wanted: a run that finds another going stops, and a later
 one finds the history up to date and remakes the product with what has
 arrived since.
+
+## IFS ENS from ECMWF's open data
+
+```bash
+python -m catchment_forecast.ifs --start 2024-06-01 --end 2025-12-31 --members 11 --archive ARCHIVE \
+    --geojson CATCHMENTS --output OUTPUT --delete
+```
+
+ECMWF's open data hold the 00 UTC ENS (control and 50 members, 0.25°) to
+360 h, one file per step with a JSON index. Only the fields of a system's own
+weather in the product are fetched (2 m temperature and dew point and 10 m wind
+every 6 h, precipitation and downward shortwave at the end of each day), about
+145 MB a member, from Google's copy of the open data, which keeps every day from
+mid 2023; these fields are there from June 2024. IFS is then a fourth system of
+the product, mapped on its hindcast and completed like the AI systems:
+`product_hindcast.sbatch` takes `OUT/ifs` when it is there, and
+`daily_product.sbatch` fetches the start's run when the hindcast has
+`ifs_adjusted`. The run is complete about 08:00 UTC; until its last step is in,
+the product leaves it out.
+
+## The extended-range and seasonal table
+
+Beyond the product's 15 to 22 days, each day also gets a table of the latest
+run of four systems, each mapped onto the history with a mapping fitted on its
+own hindcast (`adjust hindcast --lead-groups` with `EXTENDED_GROUPS`: weeks to
+day 46, then months), with the twelve columns of `extended.COLUMNS`:
+
+| System | Source | Run used on day D | Members | Days | Hindcast for the mapping |
+| --- | --- | --- | --- | --- | --- |
+| `ec46` | ECMWF extended range, S2S archive (CC BY 4.0, open 48 h after the start) | D - 2 | 101 | 46 | reforecasts of 20 model dates of 2026 over 2006-2025, 11 members |
+| `gefs` | GEFS on AWS, `gefs --extended` | D - 1 (35 days only the next day) | 31 | 35 | AI hindcast starts of 2023-2025, 11 members |
+| `cfs` | CFSv2 time series on AWS | the four runs of each of the last 7 days | 28 | 183 | 00 UTC runs on the AI hindcast days from May 2023 |
+| `seas5` | SEAS5, Copernicus Climate Data Store | the latest month released before D at 00 UTC | 51 | 184 | starts of 2006-2025, 11 members |
+
+Each system brings its own fields for all twelve columns: tmax and tmin from its
+own extremes (6 h for CFSv2 and EC46, 24 h for SEAS5), net radiation from its
+net shortwave and longwave, the top soil layer (0-10 cm in CFSv2, 0-20 cm in
+EC46, 0-7 cm in SEAS5) mapped onto the history's. EC46 gives daily means of
+temperature and dew point, and 10 m wind at 00 UTC. A CFSv2 run from 06, 12 or
+18 UTC starts its lead days at the next whole UTC day.
+
+```bash
+sbatch --export=ALL --array=0-31%2 -A ACCOUNT -p PARTITION forecast/scripts/hindcast_tables.sbatch cfs ARCHIVE CATCHMENTS OUT 2023-05
+sbatch --export=ALL -A ACCOUNT -p PARTITION forecast/scripts/extended_hindcast.sbatch HISTORY CATCHMENTS OUT
+sbatch --export=ALL -A ACCOUNT -p PARTITION forecast/scripts/daily_extended.sbatch CATCHMENTS HINDCAST OPS [DATE]
+```
+
+`hindcast_tables.sbatch` makes the start tables of `ifs`, `cfs` and `gefs35`,
+one month per array task. `extended_hindcast.sbatch` downloads the EC46
+reforecasts and the SEAS5 starts (the Data Stores need the account's key in
+`~/.cdsapirc` and the S2S and seasonal licences accepted) and fits the mapping
+of each extended system whose tables are there. `daily_extended.sbatch` makes
+`OPS/extended/DATE.parquet`, and `daily_ops.sh` runs it after the product once
+any of these mappings exists.
+
+The seasonal run is selected using what was released before `DATE` at 00 UTC.
+The CDS releases ECMWF seasonal data on the 6th at 12 UTC, so dates through
+the 6th use the preceding month. A historical rebuild also excludes newer
+monthly starts already cached on disk. See the [CDS dataset description](https://cds.climate.copernicus.eu/datasets/seasonal-original-single-levels?tab=overview).
+
+Use a separate raw archive for each system and field set. `--delete` removes
+a downloaded start only after its Parquet table is written. IFS records a
+completed member set before aggregation; an interrupted download without that
+record is fetched again. EC46 retains its raw response if aggregation fails.
+Keep the small Parquet tables and fitted mappings; reruns reuse them.
+
+For date-parallel operational backfills, prepare the shared GEFS day-1 tables
+and their adjusted tables once before submitting the date array. Each date
+then writes its own product; avoid two jobs for the same date. Reserve a new
+product directory when adding IFS to an existing hindcast: existing hindcast
+products are skipped unless explicitly rebuilt with `complete run --overwrite`.
 
 ## Download IFS ENS from TIGGE
 

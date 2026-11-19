@@ -273,3 +273,16 @@ def test_a_fit_with_other_settings_is_refused(world, tmp_path):
     (tmp_path / 'other.json').write_text(json.dumps(fitted))
     with pytest.raises(ValueError, match='another anchor'):
         complete.load_fit(tmp_path / 'other.json')
+
+
+def test_overwrite_refreshes_a_product_when_another_system_arrives(world, tmp_path):
+    root, _ = world
+    args = ['run', '--fit', str(root / 'completion.json'), '--history', str(root / 'history.parquet'),
+            '--forecast', str(root / 'aifs_adjusted'), '--gap', str(root / 'gefs_day1_adjusted'),
+            '--output', str(tmp_path), '--start', '2024-04-02', '--end', '2024-04-02']
+    path = tmp_path / '2024040200.parquet'
+    path.write_bytes((root / 'product' / path.name).read_bytes())
+    complete.main(args)
+    assert set(pq.read_table(path)['system'].to_pylist()) == {'aifs', 'wn2'}
+    complete.main(args + ['--overwrite'])
+    assert set(pq.read_table(path)['system'].to_pylist()) == {'aifs'}

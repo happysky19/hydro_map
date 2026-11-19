@@ -339,3 +339,29 @@ def test_gefs_archive_to_parquet(tmp_path):
     with pytest.raises(ValueError, match='no dswrf'):
         aggregate.main(['--system', 'gefs', '--archive', str(tmp_path / 'archive'), '--geojson', str(geojson),
                         '--output', str(tmp_path / 'out')])
+
+
+@pytest.mark.parametrize('first, last', [(0., 359.75), (-180., 179.75), (180., 179.75)])
+def test_regular_grids_take_longitudes_eastwards_from_the_first_point(tmp_path, first, last):
+    """ECMWF's open data run from 180 to 179.75, wrapping past the date line."""
+    def setup(handle):
+        regular_quarter_degree(handle)
+        eccodes.codes_set(handle, 'longitudeOfFirstGridPointInDegrees', first)
+        eccodes.codes_set(handle, 'longitudeOfLastGridPointInDegrees', last)
+    path = tmp_path / 'grid.grib2'
+    with open(path, 'wb') as stream:
+        handle = eccodes.codes_grib_new_from_samples('regular_ll_sfc_grib2')
+        setup(handle)
+        lon = (first + 0.25 * np.arange(1440) + 180) % 360 - 180
+        values = np.tile(lon, 721)   # each point holds its own longitude
+        eccodes.codes_set_values(handle, values)
+        eccodes.codes_write(handle, stream)
+        eccodes.codes_release(handle)
+    catchments = aggregate.Catchments.__new__(aggregate.Catchments)
+    catchments.geometries, catchments.grids = list(CATCHMENTS.values()), {}
+    with open(path, 'rb') as stream:
+        handle = eccodes.codes_grib_new_from_file(stream)
+        points, matrix = aggregate.grid_weights(eccodes, handle, catchments)
+        means = grids.area_mean(matrix, eccodes.codes_get_values(handle)[points])
+        eccodes.codes_release(handle)
+    np.testing.assert_allclose(means, [-118.5, -122.15], atol=0.1)

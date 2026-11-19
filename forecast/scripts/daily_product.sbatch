@@ -14,8 +14,9 @@
 # When HINDCAST has gefs_adjusted (GEFS as a third ensemble), the start's GEFS run is fetched the same way,
 # GEFS_MEMBERS members (default 11) with the weather fields to GEFS_HOURS (default 528; 384 for a morning run,
 # as GEFS reaches 16 days about 06:30 UTC and 22 days only the next day). GEFS comes from NOAA's archive on AWS,
-# or from GEFS_SOURCE (an address or folder with the same layout). A system whose run is not there yet is left
-# out; the product is remade when the job runs again.
+# or from GEFS_SOURCE (an address or folder with the same layout). When HINDCAST has ifs_adjusted, the start's
+# IFS ENS run is fetched from ECMWF's open data once its last step is in (IFS_MEMBERS, default 51; IFS_SOURCE for
+# another copy). A system whose run is not there yet is left out; the product is remade when the job runs again.
 #SBATCH --job-name=fc-daily
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=8G
@@ -46,7 +47,7 @@ source=()
 gap=()
 for i in 5 4 3 2 1; do
     table=$ops/gefs_day1/gefs/$(before $i | tr -d -)00.parquet
-    [[ -f $table ]] && gap+=("$table")
+    [[ -f $table && ! -f $ops/gefs_day1_adjusted/$(basename "$table") ]] && gap+=("$table")
 done
 if (( ${#gap[@]} )); then
     "$python" -m catchment_forecast.adjust apply --mapping "$hindcast/gefs_day1_adjusted/mapping.parquet" \
@@ -81,10 +82,23 @@ if [[ -f $hindcast/gefs_adjusted/mapping.parquet ]]; then
         forecasts+=("$ops/gefs_adjusted")
     fi
 fi
+# The start's IFS ENS run, when the hindcast has IFS; left out until its last step is in.
+if [[ -f $hindcast/ifs_adjusted/mapping.parquet ]]; then
+    ifs_source=()
+    [[ -n ${IFS_SOURCE:-} ]] && ifs_source=(--source "$IFS_SOURCE")
+    "$python" -m catchment_forecast.ifs --start "$day" --end "$day" --every-day --members "${IFS_MEMBERS:-51}" \
+        --archive "$ops/ifs_archive" --geojson "$geojson" --output "$ops" --delete ${ifs_source[@]+"${ifs_source[@]}"} \
+        || echo "ifs: the run $start failed"
+    if [[ -f $ops/ifs/$start.parquet ]]; then
+        "$python" -m catchment_forecast.adjust apply --mapping "$hindcast/ifs_adjusted/mapping.parquet" \
+            --forecast "$ops/ifs/$start.parquet" --output "$ops/ifs_adjusted"
+        forecasts+=("$ops/ifs_adjusted")
+    fi
+fi
 if (( ${#forecasts[@]} == 0 )); then
     echo "No run of $start is in yet" >&2
     exit 1
 fi
-rm -f "$ops/product/$start.parquet"
 "$python" -m catchment_forecast.complete run --fit "$hindcast/completion_ops.json" --history "$history" \
-    --forecast "${forecasts[@]}" --gap "$ops/gefs_day1_adjusted" --output "$ops/product" --start "$day" --end "$day"
+    --forecast "${forecasts[@]}" --gap "$ops/gefs_day1_adjusted" --output "$ops/product" --start "$day" --end "$day" \
+    --overwrite

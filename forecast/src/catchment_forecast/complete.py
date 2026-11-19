@@ -421,7 +421,7 @@ def write_start(parts, projects, path):
     path.with_suffix('.part').replace(path)
 
 
-def run(fit_path, history_path, forecasts, gap, output, first=None, last=None):
+def run(fit_path, history_path, forecasts, gap, output, first=None, last=None, overwrite=False):
     import pyarrow.parquet as pq
     fitted = load_fit(fit_path)
     available = set(pq.read_schema(history_path).names)
@@ -441,7 +441,7 @@ def run(fit_path, history_path, forecasts, gap, output, first=None, last=None):
     sums, written = {}, 0
     for path in paths:
         target = output / path.name
-        if target.exists():
+        if target.exists() and not overwrite:
             continue
         start = np.datetime64(f'{path.stem[:4]}-{path.stem[4:6]}-{path.stem[6:8]}', 'D')
         weather = gap_weather(gap, start, fitted['projects'])
@@ -482,11 +482,13 @@ def main(argv=None):
     run_parser.add_argument('--output', required=True, type=Path)
     run_parser.add_argument('--start', type=date.fromisoformat, help='First start date')
     run_parser.add_argument('--end', type=date.fromisoformat, help='Last start date')
+    run_parser.add_argument('--overwrite', action='store_true',
+                            help='Atomically replace existing products after a successful rebuild')
     args = parser.parse_args(argv)
     if args.command == 'fit':
         fit(args.history, args.before, args.output)
     else:
-        run(args.fit, args.history, args.forecast, args.gap, args.output, args.start, args.end)
+        run(args.fit, args.history, args.forecast, args.gap, args.output, args.start, args.end, args.overwrite)
     return 0
 
 

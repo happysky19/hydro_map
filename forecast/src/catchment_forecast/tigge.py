@@ -95,20 +95,20 @@ def say(text):
     print(f'{datetime.now(timezone.utc):%Y-%m-%d %H:%M:%S}Z {text}', flush=True)
 
 
-def client():
+def client(url=URL):
     import cdsapi
     rc = Path.home() / '.cdsapirc'
     key = next(line.split(':', 1)[1].strip() for line in rc.read_text().splitlines() if line.startswith('key'))
-    return cdsapi.Client(url=URL, key=key, quiet=True, progress=False, retry_max=5, sleep_max=120, timeout=1800)
+    return cdsapi.Client(url=url, key=key, quiet=True, progress=False, retry_max=5, sleep_max=120, timeout=1800)
 
 
-def retrieve(api, body, target, attempts=4, wait=600):
+def retrieve(api, body, target, attempts=4, wait=600, dataset=DATASET):
     """Write one request to TARGET through a temporary file; retry a full queue and other failures."""
     partial = target.with_suffix('.part')
     for attempt in range(1, attempts + 1):
         begin = time.time()
         try:
-            api.retrieve(DATASET, body, str(partial))
+            api.retrieve(dataset, body, str(partial))
             partial.replace(target)
             return True
         except Exception as error:   # the Data Store reports every failure as an exception
