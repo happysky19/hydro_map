@@ -44,9 +44,9 @@ from .tigge import client, retrieve, say
 
 
 URL = 'https://ecds.ecmwf.int/api'
-# N, W, S, E: the catchments (41.1-52.9 N, 122.8-109.8 W) with a margin. The Data Store keeps the points of
-# its own grid inside the box, so the 1.5-degree points start at 42 N for a box from 41 N: 39 N leaves a cell.
-AREA = [59, -127, 39, -108]
+# N, W, S, E: include the western catchments reaching 127.7 W and a margin for grid cells. The Data Store
+# keeps grid points inside the box; 39 N also leaves a cell south of the catchments on a 1.5-degree grid.
+AREA = [60, -130, 39, -108]
 HOURS = 1104
 # Every variable at every 6 h step and as the mean of every day: the Data Store returns the daily means of 2 m
 # temperature, dew point and soil temperature, the 6 h extremes, and the other fields at their steps.

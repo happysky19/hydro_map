@@ -183,7 +183,7 @@ def test_s2s_requests_and_seas5_months():
 
 
 @pytest.mark.parametrize('system, spacing', [('ec46', 1.5), ('seas5', 1.)])
-def test_requested_grid_covers_the_southern_and_northern_catchments(system, spacing):
+def test_requested_grid_covers_southern_northern_and_western_catchments(system, spacing):
     from shapely.geometry import box
     from catchment_forecast import grids
     request = (s2s.body(date(2026, 1, 17), ['cf']) if system == 'ec46'
@@ -194,8 +194,10 @@ def test_requested_grid_covers_the_southern_and_northern_catchments(system, spac
     cells = grids.regular_cells(lat[(lat >= south) & (lat <= north)][::-1],
                                 lon[(lon >= west) & (lon <= east)])
     # The southern polygon extends below the 41.25 N edge of a crop whose first 1.5-degree point is 42 N.
-    _, matrix = grids.weights([box(-122.2, 41.1, -122., 41.3), box(-121., 58.1, -120.8, 58.3)], cells)
-    np.testing.assert_allclose(grids.area_mean(matrix, np.ones(matrix.shape[1])), [1., 1.])
+    # The western catchments extend beyond the previous request boundary at 127 W.
+    _, matrix = grids.weights([box(-122.2, 41.1, -122., 41.3), box(-121., 58.1, -120.8, 58.3),
+                                box(-127.7, 55., -127.5, 55.2)], cells)
+    np.testing.assert_allclose(grids.area_mean(matrix, np.ones(matrix.shape[1])), [1., 1., 1.])
 
 
 def test_extended_table_names_cfs_members_by_run(tmp_path):
