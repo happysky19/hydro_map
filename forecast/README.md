@@ -41,6 +41,13 @@ Submit it from the repository root with the Python to use as `PYTHON`:
 sbatch --export=ALL -A ACCOUNT -p PARTITION forecast/scripts/aggregate_hindcast.sbatch aifs ARCHIVE CATCHMENTS OUTPUT [FIRST_MONTH]
 ```
 
+WeatherNext 2 accepts both historical `predictions_hres_*.grib` files and
+operational `wn2_pNN_latlon.grib` files, directly in the start folder or one
+level below (for example, `FCST`). Historical checkpoint/seed IDs are retained;
+operational members retain their `pNN` IDs without inferring a checkpoint from
+the number. Duplicate normalized member IDs stop aggregation. Confirm model
+and initialization compatibility before reusing a historical mapping.
+
 A member of about 1.3 GB (AIFS) or 2.3 GB (WeatherNext 2) takes 2-5 s on the
 cluster, in under 200 MB of memory; a start of 21 members about a minute and
 a half.
@@ -48,10 +55,10 @@ a half.
 Lead day d is hours 24(d-1) to 24d after the start. Precipitation is the 24 h
 amount; temperatures, wind and humidity use the samples at 0, 6, 12 and 18 h of
 the day, so tmax and tmin come from four samples (three on WeatherNext 2's
-first day, which has no step 0). Amounts are converted from the units each
-GRIB field declares (m or kg/m2 of precipitation, J/m2 of radiation); other
-units stop the run. Rainfall and snowfall come from the adjustment against the
-history tables.
+first day; step 0 is ignored even when operational files include it). Amounts
+are converted from the units each GRIB field declares (m or kg/m2 of precipitation,
+J/m2 of radiation); other units stop the run. Rainfall and snowfall come from the
+adjustment against the history tables.
 
 | Column | AIFS-ENS | WeatherNext 2 | GEFS |
 | --- | --- | --- | --- |
@@ -270,6 +277,13 @@ net shortwave and longwave, the top soil layer (0-10 cm in CFSv2, 0-20 cm in
 EC46, 0-7 cm in SEAS5) mapped onto the history's. EC46 gives daily means of
 temperature and dew point, and 10 m wind at 00 UTC. A CFSv2 run from 06, 12 or
 18 UTC starts its lead days at the next whole UTC day.
+
+Source-window temperature extrema are widened only when necessary to enclose
+the sampled daily mean before PET is calculated. This handles a UTC-day-start
+sample outside the following source windows without changing the daily mean.
+A missing required extrema window remains missing. Existing cached tables and
+mappings are not automatically invalidated: rebuild affected source tables and
+their mappings together in a separate workspace when adopting this definition.
 
 ```bash
 sbatch --export=ALL --array=0-31%2 -A ACCOUNT -p PARTITION forecast/scripts/hindcast_tables.sbatch cfs ARCHIVE CATCHMENTS OUT 2023-05

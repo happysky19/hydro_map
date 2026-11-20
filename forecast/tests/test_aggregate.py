@@ -365,3 +365,51 @@ def test_regular_grids_take_longitudes_eastwards_from_the_first_point(tmp_path, 
         means = grids.area_mean(matrix, eccodes.codes_get_values(handle)[points])
         eccodes.codes_release(handle)
     np.testing.assert_allclose(means, [-118.5, -122.15], atol=0.1)
+
+
+@pytest.mark.parametrize('decoy', ['wn2_p63_f006_latlon.grib', 'wn2_p63_ckpt1_latlon.grib'])
+def test_operational_wn2_files_keep_member_ids_and_hindcast_day_one_samples(tmp_path, decoy):
+    import pyarrow.parquet as pq
+    start = tmp_path / 'archive' / '2026111500' / 'FCST'
+    start.mkdir(parents=True)
+    fields = synthetic('wn2', 1)
+    # Operational files add step zero; it must not change the hindcast's day-one definition.
+    for name in ('2t', '10u', '10v', 'tp'):
+        fields[name, 0] = np.array([999.])
+
+    def setup(handle):
+        for key, value in [('Ni', 5), ('Nj', 5), ('latitudeOfFirstGridPointInDegrees', 53.),
+                           ('latitudeOfLastGridPointInDegrees', 45.), ('longitudeOfFirstGridPointInDegrees', 236.),
+                           ('longitudeOfLastGridPointInDegrees', 244.), ('iDirectionIncrementInDegrees', 2.),
+                           ('jDirectionIncrementInDegrees', 2.)]:
+            eccodes.codes_set(handle, key, value)
+
+    for member in ('p00', 'p63'):
+        write_grib(start / f'wn2_{member}_latlon.grib', 'regular_ll_sfc_grib2', setup, fields)
+    (start / 'wn2_p63_f006.grib').touch()  # a per-step file is not another member
+    (start.parent / decoy).touch()  # a root-level decoy must not hide the complete FCST files
+    geojson = tmp_path / 'catchments.geojson'
+    geojson.write_text(json.dumps(dict(type='FeatureCollection', features=[
+        dict(type='Feature', properties=dict(id=key, part='local'), geometry=mapping(geometry))
+        for key, geometry in CATCHMENTS.items()])))
+    assert aggregate.main(['--system', 'wn2', '--archive', str(tmp_path / 'archive'),
+                           '--geojson', str(geojson), '--output', str(tmp_path / 'out')]) == 0
+    rows = pq.read_table(tmp_path / 'out' / 'wn2' / '2026111500.parquet').to_pydict()
+    assert sorted(set(rows['member'])) == ['p00', 'p63']
+    keys = list(zip(*(rows[key] for key in ('init_time', 'member', 'lead_day', 'project_id'))))
+    assert len(keys) == len(set(keys)) == 8
+    assert sorted(set(rows['valid_date'])) == [date(2026, 11, 15), date(2026, 11, 16)]
+    for column, value in [('tmean_degC', 10.), ('tmax_degC', 10.), ('tmin_degC', 10.),
+                          ('precipitation_mm', 4.), ('wind_speed_m_s', 5.)]:
+        np.testing.assert_allclose(rows[column], value, atol=1e-3, err_msg=column)
+
+
+def test_wn2_rejects_duplicate_normalized_member_ids_before_reading_files(tmp_path):
+    from types import SimpleNamespace
+    start = tmp_path / '2026111500'
+    start.mkdir()
+    for name in ('wn2_p00_latlon.grib', 'wn2_p000_latlon.grib'):
+        (start / name).touch()
+    catchments = SimpleNamespace(ids=['MICA'], latitudes=[52.])
+    with pytest.raises(ValueError, match='Duplicate member'):
+        aggregate.run_start('wn2', start, catchments, tmp_path)

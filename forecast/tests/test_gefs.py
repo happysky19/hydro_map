@@ -1,8 +1,54 @@
 from datetime import date
+import http.client
+import io
+import urllib.error
 
 import pytest
 
 from catchment_forecast import gefs
+
+
+@pytest.mark.parametrize('failure', [http.client.IncompleteRead(b'GRIBpartial', 20),
+                                    http.client.BadStatusLine('broken response')])
+def test_http_fetch_retries_interrupted_reads(monkeypatch, failure):
+    class Response(io.BytesIO):
+        def read(self):
+            if attempts == 1:
+                raise failure
+            return super().read()
+
+    attempts = 0
+    def open_url(request, timeout):
+        nonlocal attempts
+        attempts += 1
+        return Response(b'GRIBdata')
+    monkeypatch.setattr(gefs.urllib.request, 'urlopen', open_url)
+    monkeypatch.setattr(gefs.time, 'sleep', lambda _: None)
+    assert gefs.fetch('https://example.invalid/forecast', 0, 7) == b'GRIBdata'
+    assert attempts == 2
+
+
+def test_http_fetch_exhausts_protocol_retries_and_preserves_missing_file_semantics(monkeypatch):
+    attempts = 0
+    def open_url(request, timeout):
+        nonlocal attempts
+        attempts += 1
+        raise http.client.IncompleteRead(b'partial', 20)
+    monkeypatch.setattr(gefs.urllib.request, 'urlopen', open_url)
+    monkeypatch.setattr(gefs.time, 'sleep', lambda _: None)
+    with pytest.raises(RuntimeError, match='https://example.invalid/forecast'):
+        gefs.fetch('https://example.invalid/forecast')
+    assert attempts == 6
+
+    attempts = 0
+    def missing(request, timeout):
+        nonlocal attempts
+        attempts += 1
+        raise urllib.error.HTTPError(request.full_url, 404, 'missing', {}, None)
+    monkeypatch.setattr(gefs.urllib.request, 'urlopen', missing)
+    with pytest.raises(FileNotFoundError):
+        gefs.fetch('https://example.invalid/forecast')
+    assert attempts == 1
 
 
 def test_members_and_starts():

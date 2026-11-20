@@ -54,6 +54,42 @@ def test_cfs_days_take_the_utc_day_of_each_run():
     np.testing.assert_allclose(out['tmean_degC'][1:], 10.)
 
 
+@pytest.mark.parametrize('boundary, column, expected_extreme', [(30., 'tmax_degC', 15.),
+                                                              (-20., 'tmin_degC', 2.5)])
+def test_cfs_extremes_enclose_the_mean_when_a_utc_boundary_sample_falls_outside_windows(boundary, column,
+                                                                                      expected_extreme):
+    from catchment_history.meteorology import hargreaves_pet
+    fields = cfs_fields(6, 90)
+    fields['2t', 18] = np.full(3, boundary + 273.15)
+    # Step 18 is 00 UTC for a 06 UTC run. Its preceding 6 h window ends at this boundary,
+    # but the new UTC day's source extrema windows end at steps 24, 30, 36 and 42.
+    fields['tmax' if boundary > 10 else 'tmin', 18] = np.full(3, boundary + 273.15)
+    out = aggregate.daily(fields, CFS_UNITS, 'cfs', MATRIX, date(2026, 11, 16), LATITUDES, shift=18)
+    np.testing.assert_allclose(out[column][0], expected_extreme)
+    tmean, tmin, tmax = ((15., 8., 15.) if boundary > 10 else (2.5, 2.5, 13.))
+    np.testing.assert_allclose(out['tmean_degC'][0], tmean)
+    expected = [hargreaves_pet(tmean, tmin, tmax, lat, date(2026, 11, 16)) for lat in LATITUDES]
+    np.testing.assert_allclose(out['pet_hargreaves_mm_day'][0], expected)
+    assert np.all(out['tmin_degC'] <= out['tmean_degC'])
+    assert np.all(out['tmean_degC'] <= out['tmax_degC'])
+
+
+def test_cfs_extremes_still_require_every_source_window():
+    fields = cfs_fields(6, 90)
+    fields['2t', 18] = np.full(3, 303.15)
+    del fields['tmax', 30]
+    out = aggregate.daily(fields, CFS_UNITS, 'cfs', MATRIX, date(2026, 11, 16), LATITUDES, shift=18)
+    assert np.isnan(out['tmax_degC'][0]).all()
+    assert np.isfinite(out['tmax_degC'][1:]).all()
+
+    # A complete source extreme remains available when one mean-temperature sample is absent.
+    fields = cfs_fields(6, 90)
+    del fields['2t', 24]
+    out = aggregate.daily(fields, CFS_UNITS, 'cfs', MATRIX, date(2026, 11, 16), LATITUDES, shift=18)
+    assert np.isnan(out['tmean_degC'][0]).all()
+    np.testing.assert_allclose(out['tmax_degC'][0], 13.)
+
+
 def test_net_radiation_adds_signed_amounts_and_needs_both():
     fields = {}
     for day in range(3):
@@ -144,6 +180,22 @@ def test_s2s_requests_and_seas5_months():
     assert [f'{m:%Y-%m}' for m in seas5.months(date(2025, 11, 1), date(2026, 2, 1))] == \
         ['2025-11', '2025-12', '2026-01', '2026-02']
     assert seas5.body(date(2026, 11, 1), 48)['leadtime_hour'] == ['6', '12', '18', '24', '30', '36', '42', '48']
+
+
+@pytest.mark.parametrize('system, spacing', [('ec46', 1.5), ('seas5', 1.)])
+def test_requested_grid_covers_the_southern_and_northern_catchments(system, spacing):
+    from shapely.geometry import box
+    from catchment_forecast import grids
+    request = (s2s.body(date(2026, 1, 17), ['cf']) if system == 'ec46'
+               else seas5.body(date(2026, 1, 1), hours=48))
+    north, west, south, east = request['area']
+    lat = np.arange(-90., 90. + spacing / 2, spacing)
+    lon = np.arange(-180., 180., spacing)
+    cells = grids.regular_cells(lat[(lat >= south) & (lat <= north)][::-1],
+                                lon[(lon >= west) & (lon <= east)])
+    # The southern polygon extends below the 41.25 N edge of a crop whose first 1.5-degree point is 42 N.
+    _, matrix = grids.weights([box(-122.2, 41.1, -122., 41.3), box(-121., 58.1, -120.8, 58.3)], cells)
+    np.testing.assert_allclose(grids.area_mean(matrix, np.ones(matrix.shape[1])), [1., 1.])
 
 
 def test_extended_table_names_cfs_members_by_run(tmp_path):

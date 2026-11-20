@@ -14,7 +14,7 @@ named from its file name, and each member gets its own complete rows.
 
 Lead day d covers hours 24(d-1) to 24d after the start, which for a 00 UTC
 start is a UTC day as in the history tables. Instantaneous fields are sampled
-at hours 0, 6, 12 and 18 of the day (WeatherNext 2 has no step 0, so its first
+at hours 0, 6, 12 and 18 of the day (WeatherNext 2 ignores step 0, so its first
 day has three samples); tmean_degC is their mean and tmax_degC and tmin_degC their
 extremes, so the daily range is narrower than from hourly data until the
 values are mapped onto the history. Wind speed, relative humidity and vapour
@@ -59,8 +59,13 @@ def aifs_member(name):
 
 
 def wn2_member(name):
-    """predictions_hres_ckpt2.grib (seed 0) -> ckpt2_s000; predictions_hres_s003_ckpt2.grib -> ckpt2_s003."""
+    """Historical checkpoint/seed IDs, or the original pNN ID of wn2_pNN_latlon.grib."""
+    operational = re.fullmatch(r'wn2_p(\d+)_latlon\.grib', name)
+    if operational:
+        return f'p{int(operational[1]):02d}'
     match = re.search(r'(?:_s(\d+))?_ckpt(\d+)', name)
+    if match is None:
+        raise ValueError(f'Unrecognized WN2 member file: {name}')
     return f'ckpt{match[2]}_s{int(match[1] or 0):03d}'
 
 
@@ -194,13 +199,14 @@ CONSTANT = ('orog',)
 # sample_hours: the hours of the day whose instantaneous fields make tmean, wind and humidity (default
 # SAMPLE_HOURS; 24 for fields that are already a mean of the day ending at their step).
 # extremes: {column: (shortName, window in hours, 'max' or 'min')}, the extreme of the catchment means of the
-# windows that end in the day, which replaces tmax or tmin from the samples.
+# windows that end in the day, minimally widened to enclose the sampled daily mean for PET consistency.
 SYSTEMS = {
     # Hindcast aifs_f000-f528_p07.grib1 and operational aifs_p07_N320.grib; not the per-step files beside them.
     'aifs': dict(patterns=('aifs_*p[0-9][0-9].grib*', 'aifs_p[0-9][0-9]_N[0-9]*.grib*'), member=aifs_member,
                  first_step=0,
                  amounts={'tp': ('precipitation_mm', True), 'ssrd': ('shortwave_down_mean_W_m2', True)}),
-    'wn2': dict(patterns=('predictions_hres_*.grib',), member=wn2_member, first_step=6,
+    'wn2': dict(patterns=('predictions_hres_*.grib', 'wn2_p[0-9]*_latlon.grib'), member=wn2_member, first_step=6,
+                name_pattern=r'(?:predictions_hres_.*|wn2_p[0-9]+_latlon)\.grib',
                 amounts={'tp': ('precipitation_mm', False)}),
     # A gefs file holds every field, or the weather fields only (gefs --weather): the weather fields are
     # required, and a state or flux whose fields come on no day is left out of the table.
@@ -416,9 +422,12 @@ def daily(fields, units, system, matrix, start, latitudes, shift=0):
             raise ValueError(f'{name} in {units.get(name)}, not K')
         pick = np.max if kind == 'max' else np.min
         steps = lambda day: range(begins(day) + window, begins(day) + 25, window)
-        out[column] = np.array([pick([mean(fields[name, step]) for step in steps(day)], axis=0) - 273.15
-                                if all((name, step) in fields for step in steps(day)) else blank
-                                for day in range(1, days + 1)])
+        extremes = np.array([pick([mean(fields[name, step]) for step in steps(day)], axis=0) - 273.15
+                              if all((name, step) in fields for step in steps(day)) else blank
+                              for day in range(1, days + 1)])
+        daily_mean = out['tmean_degC']
+        envelope = np.maximum if kind == 'max' else np.minimum
+        out[column] = np.where(np.isfinite(daily_mean), envelope(extremes, daily_mean), extremes)
 
     constant = {name: values for (name, _), values in fields.items() if name in CONSTANT}
 
@@ -453,10 +462,11 @@ def daily(fields, units, system, matrix, start, latitudes, shift=0):
     return {column: out[column] for column in COLUMNS if column in out}
 
 
-def member_files(folder, patterns):
+def member_files(folder, patterns, name_pattern=None):
     """The member files of a start folder, or one level down, where operational runs keep them (FCST)."""
     for prefix in ('', '*/'):
-        files = sorted({path for pattern in patterns for path in folder.glob(prefix + pattern)})
+        files = sorted({path for pattern in patterns for path in folder.glob(prefix + pattern)
+                        if name_pattern is None or re.fullmatch(name_pattern, path.name)})
         if files:
             return files
     return []
@@ -466,24 +476,27 @@ def run_start(system, folder, catchments, output):
     import pyarrow as pa
     import pyarrow.parquet as pq
     spec = SYSTEMS[system]
-    files = member_files(folder, spec['patterns'])
+    files = member_files(folder, spec['patterns'], spec.get('name_pattern'))
     if not files:
         print(f'{folder.name}: no member files', flush=True)
         return
+    member_ids = [spec['member'](path.name) for path in files]
+    if len(set(member_ids)) != len(member_ids):
+        raise ValueError(f'{folder.name}: Duplicate member IDs in the input files')
     init = datetime.strptime(folder.name, '%Y%m%d%H').replace(tzinfo=timezone.utc)
     # Lead day 1 is the first whole UTC day of the run.
     shift = (24 - init.hour) % 24
     first = (init + timedelta(hours=shift)).date()
     names = set(INSTANT) | set(spec['amounts']) | spec.get('fields', set())
     count, members = len(catchments.ids), []
-    for path in files:
+    for path, member in zip(files, member_ids):
         begin = time.time()
         fields, units, matrix = read_member(path, names, catchments, spec.get('naming'), spec.get('window'),
                                             spec.get('required', ()))
         values = daily(fields, units, system, matrix, first, catchments.latitudes, shift)
         if not len(values['tmean_degC']):
             raise ValueError(f'{path}: no whole lead day; is it a member file?')
-        members.append((spec['member'](path.name), values))
+        members.append((member, values))
         print(f'{folder.name} {members[-1][0]}: {len(values["tmean_degC"])} days in {time.time() - begin:.0f} s',
               flush=True)
     columns = [column for column in COLUMNS if any(column in values for _, values in members)]

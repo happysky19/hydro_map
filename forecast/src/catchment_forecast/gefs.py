@@ -37,6 +37,7 @@ and skipped.
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
+import http.client
 from pathlib import Path
 import shutil
 import sys
@@ -119,7 +120,7 @@ def fetch(address, first=None, last=None):
             if error.code == 404:
                 raise FileNotFoundError(address) from None
             failure = error
-        except (urllib.error.URLError, OSError) as error:
+        except (urllib.error.URLError, OSError, http.client.HTTPException) as error:
             failure = error
         time.sleep(2 ** attempt)
     raise RuntimeError(f'{address}: {failure}')
