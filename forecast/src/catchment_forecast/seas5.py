@@ -12,7 +12,8 @@ through seas5_p050.grib; --members N keeps numbers below N, which is enough for 
 a mapping and keeps the hindcast small. The key is read from ~/.cdsapirc, and the
 licence of the dataset must have been accepted on the Data Store. With --geojson
 and --output each start is aggregated into OUTPUT/seas5, and --delete then
-removes its GRIB files.
+removes its GRIB files. A start whose request fails is skipped and the command
+ends with status 1; a rerun takes it up.
 """
 
 import argparse
@@ -69,10 +70,12 @@ def latest_month(day):
 
 
 def run(starts, archive, members=None, hours=HOURS, catchments=None, output=None, delete=False):
+    """Fetch, sort and aggregate each start; returns the starts skipped because their request failed."""
     from .aggregate import run_start
     api = client(URL)
     raw_folder = archive / 'raw'
     raw_folder.mkdir(parents=True, exist_ok=True)
+    skipped = []
     for month in starts:
         name = f'{month:%Y%m}0100'
         if output is not None and (output / f'{name}.parquet').exists():
@@ -83,6 +86,7 @@ def run(starts, archive, members=None, hours=HOURS, catchments=None, output=None
             if not raw.exists() and not retrieve(api, body(month, hours), raw, attempts=3, wait=300,
                                                  dataset=DATASET):
                 say(f'{name}: skipped, the request failed')
+                skipped.append(month)
                 continue
             if members:
                 keep_members(raw, members)
@@ -94,6 +98,7 @@ def run(starts, archive, members=None, hours=HOURS, catchments=None, output=None
             run_start('seas5', archive / name, catchments, output)
             if delete and (output / f'{name}.parquet').exists():
                 shutil.rmtree(archive / name)
+    return skipped
 
 
 def main(argv=None):
@@ -119,8 +124,11 @@ def main(argv=None):
         output.mkdir(parents=True, exist_ok=True)
     starts = months(args.first, args.last)
     say(f'{len(starts)} SEAS5 starts to {args.hours} h into {args.archive}')
-    run(starts, args.archive, args.members, args.hours, catchments, output, args.delete)
-    return 0
+    skipped = run(starts, args.archive, args.members, args.hours, catchments, output, args.delete)
+    if skipped:
+        names = ' '.join(f'{month:%Y-%m}' for month in skipped)
+        say(f'{len(skipped)} start{"s" if len(skipped) > 1 else ""} skipped: {names}')
+    return 1 if skipped else 0
 
 
 if __name__ == '__main__':

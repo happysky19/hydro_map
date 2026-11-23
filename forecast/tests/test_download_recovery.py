@@ -127,3 +127,15 @@ def test_s2s_reforecast_cache_distinguishes_requested_years(monkeypatch, tmp_pat
     s2s.run([date(2026, 11, 15)], tmp_path, 's2s-reforecasts', years=range(2010, 2012))
     assert (tmp_path / '2006111500' / 'ec46_c00.grib').exists()
     assert (tmp_path / '2010111500' / 'ec46_c00.grib').exists()
+
+
+def test_failed_requests_are_returned_and_end_with_status_1(monkeypatch, tmp_path):
+    monkeypatch.setattr(s2s, 'client', lambda *args: None)
+    monkeypatch.setattr(seas5, 'client', lambda *args: None)
+    monkeypatch.setattr(s2s, 'retrieve', lambda *args, **kwargs: False)
+    monkeypatch.setattr(seas5, 'retrieve', lambda *args, **kwargs: False)
+    assert s2s.run([date(2026, 11, 15)], tmp_path / 'ec46', 's2s-forecasts') == [date(2026, 11, 15)]
+    assert seas5.run([date(2026, 11, 1)], tmp_path / 'seas5') == [date(2026, 11, 1)]
+    assert not (tmp_path / 'ec46' / 'done' / '20261115').exists()
+    assert s2s.main(['forecast', '--start', '2026-11-15', '--end', '2026-11-15', '--archive', str(tmp_path)]) == 1
+    assert seas5.main(['--first', '2026-11', '--last', '2026-11', '--archive', str(tmp_path)]) == 1

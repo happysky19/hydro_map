@@ -7,8 +7,10 @@
 #
 # Submit from the repository root with the Python to use as PYTHON. The account's key is read from ~/.cdsapirc
 # and the S2S and seasonal licences must have been accepted on the Data Stores, which run one request per user
-# and dataset at a time; a rerun skips what is there, so the job can be resubmitted after a failure or a time
-# limit. The downloads keep MEMBERS members (default 11):
+# and dataset at a time, so ec46 and seas5 go faster as two jobs (SYSTEMS=ec46, SYSTEMS=seas5). A rerun skips
+# what is there; a start whose request failed leaves its system without a mapping and the job ends with status
+# 1, so a follow-up submitted with --dependency=afternotok:JOBID --kill-on-invalid-dep=yes picks up the rest
+# after a failure or the time limit. The downloads keep MEMBERS members (default 11):
 #   ec46    the reforecasts of the 1st and 17th of each month of EC46_YEAR (default 2026, to October), over
 #           the 20 years before it: about 400 starts, 46 days
 #   seas5   the starts of each month from SEAS5_FIRST to SEAS5_LAST (default 2006-01 to 2025-12), 184 days
@@ -35,16 +37,22 @@ dates=()
 for month in 01 02 03 04 05 06 07 08 09 10; do
     dates+=("$year-$month-01" "$year-$month-17")
 done
+incomplete=' '
 if [[ $systems == *' ec46 '* ]]; then
     "$python" -m catchment_forecast.s2s reforecast --dates "${dates[@]}" --years $((year - 20)) $((year - 1)) \
-        --archive "$out/ec46_archive" --geojson "$geojson" --output "$out" --delete
+        --archive "$out/ec46_archive" --geojson "$geojson" --output "$out" --delete || incomplete+='ec46 '
 fi
 if [[ $systems == *' seas5 '* ]]; then
     "$python" -m catchment_forecast.seas5 --first "${SEAS5_FIRST:-2006-01}" --last "${SEAS5_LAST:-2025-12}" \
-        --members "${MEMBERS:-11}" --archive "$out/seas5_archive" --geojson "$geojson" --output "$out" --delete
+        --members "${MEMBERS:-11}" --archive "$out/seas5_archive" --geojson "$geojson" --output "$out" --delete \
+        || incomplete+='seas5 '
 fi
 groups=$("$python" -c 'from catchment_forecast.adjust import EXTENDED_GROUPS; print(*EXTENDED_GROUPS)')
 for system in $systems; do
+    if [[ $incomplete == *" $system "* ]]; then
+        echo "$system: some starts failed, no mapping until a rerun has them"
+        continue
+    fi
     if [[ ! -d $out/$system ]]; then
         echo "$system: no start tables in $out/$system"
         continue
@@ -55,3 +63,7 @@ for system in $systems; do
             --geojson "$geojson" --output "$out/${system}_adjusted" --lead-groups $groups
     fi
 done
+if [[ $incomplete != ' ' ]]; then
+    echo "incomplete:$incomplete" >&2
+    exit 1
+fi

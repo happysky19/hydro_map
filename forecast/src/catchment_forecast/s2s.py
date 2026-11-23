@@ -29,7 +29,8 @@ of the 20 years is a start as in the hindcasts of the other systems. With
 then removes its GRIB files. Requests wait in a queue that all users of ECMWF's
 archive share, an hour or more each.
 A day done is marked in ARCHIVE/done and skipped on a rerun; a request that
-fails is reported and its day skipped, and a rerun picks up the files there.
+fails is reported and its day skipped, the command then ends with status 1, and
+a rerun picks up the files there.
 """
 
 import argparse
@@ -127,10 +128,12 @@ def request_key(day, years=None):
 
 
 def run(days, archive, dataset, years=None, catchments=None, output=None, delete=False):
+    """Fetch, sort and aggregate each day; returns the days skipped because a request failed."""
     from .aggregate import run_start
     api = client(URL)
     done = archive / 'done'
     done.mkdir(parents=True, exist_ok=True)
+    skipped = []
     for day in days:
         marker = done / request_key(day, years)
         starts, files = [], []
@@ -146,6 +149,7 @@ def run(days, archive, dataset, years=None, catchments=None, output=None, delete
             files = fetch_day(api, day, archive, dataset, years)
             if files is None:
                 say(f'{day}: skipped, a request failed')
+                skipped.append(day)
                 continue
             starts = split(files, archive)
             if not starts:
@@ -162,6 +166,7 @@ def run(days, archive, dataset, years=None, catchments=None, output=None, delete
         partial = marker.with_suffix('.part')
         partial.write_text(json.dumps(starts))
         partial.replace(marker)
+    return skipped
 
 
 def main(argv=None):
@@ -191,12 +196,14 @@ def main(argv=None):
     if args.command == 'forecast':
         days = [args.start + timedelta(days=n) for n in range((args.end - args.start).days + 1)]
         say(f'{len(days)} EC46 starts into {args.archive}')
-        run(days, args.archive, 's2s-forecasts', None, catchments, output, args.delete)
+        skipped = run(days, args.archive, 's2s-forecasts', None, catchments, output, args.delete)
     else:
         years = range(args.years[0], args.years[1] + 1)
         say(f'EC46 reforecasts of {len(args.dates)} model dates, {len(years)} years each, into {args.archive}')
-        run(args.dates, args.archive, 's2s-reforecasts', years, catchments, output, args.delete)
-    return 0
+        skipped = run(args.dates, args.archive, 's2s-reforecasts', years, catchments, output, args.delete)
+    if skipped:
+        say(f'{len(skipped)} day{"s" if len(skipped) > 1 else ""} skipped: {" ".join(map(str, skipped))}')
+    return 1 if skipped else 0
 
 
 if __name__ == '__main__':
