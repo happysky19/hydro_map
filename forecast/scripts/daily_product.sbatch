@@ -17,6 +17,8 @@
 # or from GEFS_SOURCE (an address or folder with the same layout). When HINDCAST has ifs_adjusted, the start's
 # IFS ENS run is fetched from ECMWF's open data once its last step is in (IFS_MEMBERS, default 51; IFS_SOURCE for
 # another copy). A system whose run is not there yet is left out; the product is remade when the job runs again.
+# The start tables are written before the product, so a run is kept even when the product fails, and a later job
+# for the same DATE uses the table of an AIFS or WN2 run that has left its archive.
 #SBATCH --job-name=fc-daily
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=8G
@@ -59,12 +61,14 @@ forecasts=()
 for system in aifs wn2; do
     root=$4
     [[ $system == wn2 ]] && root=$5
-    if [[ ! -d $root/$start ]]; then
+    # A run removed from its archive after its table was made still counts.
+    if [[ -d $root/$start ]]; then
+        "$python" -m catchment_forecast.aggregate --system "$system" --archive "$root" --geojson "$geojson" \
+            --output "$ops" --start "$day" --end "$day"
+    elif [[ ! -f $ops/$system/$start.parquet ]]; then
         echo "$system: no run $start in $root"
         continue
     fi
-    "$python" -m catchment_forecast.aggregate --system "$system" --archive "$root" --geojson "$geojson" \
-        --output "$ops" --start "$day" --end "$day"
     if [[ -f $ops/$system/$start.parquet ]]; then
         "$python" -m catchment_forecast.adjust apply --mapping "$hindcast/${system}_adjusted/mapping.parquet" \
             --forecast "$ops/$system/$start.parquet" --output "$ops/${system}_adjusted"

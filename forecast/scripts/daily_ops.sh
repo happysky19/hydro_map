@@ -18,6 +18,11 @@
 #                     and daily_extended.sbatch
 # Run it once the runs are in (GEFS to day 16 about 06:30 UTC, AIFS about 06:50 UTC). A later run finds the
 # history up to date and remakes the product with what has arrived since; a run while another is going stops.
+# The runs of the day are aggregated even when the history update fails, since the AIFS runs leave their archive
+# within days; the product then waits for the history. Each run also tries again the product of any of the
+# CATCH_UP days before today (default 3) that an earlier run took up and left without one. The job ends with
+# status 1 when the history update failed or today's product is missing, after everything else, so that
+# --mail-type=FAIL reports it.
 #SBATCH --job-name=daily-ops
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=16G
@@ -46,15 +51,31 @@ fi
 today=$(date -u +%F)
 stamp() { echo "$(date -u '+%F %T') UTC: $*"; }
 
+problems=()
 stamp "history to $(date -u -d '6 days ago' +%F)"
-DELIVERY=$HISTORY PYTHON=$HISTORY_PYTHON PYTHONPATH=$REPO/history/src history/scripts/daily_update.sh
+DELIVERY=$HISTORY PYTHON=$HISTORY_PYTHON PYTHONPATH=$REPO/history/src history/scripts/daily_update.sh \
+    || problems+=('the history update failed')
 
+product_of() {
+    bash forecast/scripts/daily_product.sbatch "$HISTORY" "${HISTORY%.*}_catchments.geojson" "$HINDCAST" \
+        "$AIFS_ROOT" "$WN2_ROOT" "$OPS" "$1" || echo "product of $1: not made"
+}
+# A day this job took up but left without a product (OPS/attempted/DATE) is tried again for CATCH_UP days.
+mkdir -p "$OPS/attempted"
+for back in $(seq "${CATCH_UP:-3}" -1 1); do
+    past=$(date -u -d "$back days ago" +%F)
+    if [[ -f $OPS/attempted/$past && ! -f $OPS/product/${past//-/}00.parquet ]]; then
+        stamp "product of ${past}, missing so far"
+        product_of "$past"
+    fi
+done
 stamp "product of ${today}"
-bash forecast/scripts/daily_product.sbatch "$HISTORY" "${HISTORY%.*}_catchments.geojson" "$HINDCAST" \
-    "$AIFS_ROOT" "$WN2_ROOT" "$OPS" "$today"
+touch "$OPS/attempted/$today"
+product_of "$today"
 
 product=$OPS/product/${today//-/}00.parquet
-"$PYTHON" -c 'import sys
+[[ -f $product ]] || problems+=("no product of $today")
+[[ -f $product ]] && "$PYTHON" -c 'import sys
 import numpy as np, pyarrow.parquet as pq
 table = pq.read_table(sys.argv[1])
 keys = {"init_time", "system", "member", "lead_day", "valid_date", "project_id"}
@@ -73,4 +94,9 @@ for system in ec46 gefs35 cfs seas5; do
         break
     fi
 done
+if (( ${#problems[@]} )); then
+    message=$(printf '%s; ' "${problems[@]}")
+    stamp "done, but: ${message%; }"
+    exit 1
+fi
 stamp "done: $product"
